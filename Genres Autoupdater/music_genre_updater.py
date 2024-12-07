@@ -5,11 +5,11 @@ import os
 import sys
 import csv
 import json
+import time
 import logging
 import subprocess
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
-import time
 
 CONFIG_PATH = "config.json"
 
