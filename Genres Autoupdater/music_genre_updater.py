@@ -96,7 +96,7 @@ def parse_tracks(raw_data):
     tracks = []
     rows = raw_data.strip().split("\n")
     for row in rows:
-        fields = row.split("!!!")
+        fields = row.split("~|~")
         if len(fields) == 6:
             tracks.append({
                 "id": fields[0].strip(),
@@ -138,6 +138,21 @@ def save_to_csv(tracks, file_path):
     except Exception as e:
         logging.error(f"Failed to save CSV: {e}")
 
+def save_changes_report(changes, file_path):
+    """Save the changes log to a CSV file."""
+    logging.info(f"Saving changes report to {file_path}")
+    try:
+        with open(file_path, mode="w", newline="", encoding="utf-8") as csvfile:
+            fieldnames = ["artist", "album", "track_name", "old_genre", "new_genre"]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            # Sort changes by artist
+            changes_sorted = sorted(changes, key=lambda x: x["artist"])
+            writer.writerows(changes_sorted)
+        logging.info("Changes report saved successfully.")
+    except Exception as e:
+        logging.error(f"Failed to save changes report: {e}")
+
 def group_tracks_by_artist(tracks):
     """Group tracks by artist."""
     artists = {}
@@ -174,6 +189,7 @@ def update_genres_by_artist(tracks):
     """Update genres for tracks grouped by artist."""
     grouped = group_tracks_by_artist(tracks)
     updated_tracks = []
+    changes_log = []
     for artist, artist_tracks in grouped.items():
         dominant_genre = determine_dominant_genre_for_artist(artist_tracks)
         logging.info(f"Artist: {artist}, Dominant Genre: {dominant_genre}, Tracks: {len(artist_tracks)}")
@@ -185,9 +201,16 @@ def update_genres_by_artist(tracks):
                 if retry_update_genre(track_id, dominant_genre):
                     track["genre"] = dominant_genre
                     updated_tracks.append(track)
+                    changes_log.append({
+                        "artist": artist,
+                        "album": track.get("album", "Unknown"),
+                        "track_name": track.get("name", "Unknown"),
+                        "old_genre": old_genre,
+                        "new_genre": dominant_genre
+                    })
                 else:
                     logging.error(f"Failed to update genre for track {track_id}")
-    return updated_tracks
+    return updated_tracks, changes_log
 
 def can_run_incremental(force_run=False):
     """Check if the script can run based on the last incremental run time."""
@@ -196,15 +219,27 @@ def can_run_incremental(force_run=False):
     if force_run:
         return True
     if not os.path.exists(LAST_INCREMENTAL_RUN_FILE):
+        logging.info("Last incremental run file not found. Proceeding with execution.")
         return True
     with open(LAST_INCREMENTAL_RUN_FILE, "r", encoding="utf-8") as f:
         last_run_str = f.read().strip()
     try:
         last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
     except ValueError:
-        logging.error(f"Invalid date in {LAST_INCREMENTAL_RUN_FILE}")
+        logging.error(f"Invalid date in {LAST_INCREMENTAL_RUN_FILE}. Proceeding with execution.")
         return True
-    return (datetime.now() - last_run_time) > timedelta(minutes=INCREMENTAL_INTERVAL_MINUTES)
+
+    next_run_time = last_run_time + timedelta(minutes=INCREMENTAL_INTERVAL_MINUTES)
+    now = datetime.now()
+
+    if now >= next_run_time:
+        return True
+    else:
+        time_until_next_run = next_run_time - now
+        logging.info(f"Last incremental run was at {last_run_time.strftime('%Y-%m-%d %H:%M:%S')}. "
+                     f"Next run allowed after {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                     f"({time_until_next_run.seconds // 60} minutes remaining).")
+        return False
 
 def update_last_incremental_run():
     """Update the last incremental run time to the current time."""
@@ -233,9 +268,10 @@ def main():
         logging.warning("No tracks fetched.")
         return
 
-    updated_tracks = update_genres_by_artist(all_tracks)
+    updated_tracks, changes_log = update_genres_by_artist(all_tracks)
     if updated_tracks:
         save_to_csv(all_tracks, CONFIG["csv_output_file"])
+        save_changes_report(changes_log, CONFIG["changes_report_file"])
         logging.info(f"Updated {len(updated_tracks)} tracks with new genres.")
         update_last_incremental_run()
     else:
