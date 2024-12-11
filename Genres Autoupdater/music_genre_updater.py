@@ -189,8 +189,36 @@ def update_genres_by_artist(tracks):
                     logging.error(f"Failed to update genre for track {track_id}")
     return updated_tracks
 
+def can_run_incremental(force_run=False):
+    """Check if the script can run based on the last incremental run time."""
+    LAST_INCREMENTAL_RUN_FILE = CONFIG["last_incremental_run_file"]
+    INCREMENTAL_INTERVAL_MINUTES = CONFIG["incremental_interval_minutes"]
+    if force_run:
+        return True
+    if not os.path.exists(LAST_INCREMENTAL_RUN_FILE):
+        return True
+    with open(LAST_INCREMENTAL_RUN_FILE, "r", encoding="utf-8") as f:
+        last_run_str = f.read().strip()
+    try:
+        last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        logging.error(f"Invalid date in {LAST_INCREMENTAL_RUN_FILE}")
+        return True
+    return (datetime.now() - last_run_time) > timedelta(minutes=INCREMENTAL_INTERVAL_MINUTES)
+
+def update_last_incremental_run():
+    """Update the last incremental run time to the current time."""
+    LAST_INCREMENTAL_RUN_FILE = CONFIG["last_incremental_run_file"]
+    with open(LAST_INCREMENTAL_RUN_FILE, "w", encoding="utf-8") as f:
+        f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
 def main():
     """Main function to orchestrate the script."""
+    force_run = "--force" in sys.argv
+    if not can_run_incremental(force_run=force_run):
+        logging.info("Last incremental run was less than the configured interval ago. Skipping execution.")
+        return
+
     test_artists = CONFIG.get("test_artists", [])
     all_tracks = []
 
@@ -209,8 +237,10 @@ def main():
     if updated_tracks:
         save_to_csv(all_tracks, CONFIG["csv_output_file"])
         logging.info(f"Updated {len(updated_tracks)} tracks with new genres.")
+        update_last_incremental_run()
     else:
         logging.info("No tracks needed genre updates.")
+        update_last_incremental_run()
 
 if __name__ == "__main__":
     main()
