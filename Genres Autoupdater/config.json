@@ -5,7 +5,7 @@
     "last_incremental_run_file": "/Users/romanborodavkin/Music/Music/last_incremental_run.log",
     "apple_scripts_dir": "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts",
     "incremental_interval_minutes": 30,
-    "test_artists": [],
+    "test_artists": [""],
     "max_retries": 3,
     "retry_delay_seconds": 2,
     "pause_between_batches": 5,
