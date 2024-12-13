@@ -6,6 +6,7 @@ import sys
 import csv
 import json
 import time
+import shutil
 import logging
 import subprocess
 from threading import Thread
@@ -119,7 +120,7 @@ def fetch_tracks(artist=None):
     else:
         logging.info("Fetching all tracks...")
         raw_data = run_applescript("fetch_tracks.applescript")
-    
+        
     if raw_data:
         return parse_tracks(raw_data)
     else:
@@ -250,8 +251,86 @@ def update_last_incremental_run():
     with open(LAST_INCREMENTAL_RUN_FILE, "w", encoding="utf-8") as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
+def is_music_app_running():
+    """Check if the Music app is running."""
+    try:
+        # Use AppleScript to check the status of Music.app
+        script = 'tell application "System Events" to (name of processes) contains "Music"'
+        result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+        return result.stdout.strip() == "true"
+    except Exception as e:
+        logging.error(f"Unable to check the status of Music.app: {e}")
+        return False
+
+def backup_media_library():
+    """Backs up the media library before executing the script."""
+    source_dir = CONFIG["music_library_path"]
+    backup_dir = "/Users/romanborodavkin/Music/Music/Backup"
+    backup_path = os.path.join(backup_dir, "Music Library_backup.musiclibrary")
+    
+    # Check if the Music app is running
+    if not is_music_app_running():
+        logging.error("Music.app is not running. Please ensure the Music app is open and functioning correctly.")
+        sys.exit(1)
+    else:
+        logging.info("Music.app is running correctly.")
+    
+    # Ensure the backup directory exists
+    try:
+        os.makedirs(backup_dir, exist_ok=True)
+        logging.info(f"Backup directory verified: {backup_dir}")
+    except Exception as e:
+        logging.error(f"Failed to create backup directory {backup_dir}: {e}")
+        sys.exit(1)
+    
+    # Get the last modification time of the media library
+    try:
+        media_mtime = os.path.getmtime(source_dir)
+        media_mtime_dt = datetime.fromtimestamp(media_mtime)
+        logging.info(f"Last modification date of the media library: {media_mtime_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+    except Exception as e:
+        logging.error(f"Could not retrieve the last modification date of the media library: {e}")
+        sys.exit(1)
+    
+    # Check if a backup already exists and its modification date
+    if os.path.exists(backup_path):
+        try:
+            backup_mtime = os.path.getmtime(backup_path)
+            backup_mtime_dt = datetime.fromtimestamp(backup_mtime)
+            logging.info(f"Last backup date: {backup_mtime_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception as e:
+            logging.error(f"Unable to retrieve the date of the last backup: {e}")
+            sys.exit(1)
+        
+        # Compare modification dates
+        if media_mtime <= backup_mtime:
+            logging.info("The media library has not been modified since the last backup. No backup is required.")
+            return
+        else:
+            logging.info("The media library has been modified since the last backup. Creating a new backup.")
+            # Remove the existing backup directory
+            try:
+                shutil.rmtree(backup_path)
+                logging.info(f"Previous backup removed: {backup_path}")
+            except Exception as e:
+                logging.error(f"Failed to remove the previous backup {backup_path}: {e}")
+                sys.exit(1)
+    else:
+        logging.info("No existing backup found. Creating a new backup.")
+    
+    # Create a new backup by copying the media library directory
+    try:
+        shutil.copytree(source_dir, backup_path)
+        logging.info(f"Backup created/updated successfully: {backup_path}")
+    except Exception as e:
+        logging.error(f"Failed to create backup {backup_path}: {e}")
+        sys.exit(1)
+
 def main():
     """Main function to orchestrate the script."""
+    # Back up the media library
+    backup_media_library()
+    
     force_run = "--force" in sys.argv
     if not can_run_incremental(force_run=force_run):
         logging.info("Last incremental run was less than the configured interval ago. Skipping execution.")
