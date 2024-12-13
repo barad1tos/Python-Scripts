@@ -120,7 +120,7 @@ def fetch_tracks(artist=None):
     else:
         logging.info("Fetching all tracks...")
         raw_data = run_applescript("fetch_tracks.applescript")
-        
+
     if raw_data:
         return parse_tracks(raw_data)
     else:
