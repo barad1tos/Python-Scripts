@@ -97,7 +97,7 @@ def parse_tracks(raw_data):
     rows = raw_data.strip().split("\n")
     for row in rows:
         fields = row.split("~|~")
-        if len(fields) == 6:
+        if len(fields) == 7:
             tracks.append({
                 "id": fields[0].strip(),
                 "name": fields[1].strip(),
@@ -105,6 +105,7 @@ def parse_tracks(raw_data):
                 "album": fields[3].strip(),
                 "genre": fields[4].strip(),
                 "dateAdded": fields[5].strip(),
+                "trackStatus": fields[6].strip(),
             })
         else:
             logging.error(f"Malformed track data: {row}")
@@ -130,7 +131,7 @@ def save_to_csv(tracks, file_path):
     logging.info(f"Saving tracks to CSV: {file_path}")
     try:
         with open(file_path, mode="w", newline="", encoding="utf-8") as csvfile:
-            fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded"]
+            fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus"]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(tracks)
@@ -196,7 +197,9 @@ def update_genres_by_artist(tracks):
         for track in artist_tracks:
             old_genre = track.get("genre", "Unknown")
             track_id = track.get("id", "")
-            if track_id and old_genre != dominant_genre:
+            track_status = track.get("trackStatus", "unknown")
+            
+            if track_id and old_genre != dominant_genre and track_status == "subscription":
                 logging.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dominant_genre})")
                 if retry_update_genre(track_id, dominant_genre):
                     track["genre"] = dominant_genre
