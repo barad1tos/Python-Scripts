@@ -13,8 +13,8 @@ from datetime import datetime, timedelta
 import yaml
 import asyncio
 
-from logger.logger import get_loggers
-from reports.reports import save_to_csv, save_changes_report
+from scripts.logger import get_loggers
+from scripts.reports import save_to_csv, save_changes_report
 
 CONFIG_PATH = "config.yaml"
 
@@ -176,14 +176,45 @@ def is_music_app_running():
 
 
 def remove_parentheses_with_keywords(name, keywords):
-    # Removes brackets containing any of the keywords.
-    pattern_str = r"\([^)]*\b(?:" + "|".join(keywords) + r")\b[^)]*\)"
-    pattern = re.compile(pattern_str, flags=re.IGNORECASE)
-    old_name = None
-    while old_name != name:
-        old_name = name
-        name = re.sub(pattern, "", name)
-    return name
+    # Removes brackets and their contents if they contain one of the keywords.
+    stack = []
+    to_remove = set()
+    keyword_set = set(k.lower() for k in keywords)
+
+    # Collect all pairs of brackets
+    pairs = []
+    for i, char in enumerate(name):
+        if char == '(':
+            stack.append(i)
+        elif char == ')':
+            if stack:
+                start = stack.pop()
+                end = i
+                pairs.append((start, end))
+
+    # Sort pairs in order
+    pairs.sort()
+
+    # Check each pair of brackets for keywords
+    for start, end in reversed(pairs):
+        content = name[start+1:end]
+        # Check if the content contains a keyword
+        if any(keyword in content.lower() for keyword in keyword_set):
+            # Remove this pair of brackets
+            to_remove.add((start, end))
+            # Also delete all external pairs containing this pair
+            for outer_start, outer_end in pairs:
+                if outer_start < start and outer_end > end:
+                    to_remove.add((outer_start, outer_end))
+
+    # Remove the marked brackets, starting from the end of the line
+    new_name = name
+    for start, end in sorted(to_remove, reverse=True):
+        new_name = new_name[:start] + new_name[end+1:]
+
+    # Remove extra spaces
+    new_name = re.sub(r'\s+', ' ', new_name).strip()
+    return new_name
 
 
 def clean_names(artist, track_name, album_name):
