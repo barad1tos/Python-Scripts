@@ -164,20 +164,46 @@ def is_music_app_running() -> bool:
         return False
 
 
-def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
-    """
-    Removes parentheses and their contents if they contain any of the specified keywords.
+def remove_parentheses_with_keywords(name, keywords):
+    # Removes brackets and their contents if they contain one of the keywords.
+    stack = []
+    to_remove = set()
+    keyword_set = set(k.lower() for k in keywords)
 
-    :param name: Original string.
-    :param keywords: List of keywords to search for within parentheses.
-    :return: Cleaned string.
-    """
-    pattern = re.compile(r"\([^)]*\b(" + "|".join(map(re.escape, keywords)) + r")\b[^)]*\)", re.IGNORECASE)
-    old_name = None
-    while old_name != name:
-        old_name = name
-        name = pattern.sub("", name)
-    return re.sub(r"\s+", " ", name).strip()
+    # Collect all pairs of brackets
+    pairs = []
+    for i, char in enumerate(name):
+        if char == '(':
+            stack.append(i)
+        elif char == ')':
+            if stack:
+                start = stack.pop()
+                end = i
+                pairs.append((start, end))
+
+    # Sort pairs in order
+    pairs.sort()
+
+    # Check each pair of brackets for keywords
+    for start, end in reversed(pairs):
+        content = name[start+1:end]
+        # Check if the content contains a keyword
+        if any(keyword in content.lower() for keyword in keyword_set):
+            # Remove this pair of brackets
+            to_remove.add((start, end))
+            # Also delete all external pairs containing this pair
+            for outer_start, outer_end in pairs:
+                if outer_start < start and outer_end > end:
+                    to_remove.add((outer_start, outer_end))
+
+    # Remove the marked brackets, starting from the end of the line
+    new_name = name
+    for start, end in sorted(to_remove, reverse=True):
+        new_name = new_name[:start] + new_name[end+1:]
+
+    # Remove extra spaces
+    new_name = re.sub(r'\s+', ' ', new_name).strip()
+    return new_name
 
 
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
