@@ -3,12 +3,14 @@
 # music_genre_updater.py
 
 import argparse
+import logging
 import os
 import re
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 import asyncio
@@ -17,43 +19,52 @@ from scripts.logger import get_loggers
 from scripts.reports import save_to_csv, save_changes_report
 
 CONFIG_PATH = "config.yaml"
-
-# Checking for a configuration file
-if not os.path.exists(CONFIG_PATH):
-    print(f"Config file {CONFIG_PATH} does not exist.", file=sys.stderr)
-    sys.exit(1)
-
-if not os.access(CONFIG_PATH, os.R_OK):
-    print(f"No read access to config file {CONFIG_PATH}.", file=sys.stderr)
-    sys.exit(1)
-
-# Loading the configuration
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-    CONFIG = yaml.safe_load(f)
-
-# Check paths
-paths_to_check = [CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]]
-for p in paths_to_check:
-    if not os.path.exists(p):
-        print(f"Path {p} does not exist.", file=sys.stderr)
-        sys.exit(1)
-    if not os.access(p, os.R_OK):
-        print(f"No read access to {p}.", file=sys.stderr)
-        sys.exit(1)
-
-LOG_FILE = CONFIG["log_file"]
-
-# Initializing loggers
-console_logger, error_logger = get_loggers(LOG_FILE)
-
-
-# === Cache for fetch_tracks ===
-fetch_cache = {}
 CACHE_TTL = 300  # 5 minutes
 
 
-async def run_applescript_async(script_name, args=None):
-    # Executes AppleScript asynchronously and returns its output.
+def load_config(config_path: str) -> Dict[str, Any]:
+    """
+    Loads the YAML configuration file.
+
+    :param config_path: Path to the configuration file.
+    :return: Configuration as a dictionary.
+    """
+    if not os.path.exists(config_path):
+        print(f"Config file {config_path} does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.access(config_path, os.R_OK):
+        print(f"No read access to config file {config_path}.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def check_paths(paths: List[str], error_logger: Any) -> None:
+    """
+    Checks the existence and read access of provided paths.
+
+    :param paths: List of paths to check.
+    :param error_logger: Logger for error messages.
+    """
+    for path in paths:
+        if not os.path.exists(path):
+            print(f"Path {path} does not exist.", file=sys.stderr)
+            sys.exit(1)
+        if not os.access(path, os.R_OK):
+            print(f"No read access to {path}.", file=sys.stderr)
+            sys.exit(1)
+
+
+async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
+    """
+    Executes an AppleScript asynchronously and returns its output.
+
+    :param script_name: Name of the AppleScript file.
+    :param args: List of arguments to pass to the script.
+    :return: Output of the script or None if failed.
+    """
     script_path = os.path.join(CONFIG["apple_scripts_dir"], script_name)
     if not os.path.exists(script_path):
         error_logger.error(f"AppleScript not found: {script_path}")
@@ -63,7 +74,7 @@ async def run_applescript_async(script_name, args=None):
     if args:
         cmd.extend(args)
 
-    console_logger.info("Executing AppleScript async: " + " ".join(cmd))
+    console_logger.info(f"Executing AppleScript async: {' '.join(cmd)}")
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -80,92 +91,70 @@ async def run_applescript_async(script_name, args=None):
         return None
 
 
-def parse_tracks(raw_data):
-    # Parsing AppleScript output and returns a list of tracks.
+def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
+    """
+    Parses the output from AppleScript and returns a list of tracks.
+
+    :param raw_data: Raw string data from AppleScript.
+    :return: List of track dictionaries.
+    """
     if not raw_data:
         error_logger.error("No data to parse.")
         return []
+
     tracks = []
     rows = raw_data.strip().split("\n")
     for row in rows:
         fields = row.split("~|~")
         if len(fields) == 7:
-            tracks.append(
-                {
-                    "id": fields[0].strip(),
-                    "name": fields[1].strip(),
-                    "artist": fields[2].strip(),
-                    "album": fields[3].strip(),
-                    "genre": fields[4].strip(),
-                    "dateAdded": fields[5].strip(),
-                    "trackStatus": fields[6].strip(),
-                }
-            )
+            tracks.append({
+                "id": fields[0].strip(),
+                "name": fields[1].strip(),
+                "artist": fields[2].strip(),
+                "album": fields[3].strip(),
+                "genre": fields[4].strip(),
+                "dateAdded": fields[5].strip(),
+                "trackStatus": fields[6].strip(),
+            })
         else:
             error_logger.error(f"Malformed track data: {row}")
     return tracks
 
 
-async def fetch_tracks_async(artist=None):
+def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
-    Asynchronously retrieves tracks for a specific artist or all tracks.
-    Uses cache to reduce the number of AppleScript calls.
+    Groups tracks by artist.
+
+    :param tracks: List of track dictionaries.
+    :return: Dictionary grouped by artist names.
     """
-    # Checking the cache
-    cache_key = artist if artist else "ALL"
-    now = time.time()
-    if cache_key in fetch_cache:
-        cached_result, cached_time = fetch_cache[cache_key]
-        if now - cached_time < CACHE_TTL:
-            console_logger.info(f"Returning cached tracks for '{cache_key}' from cache.")
-            return cached_result
-
-    # Getting tracks via AppleScript
-    if artist:
-        console_logger.info(f"Fetching tracks for artist: {artist}")
-        raw_data = await run_applescript_async("fetch_tracks.applescript", [artist])
-    else:
-        console_logger.info("Fetching all tracks...")
-        raw_data = await run_applescript_async("fetch_tracks.applescript")
-
-    if raw_data:
-        tracks = parse_tracks(raw_data)
-        fetch_cache[cache_key] = (tracks, now)
-        return tracks
-    else:
-        msg = "No data fetched"
-        if artist:
-            msg += f" for artist: {artist}."
-        else:
-            msg += " for all artists."
-        console_logger.warning(msg)
-        return []
-
-
-def group_tracks_by_artist(tracks):
-    # Groups tracks by artist.
     artists = {}
     for track in tracks:
         artist = track.get("artist", "Unknown")
-        if artist not in artists:
-            artists[artist] = []
-        artists[artist].append(track)
+        artists.setdefault(artist, []).append(track)
     return artists
 
 
-def determine_dominant_genre_for_artist(tracks):
-    # Determines the dominant genre for an artist based on the number of tracks.
+def determine_dominant_genre_for_artist(tracks: List[Dict[str, str]]) -> str:
+    """
+    Determines the dominant genre for an artist based on track count.
+
+    :param tracks: List of track dictionaries for an artist.
+    :return: Dominant genre as a string.
+    """
     genre_count = {}
     for track in tracks:
         genre = track.get("genre") or "Unknown"
         genre_count[genre] = genre_count.get(genre, 0) + 1
-    if genre_count:
-        return max(genre_count, key=genre_count.get)
-    return "Unknown"
+    return max(genre_count, key=genre_count.get) if genre_count else "Unknown"
 
 
-def is_music_app_running():
-    # Checks if the Music.app is running.
+def is_music_app_running() -> bool:
+    """
+    Checks if the Music.app is currently running.
+
+    :return: True if running, False otherwise.
+    """
     try:
         script = 'tell application "System Events" to (name of processes) contains "Music"'
         result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
@@ -175,51 +164,31 @@ def is_music_app_running():
         return False
 
 
-def remove_parentheses_with_keywords(name, keywords):
-    # Removes brackets and their contents if they contain one of the keywords.
-    stack = []
-    to_remove = set()
-    keyword_set = set(k.lower() for k in keywords)
+def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
+    """
+    Removes parentheses and their contents if they contain any of the specified keywords.
 
-    # Collect all pairs of brackets
-    pairs = []
-    for i, char in enumerate(name):
-        if char == '(':
-            stack.append(i)
-        elif char == ')':
-            if stack:
-                start = stack.pop()
-                end = i
-                pairs.append((start, end))
-
-    # Sort pairs in order
-    pairs.sort()
-
-    # Check each pair of brackets for keywords
-    for start, end in reversed(pairs):
-        content = name[start+1:end]
-        # Check if the content contains a keyword
-        if any(keyword in content.lower() for keyword in keyword_set):
-            # Remove this pair of brackets
-            to_remove.add((start, end))
-            # Also delete all external pairs containing this pair
-            for outer_start, outer_end in pairs:
-                if outer_start < start and outer_end > end:
-                    to_remove.add((outer_start, outer_end))
-
-    # Remove the marked brackets, starting from the end of the line
-    new_name = name
-    for start, end in sorted(to_remove, reverse=True):
-        new_name = new_name[:start] + new_name[end+1:]
-
-    # Remove extra spaces
-    new_name = re.sub(r'\s+', ' ', new_name).strip()
-    return new_name
+    :param name: Original string.
+    :param keywords: List of keywords to search for within parentheses.
+    :return: Cleaned string.
+    """
+    pattern = re.compile(r"\([^)]*\b(" + "|".join(map(re.escape, keywords)) + r")\b[^)]*\)", re.IGNORECASE)
+    old_name = None
+    while old_name != name:
+        old_name = name
+        name = pattern.sub("", name)
+    return re.sub(r"\s+", " ", name).strip()
 
 
-def clean_names(artist, track_name, album_name):
-    # Clears track and album names, except as specified in the configuration.
+def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
+    """
+    Cleans track and album names by removing specific keywords, except for specified exceptions.
 
+    :param artist: Artist name.
+    :param track_name: Original track name.
+    :param album_name: Original album name.
+    :return: Tuple containing cleaned track name and cleaned album name.
+    """
     console_logger.info(
         f"clean_names called with: artist='{artist}', track_name='{track_name}', album_name='{album_name}'"
     )
@@ -233,11 +202,11 @@ def clean_names(artist, track_name, album_name):
         console_logger.info(
             f"No cleaning applied due to exceptions for artist '{artist}', album '{album_name}'."
         )
-        return (track_name.strip(), album_name.strip())
+        return track_name.strip(), album_name.strip()
 
     remaster_keywords = CONFIG.get("cleaning", {}).get("remaster_keywords", ["remaster", "remastered"])
 
-    def clean_string(name):
+    def clean_string(name: str) -> str:
         new_name = remove_parentheses_with_keywords(name, remaster_keywords)
         new_name = re.sub(r"\s+", " ", new_name).strip()
         return new_name if new_name else "Unknown"
@@ -247,18 +216,19 @@ def clean_names(artist, track_name, album_name):
     cleaned_track_name = clean_string(track_name)
     cleaned_album_name = clean_string(album_name)
 
-    console_logger.info(
-        f"Original track name: '{original_track_name}' -> '{cleaned_track_name}'"
-    )
-    console_logger.info(
-        f"Original album name: '{original_album_name}' -> '{cleaned_album_name}'"
-    )
+    console_logger.info(f"Original track name: '{original_track_name}' -> '{cleaned_track_name}'")
+    console_logger.info(f"Original album name: '{original_album_name}' -> '{cleaned_album_name}'")
 
-    return (cleaned_track_name, cleaned_album_name)
+    return cleaned_track_name, cleaned_album_name
 
 
-def can_run_incremental(force_run=False):
-    # Checks if it is possible to perform an incremental update based on the last start time.
+def can_run_incremental(force_run: bool = False) -> bool:
+    """
+    Determines if an incremental update can be performed based on the last run time.
+
+    :param force_run: If True, bypasses the incremental check.
+    :return: True if the update can run, False otherwise.
+    """
     last_file = CONFIG["last_incremental_run_file"]
     interval = CONFIG["incremental_interval_minutes"]
     if force_run:
@@ -281,23 +251,39 @@ def can_run_incremental(force_run=False):
         return True
     else:
         diff = next_run_time - now
+        minutes_remaining = diff.seconds // 60
         console_logger.info(
             f"Last incremental run was at {last_run_time.strftime('%Y-%m-%d %H:%M:%S')}. "
             f"Next run allowed after {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"({diff.seconds // 60} minutes remaining)."
+            f"({minutes_remaining} minutes remaining)."
         )
         return False
 
 
-def update_last_incremental_run():
-    # Updates the file with the time of the last incremental run.
+def update_last_incremental_run() -> None:
+    """
+    Updates the last incremental run timestamp in the configuration file.
+    """
     last_file = CONFIG["last_incremental_run_file"]
     with open(last_file, "w", encoding="utf-8") as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
-async def update_track_async(track_id, new_track_name=None, new_album_name=None, new_genre=None):
-    # Updates track properties asynchronously via AppleScript.
+async def update_track_async(
+    track_id: str,
+    new_track_name: Optional[str] = None,
+    new_album_name: Optional[str] = None,
+    new_genre: Optional[str] = None
+) -> bool:
+    """
+    Updates track properties asynchronously via AppleScript.
+
+    :param track_id: ID of the track to update.
+    :param new_track_name: New track name, if any.
+    :param new_album_name: New album name, if any.
+    :param new_genre: New genre, if any.
+    :return: True if all updates were successful, False otherwise.
+    """
     if not track_id:
         error_logger.error("No track_id provided.")
         return False
@@ -340,15 +326,19 @@ async def update_track_async(track_id, new_track_name=None, new_album_name=None,
     return success
 
 
-async def update_genres_by_artist_async(tracks):
-    # Updates track genres asynchronously, grouping them by artist.
+async def update_genres_by_artist_async(tracks: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """
+    Updates track genres asynchronously, grouping them by artist.
 
+    :param tracks: List of all track dictionaries.
+    :return: Tuple containing list of updated tracks and list of changes.
+    """
     grouped = group_tracks_by_artist(tracks)
     updated_tracks = []
     changes_log = []
     semaphore = asyncio.Semaphore(10)  # Limit of 10 simultaneous updates
 
-    async def process_track(track, dom_genre):
+    async def process_track(track: Dict[str, str], dom_genre: str) -> None:
         old_genre = track.get("genre", "Unknown")
         track_id = track.get("id", "")
         status = track.get("trackStatus", "unknown")
@@ -360,16 +350,14 @@ async def update_genres_by_artist_async(tracks):
             async with semaphore:
                 if await update_track_async(track_id, new_genre=dom_genre):
                     track["genre"] = dom_genre
-                    changes_log.append(
-                        {
-                            "artist": track.get("artist", "Unknown"),
-                            "album": track.get("album", "Unknown"),
-                            "track_name": track.get("name", "Unknown"),
-                            "old_genre": old_genre,
-                            "new_genre": dom_genre,
-                            "new_track_name": track.get("name", "Unknown"),
-                        }
-                    )
+                    changes_log.append({
+                        "artist": track.get("artist", "Unknown"),
+                        "album": track.get("album", "Unknown"),
+                        "track_name": track.get("name", "Unknown"),
+                        "old_genre": old_genre,
+                        "new_genre": dom_genre,
+                        "new_track_name": track.get("name", "Unknown"),
+                    })
                     updated_tracks.append(track)
                 else:
                     error_logger.error(f"Failed to update genre for track {track_id}")
@@ -386,11 +374,15 @@ async def update_genres_by_artist_async(tracks):
 
     await asyncio.gather(*tasks)
 
-    return (updated_tracks, changes_log)
+    return updated_tracks, changes_log
 
 
-async def process_artist_tracks_async(artist):
-    # Asynchronously processes tracks for a specific artist: clears titles and updates them.
+async def process_artist_tracks_async(artist: str) -> None:
+    """
+    Asynchronously processes tracks for a specific artist: cleans names and updates them.
+
+    :param artist: Name of the artist to process.
+    """
     console_logger.info(f"Starting processing for artist: {artist}")
     tracks = await fetch_tracks_async(artist=artist)
     if not tracks:
@@ -416,22 +408,19 @@ async def process_artist_tracks_async(artist):
         new_an = cleaned_album if cleaned_album != orig_album else None
 
         if new_tn or new_an:
-            res = await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an)
-            if res:
+            if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
                 if new_tn:
                     track["name"] = cleaned_name
                 if new_an:
                     track["album"] = cleaned_album
-                changes_log.append(
-                    {
-                        "artist": artist_name,
-                        "album": track.get("album", "Unknown"),
-                        "track_name": orig_name,
-                        "old_genre": track.get("genre", "Unknown"),
-                        "new_genre": track.get("genre", "Unknown"),
-                        "new_track_name": track.get("name", "Unknown"),
-                    }
-                )
+                changes_log.append({
+                    "artist": artist_name,
+                    "album": track.get("album", "Unknown"),
+                    "track_name": orig_name,
+                    "old_genre": track.get("genre", "Unknown"),
+                    "new_genre": track.get("genre", "Unknown"),
+                    "new_track_name": track.get("name", "Unknown"),
+                })
                 updated_tracks.append(track)
             else:
                 error_logger.error(f"Failed to update track ID {track_id}")
@@ -450,8 +439,50 @@ async def process_artist_tracks_async(artist):
         )
 
 
-async def main_async(args):
-    # Asynchronous main script loop.
+async def fetch_tracks_async(artist: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    Asynchronously retrieves tracks for a specific artist or all tracks.
+    Uses cache to reduce the number of AppleScript calls.
+
+    :param artist: Name of the artist to fetch tracks for. If None, fetches all tracks.
+    :return: List of track dictionaries.
+    """
+    cache_key = artist if artist else "ALL"
+    now = time.time()
+    if cache_key in fetch_cache:
+        cached_result, cached_time = fetch_cache[cache_key]
+        if now - cached_time < CACHE_TTL:
+            console_logger.info(f"Returning cached tracks for '{cache_key}' from cache.")
+            return cached_result
+
+    # Getting tracks via AppleScript
+    if artist:
+        console_logger.info(f"Fetching tracks for artist: {artist}")
+        raw_data = await run_applescript_async("fetch_tracks.applescript", [artist])
+    else:
+        console_logger.info("Fetching all tracks...")
+        raw_data = await run_applescript_async("fetch_tracks.applescript")
+
+    if raw_data:
+        tracks = parse_tracks(raw_data)
+        fetch_cache[cache_key] = (tracks, now)
+        return tracks
+    else:
+        msg = "No data fetched"
+        if artist:
+            msg += f" for artist: {artist}."
+        else:
+            msg += " for all artists."
+        console_logger.warning(msg)
+        return []
+
+
+async def main_async(args: argparse.Namespace) -> None:
+    """
+    Asynchronous main function to handle different commands.
+
+    :param args: Parsed command-line arguments.
+    """
     if args.command == "clean_artist":
         await process_artist_tracks_async(args.artist)
         return
@@ -481,7 +512,7 @@ async def main_async(args):
             changes_log = []
             semaphore = asyncio.Semaphore(10)  # Limit to 10 simultaneous cleanings
 
-            async def clean_track(track):
+            async def clean_track(track: Dict[str, str]) -> None:
                 orig_name = track.get("name", "")
                 orig_album = track.get("album", "")
                 track_id = track.get("id", "")
@@ -497,8 +528,7 @@ async def main_async(args):
 
                 if new_tn or new_an:
                     async with semaphore:
-                        res = await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an)
-                        if res:
+                        if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
                             if new_tn:
                                 track["name"] = cleaned_name
                             if new_an:
@@ -541,32 +571,43 @@ async def main_async(args):
             update_last_incremental_run()
 
 
-def main():
-    # Parser of command line arguments and launch of an asynchronous main loop.
-    parser = argparse.ArgumentParser(description="Music Genre Updater")
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force the run, bypassing incremental checks",
-    )
-    subparsers = parser.add_subparsers(dest="command", help="Sub-commands")
+def main() -> None:
+    """
+    Entry point of the script. Parses arguments and starts the asynchronous main function.
+    """
+    parser = argparse.ArgumentParser(description="Music Genre Updater Script")
+    subparsers = parser.add_subparsers(dest="command")
 
-    clean_artist_parser = subparsers.add_parser(
-        "clean_artist", help="Clean track and album names for a given artist"
-    )
-    clean_artist_parser.add_argument(
-        "--artist", required=True, help="Artist name to clean"
-    )
-    clean_artist_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Force the run, bypassing incremental checks",
-    )
+    # Subparser for cleaning artist
+    clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track and album names for a given artist")
+    clean_artist_parser.add_argument("--artist", required=True, help="Artist name to clean")
+    clean_artist_parser.add_argument("--force", action="store_true", help="Force the run, bypassing incremental checks")
+
+    # Argument for force run
+    parser.add_argument("--force", action="store_true", help="Force run the incremental update")
 
     args = parser.parse_args()
 
-    asyncio.run(main_async(args))
+    try:
+        asyncio.run(main_async(args))
+    except KeyboardInterrupt:
+        console_logger.info("Script interrupted by user.")
+    except Exception as e:
+        error_logger.error(f"An unexpected error occurred: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
+    # Load configuration
+    CONFIG = load_config(CONFIG_PATH)
+
+    # Check necessary paths
+    check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger=logging.getLogger("error_logger"))
+
+    # Initialize loggers
+    console_logger, error_logger = get_loggers(CONFIG["log_file"])
+
+    # Initialize cache
+    fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
+
     main()
