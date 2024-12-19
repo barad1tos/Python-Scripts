@@ -47,7 +47,7 @@ Automated Music Genre Updater for Apple Music. This project leverages Python and
 ## Features
 
 - **Automatic Genre Updating:** Determines and updates the dominant genre for each artist based on track analysis.
-- **Asynchronous Processing:** Utilizes asynchronous operations for efficient handling of large music libraries.
+- **Asynchronous Processing:** Utilizes asynchronous operations to handle large music libraries efficiently.
 - **Detailed Logging:** Provides comprehensive logs for monitoring and debugging purposes.
 - **YAML Configuration:** Easily configurable through a `config.yaml` file.
 - **Scheduled Execution:** Uses `launchctl` to schedule regular updates automatically.
@@ -91,7 +91,7 @@ Install the required Python packages using pip:
 pip install PyYaml.
 ```
 
-All other dependencies are the built in python libraries, starting from the 3.3 version.
+All other dependencies are the built-in Python libraries, starting from the 3.3 version.
 
 ## Configuration
 
@@ -405,7 +405,6 @@ If you encounter issues while setting up or running the Music Genre Updater, con
 osascript /path/to/fetch_tracks.applescript
 
 osascript /path/to/fetch_tracks.applescript
-
 ```
 
 	5.	Python Dependencies:
@@ -438,34 +437,34 @@ python3 --version
 
 # FAQ
 
-Q1: Can I customize the frequency of genre updates?
+Q1: Can I adjust the frequency of genre updates?
 
-A: Yes. You can adjust the StartInterval value in the com.barad1tos.MusicGenreUpdater.plist file to set how often the script runs (in seconds). Additionally, the incremental_interval_minutes parameter in config.yaml controls the interval for incremental updates.
+A: Yes, you can. You can adjust the StartInterval value in the com.barad1tos.MusicGenreUpdater.plist file to control how often the script runs (in seconds). In addition, the incremental_interval_minutes parameter in config.yaml controls the interval for incremental updates.
 
 Q2: How do I add exceptions for specific artists or albums?
 
-A: Modify the exceptions.track_cleaning section in config.yaml to include the artist and album combinations you want to exclude from cleaning. For example:
+A: Modify the exceptions.The track_cleaning section in config.yaml should include the artist and album combinations you want to exclude from cleaning. For example:
 
-exceptions:
+Exceptions:
   track_cleaning:
     - artist: "Artist Name"
-      album: "Album Name"
+      album: "Album Name
 
-Q3: What happens if the script fails to update a genre after multiple retries?
+Q3: What happens if the script fails to update a genre after several attempts?
 
-A: The script will log an error message indicating the failure. It will attempt to retry updating the genre based on the max_retries and retry_delay_seconds settings in config.yaml. If all retries fail, the track’s genre will remain unchanged.
+A: The script will log an error message indicating the failure. It will attempt to update the genre again based on the max_retries and retry_delay_seconds settings in the config.yaml. If all retries fail, the track's genre will remain unchanged.
 
 Q4: Is there a way to back up my music library before running the updater?
 
-A: Yes. The backup_dir parameter in config.yaml specifies the directory where backups will be stored. Ensure this directory exists and has sufficient storage space.
+A: Yes and no. Apple Music syncs your changes almost instantly, so there's no way to prevent it. Even if you back up your library file and replace it with the current one after making unnecessary changes, Apple Music will still pull the changes from the cloud. It can still be useful if you are careful that the script does not corrupt your library.
 
-Q5: How can I view the changes made by the script?
+Q5: How can I see the changes made by the script?
 
-A: The script generates a changes_report.csv file as specified in config.yaml. This file contains details of all the changes made during the update process, including the artist, album, track name, old genre, new genre, and new track name.
+A: The script creates a changes_report.csv file as specified in config.yaml. This file contains details of all changes made during the update process, including artist, album, track name, old genre, new genre, and new track name. 
 
-Q6: Can I run multiple instances of the script simultaneously?
+Q6: Can I run multiple instances of the script at the same time?
 
-A: It is not recommended to run multiple instances of the script simultaneously as it may lead to race conditions or conflicting updates. Ensure that only one instance runs at a time, especially when using scheduled tasks like launchctl.
+A: It is not recommended to run multiple instances of the script at the same time, as this can lead to race conditions or conflicting updates. Make sure that only one instance is running at a time, especially when using scheduled tasks such as launchctl.
 
 Q7: How do I update the script to the latest version?
 
@@ -473,11 +472,11 @@ A: To update the script, pull the latest changes from the repository:
 
 git pull origin main
 
-Ensure you review any updates to configuration or dependencies and adjust your setup accordingly.
+Make sure you check for any configuration or dependency updates and adjust your setup accordingly.
 
-Q8: Can I customize the keywords used for cleaning track and album names?
+Q8: Can I customize the keywords used to clean track and album names?
 
-A: Yes. You can modify the remaster_keywords and album_suffixes_to_remove in the cleaning section of config.yaml to include or exclude specific keywords based on your preferences.
+A: Yes, you can. You can modify the remaster_keywords and album_suffixes_to_remove in the cleaning section of config.yaml to include or exclude specific keywords based on your preferences.
 
-Disclaimer: Always ensure you have backups of your music library before running automated scripts that modify your data. Use this tool at your own risk.
+Disclaimer: Always make sure you have backups of your music library before running automated scripts that modify your data. Use this tool at your own risk.
 
