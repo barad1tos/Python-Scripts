@@ -1,0 +1,47 @@
+# Path to the Apple Music library file
+music_library_path: "/Users/yourusername/Music/Music/Music Library.musiclibrary"
+
+# Directory containing AppleScript scripts
+apple_scripts_dir: "/Users/yourusername/Path/To/AppleScripts"
+
+# Path to the main log file
+log_file: "/Users/yourusername/Path/To/Logs/music_genre_updater.log"
+
+# Path to the CSV file containing the list of tracks
+csv_output_file: "/Users/yourusername/Path/To/Outputs/track_list.csv"
+
+# Path to the CSV file for changes report
+changes_report_file: "/Users/yourusername/Path/To/Outputs/changes_report.csv"
+
+# File to store the timestamp of the last incremental run
+last_incremental_run_file: "/Users/yourusername/Path/To/Logs/last_incremental_run.log"
+
+# Directory for backups
+backup_dir: "/Users/yourusername/Path/To/Backups"
+
+# Interval for incremental updates in minutes
+incremental_interval_minutes: 60
+
+# Maximum number of retries for updating genres
+max_retries: 3
+
+# Delay between retries in seconds
+retry_delay_seconds: 2
+
+# List of test artists for testing purposes (leave empty to process all)
+test_artists: []
+
+# Cleaning settings
+cleaning:
+  remaster_keywords:
+    - remaster
+    - remastered
+  album_suffixes_to_remove:
+    - ' - Single'
+    - ' — EP'
+
+# Exceptions for track cleaning
+exceptions:
+  track_cleaning:
+    - artist: "Rabbit Junk"
+      album: "Xenospheres"
