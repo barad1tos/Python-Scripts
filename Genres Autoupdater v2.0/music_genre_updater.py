@@ -18,7 +18,8 @@ import asyncio
 from scripts.logger import get_loggers
 from scripts.reports import save_to_csv, save_changes_report
 
-CONFIG_PATH = "config.yaml"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
 CACHE_TTL = 300  # 5 minutes
 
 
@@ -74,7 +75,7 @@ async def run_applescript_async(script_name: str, args: Optional[List[str]] = No
     if args:
         cmd.extend(args)
 
-    console_logger.info(f"Executing AppleScript async: {' '.join(cmd)}")
+    console_logger.info(f"Executing {' '.join(cmd)}")
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -165,50 +166,64 @@ def is_music_app_running() -> bool:
 
 
 def remove_parentheses_with_keywords(name, keywords):
-    # Removes brackets and their contents if they contain one of the keywords.
-    stack = []
-    to_remove = set()
-    keyword_set = set(k.lower() for k in keywords)
+    try:
+        logging.info(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
+        # Removes brackets and their contents if they contain one of the keywords.
+        stack = []
+        to_remove = set()
+        keyword_set = set(k.lower() for k in keywords)
 
-    # Collect all pairs of brackets
-    pairs = []
-    for i, char in enumerate(name):
-        if char == '(':
-            stack.append(i)
-        elif char == ')':
-            if stack:
-                start = stack.pop()
-                end = i
-                pairs.append((start, end))
+        # Collect all pairs of brackets
+        pairs = []
+        for i, char in enumerate(name):
+            if char == '(':
+                stack.append(i)
+            elif char == ')':
+                if stack:
+                    start = stack.pop()
+                    end = i
+                    pairs.append((start, end))
 
-    # Sort pairs in order
-    pairs.sort()
+        logging.debug(f"Bracket pairs found: {pairs}")
 
-    # Check each pair of brackets for keywords
-    for start, end in reversed(pairs):
-        content = name[start+1:end]
-        # Check if the content contains a keyword
-        if any(keyword in content.lower() for keyword in keyword_set):
-            # Remove this pair of brackets
-            to_remove.add((start, end))
-            # Also delete all external pairs containing this pair
-            for outer_start, outer_end in pairs:
-                if outer_start < start and outer_end > end:
-                    to_remove.add((outer_start, outer_end))
+        # Sort pairs in order
+        pairs.sort()
 
-    # Remove the marked brackets, starting from the end of the line
-    new_name = name
-    for start, end in sorted(to_remove, reverse=True):
-        new_name = new_name[:start] + new_name[end+1:]
+        # Check each pair of brackets for keywords
+        for start, end in reversed(pairs):
+            content = name[start+1:end]
+            logging.debug(f"Checking content inside brackets: '{content}'")
+            # Check if the content contains a keyword
+            if any(keyword in content.lower() for keyword in keyword_set):
+                # Remove this pair of brackets
+                to_remove.add((start, end))
+                logging.info(f"Marking brackets ({start}, {end}) for removal due to keyword match")
+                # Also delete all external pairs containing this pair
+                for outer_start, outer_end in pairs:
+                    if outer_start < start and outer_end > end:
+                        to_remove.add((outer_start, outer_end))
+                        logging.info(f"Marking outer brackets ({outer_start}, {outer_end}) for removal as they contain inner brackets")
 
-    # Remove extra spaces
-    new_name = re.sub(r'\s+', ' ', new_name).strip()
-    return new_name
+        # Remove the marked brackets, starting from the end of the line
+        new_name = name
+        for start, end in sorted(to_remove, reverse=True):
+            logging.debug(f"Removing brackets from index {start} to {end}")
+            new_name = new_name[:start] + new_name[end+1:]
+
+        # Remove extra spaces
+        new_name = re.sub(r'\s+', ' ', new_name).strip()
+        logging.info(f"Cleaned name: '{new_name}'")
+
+        return new_name
+    except Exception as e:
+        logging.error(f"Error in remove_parentheses_with_keywords: {e}")
+        return name
 
 
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
     """
-    Cleans track and album names by removing specific keywords, except for specified exceptions.
+    Cleans track and album names by removing specific keywords and album suffixes,
+    except for specified exceptions.
 
     :param artist: Artist name.
     :param track_name: Original track name.
@@ -231,6 +246,7 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
         return track_name.strip(), album_name.strip()
 
     remaster_keywords = CONFIG.get("cleaning", {}).get("remaster_keywords", ["remaster", "remastered"])
+    album_suffixes = CONFIG.get("cleaning", {}).get("album_suffixes_to_remove", [])
 
     def clean_string(name: str) -> str:
         new_name = remove_parentheses_with_keywords(name, remaster_keywords)
@@ -241,6 +257,12 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
     original_album_name = album_name
     cleaned_track_name = clean_string(track_name)
     cleaned_album_name = clean_string(album_name)
+
+    # Deleting album suffixes
+    for suffix in album_suffixes:
+        if cleaned_album_name.endswith(suffix):
+            cleaned_album_name = cleaned_album_name[:-len(suffix)].strip()
+            console_logger.info(f"Removed suffix '{suffix}' from album name. New album name: '{cleaned_album_name}'")
 
     console_logger.info(f"Original track name: '{original_track_name}' -> '{cleaned_track_name}'")
     console_logger.info(f"Original album name: '{original_album_name}' -> '{cleaned_album_name}'")

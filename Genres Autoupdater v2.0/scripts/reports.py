@@ -6,6 +6,7 @@ import logging
 from typing import List, Dict, Optional
 from logging import Logger
 
+
 def _save_csv(
     data: List[Dict[str, str]],
     fieldnames: List[str],
@@ -33,6 +34,7 @@ def _save_csv(
         console_logger.info(f"{data_type.capitalize()} saved to {file_path}.")
     except (IOError, csv.Error) as e:
         error_logger.error(f"Failed to save {data_type}: {e}")
+
 
 def save_to_csv(
     tracks: List[Dict[str, str]],
@@ -63,6 +65,7 @@ def save_to_csv(
         "trackStatus",
     ]
     _save_csv(tracks, fieldnames, file_path, console_logger, error_logger, "tracks")
+
 
 def save_changes_report(
     changes: List[Dict[str, str]],

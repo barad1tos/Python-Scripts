@@ -12,8 +12,11 @@ retry_delay_seconds: 2
 test_artists: []
 cleaning:
   remaster_keywords:
-    - "remaster"
-    - "remastered"
+    - remaster
+    - remastered
+  album_suffixes_to_remove:
+    - ' - Single'
+    - ' — EP'
 exceptions:
   track_cleaning:
     - artist: "Rabbit Junk"

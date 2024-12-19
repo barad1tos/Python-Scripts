@@ -12,7 +12,6 @@ from logging.handlers import RotatingFileHandler
 # ANSI escape codes for colors
 RESET = "\033[0m"
 RED = "\033[31m"
-GREEN = "\033[32m"
 
 class ColoredFormatter(logging.Formatter):
     """
@@ -24,14 +23,12 @@ class ColoredFormatter(logging.Formatter):
         if record.levelno >= logging.ERROR:
             # Add red color for error messages
             colored_message = f"{RED}{original_message}{RESET}"
-        elif record.levelno == logging.INFO:
-            # Append green "OK" status to INFO messages
-            colored_message = f"{GREEN}OK{RESET} - {original_message}"
         else:
             colored_message = original_message
         return colored_message
 
 FORMATTER = ColoredFormatter("%(asctime)s - %(levelname)s - %(message)s")
+
 
 def get_loggers(log_file: str) -> Tuple[Logger, Logger]:
     # Logger for the console
