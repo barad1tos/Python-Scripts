@@ -1,4 +1,5 @@
-![Logo](image.jpg)
+[image](https://github.com/user-attachments/assets/79fc52fd-dfce-4fbf-84d3-e4b8e66b7a21)
+
 
 # Music Genre Updater
 
