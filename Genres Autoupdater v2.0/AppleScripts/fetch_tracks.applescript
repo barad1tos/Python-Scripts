@@ -183,7 +183,7 @@ on run argv
     end repeat
     
     -- Writing to a file for testing
---    set test_output_file to "/Users/romanborodavkin/Music/outputs.txt"
+--    set test_output_file to "/Users/user/Music/outputs.txt"
 --    try
 --        set file_ref to open for access POSIX file test_output_file with write permission
 --        set eof of file_ref to 0
