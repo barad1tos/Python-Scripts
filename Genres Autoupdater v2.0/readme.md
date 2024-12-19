@@ -13,24 +13,27 @@ Automated Music Genre Updater for Apple Music. This project leverages Python and
 
 ## Table of Contents
 
-- [Description](#description)
-- [Features](#features)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-  - [Clone the Repository](#clone-the-repository)
-  - [Set Up a Virtual Environment](#set-up-a-virtual-environment)
-  - [Install Dependencies](#install-dependencies)
-  - [Configuration](#configuration)
-  - [Setting Up the Launch Agent with `launchctl`](#setting-up-the-launch-agent-with-launchctl)
+- [Music Genre Updater](#music-genre-updater)
+	- [Table of Contents](#table-of-contents)
+	- [Description](#description)
+	- [Features](#features)
+	- [Prerequisites](#prerequisites)
+	- [Installation](#installation)
+		- [Clone the Repository](#clone-the-repository)
+	- [Install Dependencies](#install-dependencies)
+	- [Configuration](#configuration)
+	- [Setting Up the Launch Agent with launchctl](#setting-up-the-launch-agent-with-launchctl)
 - [Usage](#usage)
-  - [Running the Script Manually](#running-the-script-manually)
-  - [Command-Line Arguments](#command-line-arguments)
-  - [Examples](#examples)
+	- [Running the Script Manually](#running-the-script-manually)
+	- [Command-Line Arguments](#command-line-arguments)
+	- [Examples](#examples)
 - [Configuration Details](#configuration-details)
-  - [config.yaml](#configyaml)
+	- [config.yaml](#configyaml)
 - [Logging](#logging)
+	- [Log Configuration:](#log-configuration)
+	- [Log Files:](#log-files)
 - [Auxiliary Scripts](#auxiliary-scripts)
-  - [AppleScript Scripts](#applescript-scripts)
+	- [AppleScript Scripts](#applescript-scripts)
 - [Contributing](#contributing)
 - [License](#license)
 - [Contact](#contact)
@@ -80,17 +83,17 @@ python3 -m venv venv
 source venv/bin/activate
 ```
 
-Install Dependencies
+## Install Dependencies
 
 Install the required Python packages using pip:
 
 ```bash
-pip install -r requirements.txt
+pip install PyYaml.
 ```
 
-Note: Ensure that requirements.txt includes all necessary dependencies such as PyYAML, asyncio, etc.
+All other dependencies are the built in python libraries, starting from the 3.3 version.
 
-Configuration
+## Configuration
 
 Copy the example configuration file and customize it to fit your environment:
 
@@ -100,7 +103,7 @@ cp config.yaml.example config.yaml
 
 Open config.yaml in your preferred text editor and update the paths and settings as needed. Detailed explanations of each configuration parameter are provided in the Configuration Details section below.
 
-Setting Up the Launch Agent with launchctl
+## Setting Up the Launch Agent with launchctl
 
 To automate the execution of the Music Genre Updater, set up a launchctl agent:
 	1.	Create the LaunchAgents Directory (if it doesn’t exist):
@@ -181,11 +184,11 @@ If you need to unload the agent in the future:
 launchctl unload ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
-Usage
+# Usage
 
 You can run the Music Genre Updater manually or rely on the scheduled execution via launchctl.
 
-Running the Script Manually
+## Running the Script Manually
 
 Activate your virtual environment and execute the script:
 
@@ -194,13 +197,13 @@ source venv/bin/activate
 python music_genre_updater.py
 ```
 
-Command-Line Arguments
+## Command-Line Arguments
 
 The script supports several command-line arguments to customize its behavior:
 	•	--force: Force the execution, bypassing incremental checks.
 	•	clean_artist --artist "Artist Name": Clean track and album names for a specified artist.
 
-Examples
+## Examples
 
 Force Run the Genre Update:
 
@@ -214,9 +217,9 @@ Clean Track and Album Names for a Specific Artist:
 python music_genre_updater.py clean_artist --artist "Rabbit Junk"
 ```
 
-Configuration Details
+# Configuration Details
 
-config.yaml
+## config.yaml
 
 The config.yaml file contains all the configuration settings for the Music Genre Updater. Below is a detailed explanation of each parameter:
 
@@ -286,7 +289,7 @@ Parameter Descriptions:
 	•	cleaning.album_suffixes_to_remove: Suffixes to remove from album names.
 	•	exceptions.track_cleaning: List of artist and album combinations to exclude from cleaning.
 
-Logging
+# Logging
 
 The project utilizes two loggers for comprehensive logging:
 	1.	Console Logger (console_logger):
@@ -296,22 +299,22 @@ The project utilizes two loggers for comprehensive logging:
 	•	Logs messages with a severity level of ERROR to a specified log file.
 	•	Helps in diagnosing issues by providing detailed error information.
 
-Log Configuration:
+## Log Configuration:
 
 Logging is configured in the logger.py module. The ColoredFormatter class adds color to log messages based on their severity:
 	•	Errors: Displayed in red.
 	•	Info Messages: Displayed in the default console color.
 
-Log Files:
+## Log Files:
 	•	Standard Output Log: Defined by StandardOutPath in the plist file (e.g., music_genre_updater_stdout.log).
 	•	Standard Error Log: Defined by StandardErrorPath in the plist file (e.g., music_genre_updater_stderr.log).
 	•	Main Log File: Defined in config.yaml (log_file).
 
-Auxiliary Scripts
+# Auxiliary Scripts
 
 The project includes AppleScript scripts to interact with Apple Music. These scripts are essential for fetching track information and updating track properties.
 
-AppleScript Scripts
+## AppleScript Scripts
 	1.	fetch_tracks.applescript:
 	•	Purpose: Retrieves information about tracks from Apple Music.
 	•	Functionality:
@@ -331,7 +334,7 @@ Location:
 Usage:
 	•	The Python script music_genre_updater.py invokes these AppleScript scripts using the osascript command to perform necessary operations on the Apple Music library.
 
-Contributing
+# Contributing
 
 Contributions to the Music Genre Updater are welcome! To contribute, please follow these steps:
 	1.	Fork the Repository:
@@ -371,11 +374,11 @@ Please ensure your contributions adhere to the following guidelines:
 	•	Write clear and concise commit messages.
 	•	Include relevant documentation or tests for your changes.
 
-License
+# License
 
 This project is licensed under the MIT License. You are free to use, modify, and distribute this software as per the terms of the license.
 
-Contact
+# Contact
 
 For any questions, suggestions, or support, please reach out:
 	•	Author: Roman Borodavkin
@@ -385,7 +388,7 @@ For any questions, suggestions, or support, please reach out:
 
 Note: This project is intended for personal use. Before using the scripts, ensure you understand how they operate to prevent unintended changes to your Apple Music library.
 
-Troubleshooting
+# Troubleshooting
 
 If you encounter issues while setting up or running the Music Genre Updater, consider the following troubleshooting steps:
 	1.	Check Log Files:
@@ -433,8 +436,7 @@ launchctl load ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 python3 --version
 ```
 
-
-FAQ
+# FAQ
 
 Q1: Can I customize the frequency of genre updates?
 
