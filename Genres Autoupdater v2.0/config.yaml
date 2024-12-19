@@ -36,6 +36,7 @@ cleaning:
   remaster_keywords:
     - remaster
     - remastered
+    - re-recording
   album_suffixes_to_remove:
     - ' - Single'
     - ' — EP'
