@@ -19,7 +19,7 @@ from scripts.logger import get_loggers
 from scripts.reports import save_to_csv, save_changes_report
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.yaml")
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
 CACHE_TTL = 300  # 5 minutes
 
 
