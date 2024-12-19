@@ -1,5 +1,5 @@
-[image](https://github.com/user-attachments/assets/79fc52fd-dfce-4fbf-84d3-e4b8e66b7a21)
 
+![image](https://github.com/user-attachments/assets/ec7fc8b7-5825-4eb5-81ad-0dc5d9fb3755)
 
 # Music Genre Updater
 
