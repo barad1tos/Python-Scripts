@@ -136,18 +136,24 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
     return artists
 
 
-def determine_dominant_genre_for_artist(tracks: List[Dict[str, str]]) -> str:
+def determine_dominant_genre_for_artist(existing_tracks: List[Dict[str, str]]) -> str:
     """
-    Determines the dominant genre for an artist based on track count.
-
-    :param tracks: List of track dictionaries for an artist.
+    Determines the dominant genre for an artist based on existing track counts.
+    
+    :param existing_tracks: List of existing track dictionaries for an artist.
     :return: Dominant genre as a string.
     """
     genre_count = {}
-    for track in tracks:
+    for track in existing_tracks:
         genre = track.get("genre") or "Unknown"
         genre_count[genre] = genre_count.get(genre, 0) + 1
-    return max(genre_count, key=genre_count.get) if genre_count else "Unknown"
+
+    if not genre_count:
+        return "Unknown"
+
+    # Determine the genre with the largest number of tracks
+    dominant_genre = max(genre_count, key=genre_count.get)
+    return dominant_genre
 
 
 def is_music_app_running() -> bool:
@@ -374,11 +380,12 @@ async def update_track_async(
     return success
 
 
-async def update_genres_by_artist_async(tracks: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_time: datetime) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Updates track genres asynchronously, grouping them by artist.
-
+    
     :param tracks: List of all track dictionaries.
+    :param last_run_time: The datetime of the last incremental run.
     :return: Tuple containing list of updated tracks and list of changes.
     """
     grouped = group_tracks_by_artist(tracks)
@@ -412,13 +419,30 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]]) -> Tuple[L
 
     tasks = []
     for artist, artist_tracks in grouped.items():
-        dom_genre = determine_dominant_genre_for_artist(artist_tracks)
-        console_logger.info(
-            f"Artist: {artist}, Dominant Genre: {dom_genre}, Tracks: {len(artist_tracks)}"
-        )
-        for track in artist_tracks:
-            task = asyncio.create_task(process_track(track, dom_genre))
-            tasks.append(task)
+        # Divide tracks into existing and new ones
+        existing_tracks = [track for track in artist_tracks if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") <= last_run_time]
+        new_tracks = [track for track in artist_tracks if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") > last_run_time]
+
+        if existing_tracks:
+            dom_genre = determine_dominant_genre_for_artist(existing_tracks)
+            console_logger.info(
+                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on {len(existing_tracks)} existing tracks), Total Tracks: {len(artist_tracks)}"
+            )
+            # Assigning a dominant genre to new tracks
+            for track in new_tracks:
+                if track.get("genre", "Unknown") != dom_genre and track.get("trackStatus", "unknown") == "subscription":
+                    task = asyncio.create_task(process_track(track, dom_genre))
+                    tasks.append(task)
+        else:
+            # If there are no existing tracks, determine the dominant genre based on all tracks
+            dom_genre = determine_dominant_genre_for_artist(artist_tracks)
+            console_logger.info(
+                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on all {len(artist_tracks)} tracks)"
+            )
+            for track in artist_tracks:
+                if track.get("genre", "Unknown") != dom_genre and track.get("trackStatus", "unknown") == "subscription":
+                    task = asyncio.create_task(process_track(track, dom_genre))
+                    tasks.append(task)
 
     await asyncio.gather(*tasks)
 
@@ -541,6 +565,23 @@ async def main_async(args: argparse.Namespace) -> None:
             console_logger.info("Incremental interval not reached. Skipping.")
             return
 
+        # Load the last startup time
+        last_run_time_str = None
+        last_run_file = CONFIG.get("last_incremental_run_file")
+        if os.path.exists(last_run_file):
+            with open(last_run_file, "r", encoding="utf-8") as f:
+                last_run_time_str = f.read().strip()
+
+        if last_run_time_str:
+            try:
+                last_run_time = datetime.strptime(last_run_time_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                console_logger.warning(f"Invalid date format in {last_run_file}. Proceeding as if no previous run.")
+                last_run_time = datetime.min
+        else:
+            console_logger.info("Last incremental run time not found. Considering all tracks as existing.")
+            last_run_time = datetime.min
+
         test_artists = CONFIG.get("test_artists", [])
         if test_artists:
             all_tracks = []
@@ -608,7 +649,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 console_logger.info("No track names or album names needed cleaning.")
 
         # Renewing genres
-        updated_tracks, changes_log = await update_genres_by_artist_async(all_tracks)
+        updated_tracks, changes_log = await update_genres_by_artist_async(all_tracks, last_run_time)
         if updated_tracks:
             save_to_csv(all_tracks, CONFIG["csv_output_file"], console_logger, error_logger)
             save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
