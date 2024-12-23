@@ -17,12 +17,14 @@ import asyncio
 
 from scripts.logger import get_loggers
 from scripts.reports import save_to_csv, save_changes_report
+from scripts.analytics import Analytics
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
 CACHE_TTL = 300  # 5 minutes
 
 
+# Load the configuration
 def load_config(config_path: str) -> Dict[str, Any]:
     """
     Loads the YAML configuration file.
@@ -41,7 +43,17 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+# Initialize the configuration
+CONFIG = load_config(CONFIG_PATH)
 
+# Initialize the loggers
+# This returns a tuple of three loggers: (console_logger, error_logger, analytics_logger)
+console_logger, error_logger, analytics_logger = get_loggers(
+    CONFIG["log_file"],
+    CONFIG.get("analytics", {}).get("analytics_log_file")  # path to analytics.log if present
+)
+
+# Check the necessary paths
 def check_paths(paths: List[str], error_logger: Any) -> None:
     """
     Checks the existence and read access of provided paths.
@@ -57,7 +69,21 @@ def check_paths(paths: List[str], error_logger: Any) -> None:
             print(f"No read access to {path}.", file=sys.stderr)
             sys.exit(1)
 
+check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger=logging.getLogger("error_logger"))
 
+# Initialize analytics
+# We pass analytics_logger to the Analytics class so it can log to analytics.log
+analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
+
+# Initialize the cache
+fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
+
+# Add analytics decorator to functions
+def get_decorator(event_type: str):
+    return analytics.decorator(event_type)
+
+# Use decorators for functions
+@get_decorator("AppleScript Execution")
 async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
     """
     Executes an AppleScript asynchronously and returns its output.
@@ -92,6 +118,7 @@ async def run_applescript_async(script_name: str, args: Optional[List[str]] = No
         return None
 
 
+@get_decorator("Parse Tracks")
 def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     """
     Parses the output from AppleScript and returns a list of tracks.
@@ -122,6 +149,7 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     return tracks
 
 
+@get_decorator("Group Tracks by Artist")
 def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
     Groups tracks by artist.
@@ -136,10 +164,11 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
     return artists
 
 
+@get_decorator("Determine Dominant Genre")
 def determine_dominant_genre_for_artist(existing_tracks: List[Dict[str, str]]) -> str:
     """
     Determines the dominant genre for an artist based on existing track counts.
-    
+
     :param existing_tracks: List of existing track dictionaries for an artist.
     :return: Dominant genre as a string.
     """
@@ -156,6 +185,7 @@ def determine_dominant_genre_for_artist(existing_tracks: List[Dict[str, str]]) -
     return dominant_genre
 
 
+@get_decorator("Check Music App Running")
 def is_music_app_running() -> bool:
     """
     Checks if the Music.app is currently running.
@@ -171,7 +201,15 @@ def is_music_app_running() -> bool:
         return False
 
 
-def remove_parentheses_with_keywords(name, keywords):
+@get_decorator("Remove Parentheses with Keywords")
+def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
+    """
+    Removes parentheses and their contents if they contain specified keywords.
+
+    :param name: The string to clean.
+    :param keywords: List of keywords to check within parentheses.
+    :return: Cleaned string.
+    """
     try:
         logging.info(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
         # Removes brackets and their contents if they contain one of the keywords.
@@ -226,6 +264,7 @@ def remove_parentheses_with_keywords(name, keywords):
         return name
 
 
+@get_decorator("Clean Names")
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
     """
     Cleans track and album names by removing specific keywords and album suffixes,
@@ -276,6 +315,7 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
     return cleaned_track_name, cleaned_album_name
 
 
+@get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
     """
     Determines if an incremental update can be performed based on the last run time.
@@ -314,6 +354,7 @@ def can_run_incremental(force_run: bool = False) -> bool:
         return False
 
 
+@get_decorator("Update Last Incremental Run")
 def update_last_incremental_run() -> None:
     """
     Updates the last incremental run timestamp in the configuration file.
@@ -323,6 +364,7 @@ def update_last_incremental_run() -> None:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
 
+@get_decorator("Update Track")
 async def update_track_async(
     track_id: str,
     new_track_name: Optional[str] = None,
@@ -380,6 +422,7 @@ async def update_track_async(
     return success
 
 
+@get_decorator("Update Genres by Artist")
 async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_time: datetime) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Updates track genres asynchronously, grouping them by artist.
@@ -393,6 +436,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     changes_log = []
     semaphore = asyncio.Semaphore(10)  # Limit of 10 simultaneous updates
 
+    @get_decorator("Process Track")
     async def process_track(track: Dict[str, str], dom_genre: str) -> None:
         old_genre = track.get("genre", "Unknown")
         track_id = track.get("id", "")
@@ -420,8 +464,14 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     tasks = []
     for artist, artist_tracks in grouped.items():
         # Divide tracks into existing and new ones
-        existing_tracks = [track for track in artist_tracks if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") <= last_run_time]
-        new_tracks = [track for track in artist_tracks if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") > last_run_time]
+        existing_tracks = [
+            track for track in artist_tracks
+            if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") <= last_run_time
+        ]
+        new_tracks = [
+            track for track in artist_tracks
+            if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") > last_run_time
+        ]
 
         if existing_tracks:
             dom_genre = determine_dominant_genre_for_artist(existing_tracks)
@@ -449,6 +499,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     return updated_tracks, changes_log
 
 
+@get_decorator("Process Artist Tracks")
 async def process_artist_tracks_async(artist: str) -> None:
     """
     Asynchronously processes tracks for a specific artist: cleans names and updates them.
@@ -511,6 +562,7 @@ async def process_artist_tracks_async(artist: str) -> None:
         )
 
 
+@get_decorator("Fetch Tracks")
 async def fetch_tracks_async(artist: Optional[str] = None) -> List[Dict[str, str]]:
     """
     Asynchronously retrieves tracks for a specific artist or all tracks.
@@ -556,7 +608,28 @@ async def main_async(args: argparse.Namespace) -> None:
     :param args: Parsed command-line arguments.
     """
     if args.command == "clean_artist":
-        await process_artist_tracks_async(args.artist)
+        # Loading the artist's tracks
+        artist = args.artist
+        console_logger.info(f"Running in 'clean_artist' mode for artist='{artist}'")
+        tracks = await fetch_tracks_async(artist=artist)
+        if not tracks:
+            console_logger.warning(f"No tracks found for artist: {artist}")
+            return
+
+        # Call the name cleaning process
+        await process_artist_tracks_async(artist)
+        
+        # Calling the genre update. Assume that last_run_time = datetime.min, to treat all tracks as existing.
+        last_run_time = datetime.min
+        updated_tracks, changes_log = await update_genres_by_artist_async(tracks, last_run_time)
+        if updated_tracks:
+            # Saving results
+            save_to_csv(tracks, CONFIG["csv_output_file"], console_logger, error_logger)
+            save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
+            console_logger.info(f"Updated {len(updated_tracks)} tracks with new genres (clean_artist).")
+        else:
+            console_logger.info("No tracks needed genre updates (clean_artist).")
+
         return
     else:
         # Execute standard logic
@@ -601,6 +674,7 @@ async def main_async(args: argparse.Namespace) -> None:
             changes_log = []
             semaphore = asyncio.Semaphore(10)  # Limit to 10 simultaneous cleanings
 
+            @get_decorator("Clean Track")
             async def clean_track(track: Dict[str, str]) -> None:
                 orig_name = track.get("name", "")
                 orig_album = track.get("album", "")
@@ -683,20 +757,12 @@ def main() -> None:
         console_logger.info("Script interrupted by user.")
     except Exception as e:
         error_logger.error(f"An unexpected error occurred: {e}")
+        # Generate analytics reports after executing the script
+        analytics.generate_reports()
         sys.exit(1)
 
+    # Generate analytics reports even if there's no exception
+    analytics.generate_reports()
 
 if __name__ == "__main__":
-    # Load configuration
-    CONFIG = load_config(CONFIG_PATH)
-
-    # Check necessary paths
-    check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger=logging.getLogger("error_logger"))
-
-    # Initialize loggers
-    console_logger, error_logger = get_loggers(CONFIG["log_file"])
-
-    # Initialize cache
-    fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
-
     main()
