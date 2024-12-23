@@ -307,15 +307,15 @@ Parameter Descriptions:
 
 The project utilizes two loggers for comprehensive logging:
 1.	Console Logger (console_logger):
-- Logs messages with a severity level of INFO and above to the console.
-- Provides real-time feedback during script execution.
+  - Logs messages with a severity level of INFO and above to the console.
+  - Provides real-time feedback during script execution.
 2.	Error Logger (error_logger):
-- Logs messages with a severity level of ERROR to a specified log file.
-- Helps in diagnosing issues by providing detailed error information.
+  - Logs messages with a severity level of ERROR to a specified log file.
+  - Helps in diagnosing issues by providing detailed error information.
 3.	Analytics Logger (analytics_logger):
--	Logs information related to function durations, overhead, and call counts.
--	If analytics_log_file is configured in config.yaml, logs are written to that file using a rotating file handler.
--	Otherwise, analytics logs go to the console.
+  -	Logs information related to function durations, overhead, and call counts.
+  -	If analytics_log_file is configured in config.yaml, logs are written to that file using a rotating file handler.
+  -	Otherwise, analytics logs go to the console.
 
 ## Log Configuration:
 
@@ -344,17 +344,17 @@ The project includes AppleScript scripts to interact with Apple Music. These scr
 
 ## AppleScript Scripts
 1.	fetch_tracks.applescript:
-- Purpose: Retrieves information about tracks from Apple Music.
-- Functionality:
-  - Fetches track details such as ID, name, artist, album, genre, date added, and status.
-  - Supports filtering by a specific artist if provided as an argument.
-  - Formats the output in a structured manner for the Python script to parse.
+  - Purpose: Retrieves information about tracks from Apple Music.
+  - Functionality:
+    - Fetches track details such as ID, name, artist, album, genre, date added, and status.
+    - Supports filtering by a specific artist if provided as an argument.
+    - Formats the output in a structured manner for the Python script to parse.
 2.	update_property.applescript:
-- Purpose: Updates specified properties (name, album, genre) of a track in Apple Music.
-- Functionality:
-  - Takes a track ID, property name, and new property value as arguments.
-  - Updates the specified property of the given track.
-  - Returns a success or error message based on the operation outcome.
+  - Purpose: Updates specified properties (name, album, genre) of a track in Apple Music.
+  - Functionality:
+    - Takes a track ID, property name, and new property value as arguments.
+    - Updates the specified property of the given track.
+    - Returns a success or error message based on the operation outcome.
 
 Location:
 - Both scripts are stored in the directory specified by the apple_scripts_dir parameter in config.yaml.
@@ -420,14 +420,14 @@ Note: This project is intended for personal use. Before using the scripts, ensur
 
 If you encounter issues while setting up or running the Music Genre Updater, consider the following troubleshooting steps:
 1.	Check Log Files:
-- Review the log files specified in config.yaml and the plist file for error messages.
+  - Review the log files specified in config.yaml and the plist file for error messages.
 2.	Verify Paths:
-- Ensure all paths in config.yaml and the plist file are correct and accessible.
+  - Ensure all paths in config.yaml and the plist file are correct and accessible.
 3.	Permissions:
-- Confirm that the script has the necessary permissions to read and write to the specified directories and files.
+  - Confirm that the script has the necessary permissions to read and write to the specified directories and files.
 4.	AppleScript Execution:
-- Test the AppleScript scripts manually to ensure they function correctly.
-- Open the Terminal and run:
+  - Test the AppleScript scripts manually to ensure they function correctly.
+  - Open the Terminal and run:
 
 ```bash
 osascript /path/to/fetch_tracks.applescript
@@ -436,21 +436,21 @@ osascript /path/to/fetch_tracks.applescript
 ```
 
 5.	Python Dependencies:
-- Ensure all Python dependencies are installed correctly within your virtual environment.
-- Reinstall dependencies if necessary:
+  - Ensure all Python dependencies are installed correctly within your virtual environment.
+  - Reinstall dependencies if necessary:
 
 ```bash
 pip install --upgrade --force-reinstall -r requirements.txt
 ```
 
 6.	Launch Agent Status:
-- Verify that the launchctl agent is loaded and running:
+  - Verify that the launchctl agent is loaded and running:
 
 ```bash
 launchctl list | grep com.barad1tos.MusicGenreUpdater
 ```
 
-- If not running, reload the agent:
+  - If not running, reload the agent:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
@@ -458,10 +458,10 @@ launchctl load ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
 7.	Python Version:
-- Ensure you are using Python 3.8 or higher:
-```bash
-python3 --version
-```
+  - Ensure you are using Python 3.8 or higher:
+  ```bash
+  python3 --version
+  ```
 
 # FAQ
 
