@@ -1,5 +1,8 @@
-# reports.py
-# This module provides functions for generating CSV and HTML reports
+"""
+Reports Module
+
+Provides functions for generating CSV/HTML reports and handling track list sync.
+"""
 
 import os
 import csv
@@ -45,11 +48,11 @@ def save_to_csv(
     error_logger: Optional[Logger] = None
 ) -> None:
     """
-    Saves a list of tracks to a CSV file.
+    Save a list of tracks to a CSV file.
 
     :param tracks: List of track dictionaries to save.
     :param file_path: Path to the CSV file.
-    :param console_logger: Logger for informational messages.
+    :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
     """
     if console_logger is None:
@@ -76,11 +79,11 @@ def save_changes_report(
     error_logger: Optional[Logger] = None
 ) -> None:
     """
-    Saves a list of changes to a CSV report file.
+    Save a list of changes to a CSV report file.
 
-    :param changes: List of change dictionaries to save.
+    :param changes: List of change dictionaries.
     :param file_path: Path to the CSV report file.
-    :param console_logger: Logger for informational messages.
+    :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
     """
     if console_logger is None:
@@ -111,16 +114,17 @@ def save_html_report(
     group_successful_short_calls: bool = False
 ) -> None:
     """
-    Saves analytics events to an HTML report, with color-coding based on duration.
-    
+    Save analytics events to an HTML report, color-coding by duration, 
+    and optionally grouping short+successful calls.
+
     :param events: List of event dictionaries.
-    :param call_counts: Dictionary of function call counts.
-    :param success_counts: Dictionary of function success counts.
-    :param decorator_overhead: Dictionary of decorator overhead times.
-    :param config: Configuration dictionary with analytics settings.
+    :param call_counts: Dict of function call counts.
+    :param success_counts: Dict of function success counts.
+    :param decorator_overhead: Dict of decorator overhead times.
+    :param config: Configuration dict with analytics settings.
     :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
-    :param group_successful_short_calls: If True, group short & successful calls to reduce lines in the final HTML.
+    :param group_successful_short_calls: Whether to group short+successful calls to reduce line count.
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
@@ -317,10 +321,10 @@ def save_html_report(
 
 def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
     """
-    Loads the track_list.csv file into a dictionary.
+    Load track_list.csv into a dictionary keyed by track ID.
 
-    :param csv_path: Path to the track_list.csv file.
-    :return: Dictionary of track data.
+    :param csv_path: Path to the CSV file.
+    :return: Dict of track data.
     """
     track_map: Dict[str, Dict[str, str]] = {}
     if not os.path.exists(csv_path):
@@ -354,16 +358,16 @@ def sync_track_list_with_current(
     error_logger: Logger
 ) -> None:
     """
-    Synchronizes track_list.csv with the current list of tracks from AppleScript (FULL sync of all fields).
+    Synchronize track_list.csv with current AppleScript data (FULL sync of all fields).
 
-    1) Loads the current CSV into a dict (csv_map).
-    2) Removes any tracks from csv_map that are not in all_tracks.
-    3) Adds/updates tracks from all_tracks (including name, artist, album, genre, dateAdded, trackStatus).
-    4) Writes the final merged dict back to track_list.csv.
+    1) Load the existing CSV into a dict (csv_map).
+    2) Remove tracks not in all_tracks.
+    3) Add/update tracks from all_tracks.
+    4) Rewrite CSV fully.
 
-    :param all_tracks: List of dictionaries representing all tracks from AppleScript.
+    :param all_tracks: List of all track dictionaries from AppleScript.
     :param csv_path: Path to the track_list.csv file.
-    :param console_logger: Logger for informational messages.
+    :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
     """
     csv_map = load_track_list(csv_path)

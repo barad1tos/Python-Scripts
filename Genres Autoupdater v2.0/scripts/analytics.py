@@ -1,4 +1,9 @@
-# analytics.py
+"""
+Analytics Module
+
+Provides decorators to measure function execution time, 
+track success/failure, and generate an HTML report for analytics.
+"""
 
 import time
 import asyncio
@@ -11,9 +16,18 @@ from scripts.reports import save_html_report
 
 
 class Analytics:
+    """
+    Collects and logs analytics events for function calls.
+    """
+
     def __init__(self, config: Dict[str, Any], console_logger, error_logger, analytics_logger):
         """
         Initializes the Analytics class with the configuration and loggers.
+
+        :param config: Configuration dictionary.
+        :param console_logger: Logger for console messages.
+        :param error_logger: Logger for error messages.
+        :param analytics_logger: Logger for analytics messages.
         """
         self.events: List[Dict[str, Any]] = []
         self.call_counts: Dict[str, int] = {}
@@ -35,12 +49,17 @@ class Analytics:
         end_time: float,
         duration: float,
         success: bool
-    ):
+    ) -> None:
         """
-        Writes the event to the self.events list,
-        and does minimal logging to the console and analytics.log
+        Write the event to self.events and do minimal logging.
+
+        :param function_name: Name of the function being called.
+        :param event_type: Type/description of the event.
+        :param start_time: Epoch start time.
+        :param end_time: Epoch end time.
+        :param duration: Duration (seconds).
+        :param success: Whether function succeeded or not.
         """
-        # Save the event (for HTML report)
         self.events.append({
             "Function": function_name,
             "Event Type": event_type,
@@ -54,7 +73,7 @@ class Analytics:
         if success:
             self.success_counts[function_name] = self.success_counts.get(function_name, 0) + 1
 
-        # Minimalistic logging
+        # Minimal logging
         if success:
             # If the call is successful; we log it at DEBUG level for minimal spam
             msg = f"[A] {function_name} ({event_type}) took {duration:.3f}s (OK)."
@@ -68,12 +87,21 @@ class Analytics:
             self.console_logger.warning(msg)
             self.analytics_logger.warning(msg)
 
-    def log_decorator_overhead(self, function_name: str, overhead: float):
-        self.decorator_overhead[function_name] = self.decorator_overhead.get(function_name, 0) + overhead
+    def log_decorator_overhead(self, function_name: str, overhead: float) -> None:
+        """
+        Accumulate overhead time introduced by the decorator.
+        """
+        self.decorator_overhead[function_name] = (
+            self.decorator_overhead.get(function_name, 0.0) + overhead
+        )
 
+    def decorator(self, event_type: str) -> Callable:
+        """
+        Return a decorator function that measures execution time and logs events.
 
-    def decorator(self, event_type: str):
-        def decorator_function(func: Callable):
+        :param event_type: The type of event to log.
+        """
+        def decorator_function(func: Callable) -> Callable:
             if asyncio.iscoroutinefunction(func):
                 @wraps(func)
                 async def async_wrapper(*args, **kwargs):
@@ -122,11 +150,10 @@ class Analytics:
                 return sync_wrapper
         return decorator_function
 
-
-    def generate_reports(self):
+    def generate_reports(self) -> None:
         """
-        Generates HTML reports based on the collected data, using an optimized approach 
-        to reduce large file size (grouping short & successful calls).
+        Generate an optimized HTML report, grouping short & successful calls 
+        to reduce file size.
         """
         try:
             save_html_report(
