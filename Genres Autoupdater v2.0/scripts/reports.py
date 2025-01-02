@@ -107,18 +107,20 @@ def save_html_report(
     decorator_overhead: Dict[str, float],
     config: Dict[str, Any],
     console_logger: Optional[Logger] = None,
-    error_logger: Optional[Logger] = None
+    error_logger: Optional[Logger] = None,
+    group_successful_short_calls: bool = False
 ) -> None:
     """
     Saves analytics events to an HTML report, with color-coding based on duration.
-
+    
     :param events: List of event dictionaries.
     :param call_counts: Dictionary of function call counts.
     :param success_counts: Dictionary of function success counts.
-    :param decorator_overhead: Dictionary of decorator overhead per function.
-    :param config: Configuration dictionary.
-    :param console_logger: Logger for informational messages.
+    :param decorator_overhead: Dictionary of decorator overhead times.
+    :param config: Configuration dictionary with analytics settings.
+    :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
+    :param group_successful_short_calls: If True, group short & successful calls to reduce lines in the final HTML.
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
@@ -151,7 +153,33 @@ def save_html_report(
         else:
             return colors.get("long", "#FFB6C1")
 
-    # Start building HTML
+    # 1) Split events into “long or error” vs. “short & successful”
+    grouped_short_success = {}
+    big_or_fail_events = []
+    short_max = duration_thresholds.get("short_max", 2)
+
+    if group_successful_short_calls:
+        for ev in events:
+            duration = ev["Duration (s)"]
+            success = ev["Success"]
+            if (not success) or (duration > short_max):
+                # Error or long call => detail
+                big_or_fail_events.append(ev)
+            else:
+                # short + success => group
+                key = (ev["Function"], ev["Event Type"])
+                if key not in grouped_short_success:
+                    grouped_short_success[key] = {
+                        "count": 0,
+                        "total_duration": 0.0
+                    }
+                grouped_short_success[key]["count"] += 1
+                grouped_short_success[key]["total_duration"] += duration
+    else:
+        # No grouping => everything is detailed
+        big_or_fail_events = events
+
+    # Build HTML
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -162,19 +190,59 @@ def save_html_report(
             table {{
                 border-collapse: collapse;
                 width: 100%;
+                font-size: 0.95em;
             }}
             th, td {{
                 border: 1px solid #dddddd;
                 text-align: left;
-                padding: 8px;
+                padding: 6px;
             }}
             th {{
                 background-color: #f2f2f2;
+            }}
+            .error {{
+                background-color: #ffcccc;
             }}
         </style>
     </head>
     <body>
         <h2>Analytics Report for {date_str}</h2>
+
+        <h3>Grouped Short & Successful Calls</h3>
+        <table>
+            <tr>
+                <th>Function</th>
+                <th>Event Type</th>
+                <th>Count</th>
+                <th>Avg Duration (s)</th>
+                <th>Total Duration (s)</th>
+            </tr>
+    """
+
+    # 2) Grouped table
+    if group_successful_short_calls:
+        for (fun, evt), val in grouped_short_success.items():
+            cnt = val["count"]
+            total_dur = val["total_duration"]
+            avg_dur = round(total_dur / cnt, 4)
+            html_content += f"""
+            <tr>
+                <td>{fun}</td>
+                <td>{evt}</td>
+                <td>{cnt}</td>
+                <td>{avg_dur}</td>
+                <td>{round(total_dur, 4)}</td>
+            </tr>
+            """
+    else:
+        html_content += """
+            <tr><td colspan="5">No grouping enabled.</td></tr>
+        """
+
+    html_content += """
+        </table>
+
+        <h3>Detailed Calls (Errors or Long Calls)</h3>
         <table>
             <tr>
                 <th>Function</th>
@@ -186,16 +254,18 @@ def save_html_report(
             </tr>
     """
 
-    for event in events:
-        duration = event["Duration (s)"]
+    # 3) Detailed table for big_or_fail_events
+    for ev in big_or_fail_events:
+        duration = ev["Duration (s)"]
         color = get_color(duration)
-        success = "Yes" if event["Success"] else "No"
+        success = "Yes" if ev["Success"] else "No"
+        row_class = "error" if not ev["Success"] else ""
         html_content += f"""
-            <tr>
-                <td>{event['Function']}</td>
-                <td>{event['Event Type']}</td>
-                <td>{event['Start Time']}</td>
-                <td>{event['End Time']}</td>
+            <tr class="{row_class}">
+                <td>{ev['Function']}</td>
+                <td>{ev['Event Type']}</td>
+                <td>{ev['Start Time']}</td>
+                <td>{ev['End Time']}</td>
                 <td style="background-color: {color};">{duration}</td>
                 <td>{success}</td>
             </tr>
@@ -203,6 +273,7 @@ def save_html_report(
 
     html_content += """
         </table>
+
         <h3>Summary</h3>
         <table>
             <tr>
@@ -214,15 +285,16 @@ def save_html_report(
             </tr>
     """
 
+    # 4) Summary statistics
     for function, count in call_counts.items():
-        success = success_counts.get(function, 0)
-        success_rate = (success / count * 100) if count > 0 else 0
+        succ = success_counts.get(function, 0)
+        success_rate = (succ / count * 100) if count else 0
         overhead = decorator_overhead.get(function, 0)
         html_content += f"""
             <tr>
                 <td>{function}</td>
                 <td>{count}</td>
-                <td>{success}</td>
+                <td>{succ}</td>
                 <td>{success_rate:.2f}</td>
                 <td>{round(overhead, 4)}</td>
             </tr>
@@ -234,11 +306,11 @@ def save_html_report(
     </html>
     """
 
-    # Save HTML to file
+    # 5) Save HTML to file
     try:
         with open(report_file, "w", encoding="utf-8") as f:
             f.write(html_content)
-        console_logger.info(f"Analytics HTML report saved to {report_file}.")
+        console_logger.info(f"Analytics HTML report saved to {report_file}. (Optimized)")
     except IOError as e:
         error_logger.error(f"Failed to save HTML report: {e}")
 
