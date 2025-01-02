@@ -165,24 +165,25 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
 
 
 @get_decorator("Determine Dominant Genre")
-def determine_dominant_genre_for_artist(existing_tracks: List[Dict[str, str]]) -> str:
+def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
-    Determines the dominant genre for an artist based on existing track counts.
-
-    :param existing_tracks: List of existing track dictionaries for an artist.
-    :return: Dominant genre as a string.
+    Determines the "dominant" genre for an artist by picking the genre of the oldest track.
+    If there are no tracks, returns "Unknown".
     """
-    genre_count = {}
-    for track in existing_tracks:
-        genre = track.get("genre") or "Unknown"
-        genre_count[genre] = genre_count.get(genre, 0) + 1
-
-    if not genre_count:
+    if not artist_tracks:
         return "Unknown"
 
-    # Determine the genre with the largest number of tracks
-    dominant_genre = max(genre_count, key=genre_count.get)
-    return dominant_genre
+    try:
+        # Find the track with the smallest (earliest) date dateAdded
+        oldest_track = min(
+            artist_tracks,
+            key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        )
+        return oldest_track.get("genre") or "Unknown"
+    except Exception as e:
+        # If suddenly dateAdded has an incorrect format
+        logging.error(f"Error in determine_dominant_genre_for_artist (earliest track): {e}")
+        return "Unknown"
 
 
 @get_decorator("Check Music App Running")
@@ -431,10 +432,15 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     :param last_run_time: The datetime of the last incremental run.
     :return: Tuple containing list of updated tracks and list of changes.
     """
+    # Group tracks by artist
     grouped = group_tracks_by_artist(tracks)
+
     updated_tracks = []
     changes_log = []
-    semaphore = asyncio.Semaphore(10)  # Limit of 10 simultaneous updates
+
+    # Dynamically take the concurrency limit from the config
+    concurrency_limit = CONFIG.get("max_concurrency", 10)
+    semaphore = asyncio.Semaphore(concurrency_limit)
 
     @get_decorator("Process Track")
     async def process_track(track: Dict[str, str], dom_genre: str) -> None:
@@ -442,6 +448,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
         track_id = track.get("id", "")
         status = track.get("trackStatus", "unknown")
 
+        # Update the genre of “new” tracks if they are “subscription” and have a different genre
         if track_id and old_genre != dom_genre and status == "subscription":
             console_logger.info(
                 f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})"
@@ -463,37 +470,47 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
 
     tasks = []
     for artist, artist_tracks in grouped.items():
-        # Divide tracks into existing and new ones
+        # Separate into “old” and “new” tracks based on last_run_time
         existing_tracks = [
-            track for track in artist_tracks
-            if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") <= last_run_time
+            t for t in artist_tracks
+            if datetime.strptime(t.get("dateAdded", ""), "%Y-%m-%d %H:%M:%S") <= last_run_time
         ]
         new_tracks = [
-            track for track in artist_tracks
-            if datetime.strptime(track.get("dateAdded"), "%Y-%m-%d %H:%M:%S") > last_run_time
+            t for t in artist_tracks
+            if datetime.strptime(t.get("dateAdded", ""), "%Y-%m-%d %H:%M:%S") > last_run_time
         ]
 
         if existing_tracks:
+            # If there are “old” tracks, we determine the dominant genre among them
             dom_genre = determine_dominant_genre_for_artist(existing_tracks)
             console_logger.info(
-                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on {len(existing_tracks)} existing tracks), Total Tracks: {len(artist_tracks)}"
+                f"Artist: {artist}, Dominant Genre: {dom_genre} "
+                f"(based on {len(existing_tracks)} existing tracks), Total Tracks: {len(artist_tracks)}"
             )
-            # Assigning a dominant genre to new tracks
+            # Assign this genre to “new” tracks
             for track in new_tracks:
-                if track.get("genre", "Unknown") != dom_genre and track.get("trackStatus", "unknown") == "subscription":
+                if (
+                    track.get("genre", "Unknown") != dom_genre 
+                    and track.get("trackStatus", "unknown") == "subscription"
+                ):
                     task = asyncio.create_task(process_track(track, dom_genre))
                     tasks.append(task)
         else:
-            # If there are no existing tracks, determine the dominant genre based on all tracks
+            # If there are no “old” tracks, look at all the tracks of the artist
             dom_genre = determine_dominant_genre_for_artist(artist_tracks)
             console_logger.info(
-                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on all {len(artist_tracks)} tracks)"
+                f"Artist: {artist}, Dominant Genre: {dom_genre} "
+                f"(based on all {len(artist_tracks)} tracks)"
             )
             for track in artist_tracks:
-                if track.get("genre", "Unknown") != dom_genre and track.get("trackStatus", "unknown") == "subscription":
+                if (
+                    track.get("genre", "Unknown") != dom_genre
+                    and track.get("trackStatus", "unknown") == "subscription"
+                ):
                     task = asyncio.create_task(process_track(track, dom_genre))
                     tasks.append(task)
 
+    # Perform all genre change tasks asynchronously
     await asyncio.gather(*tasks)
 
     return updated_tracks, changes_log
@@ -672,7 +689,8 @@ async def main_async(args: argparse.Namespace) -> None:
         if force_run:
             updated_tracks = []
             changes_log = []
-            semaphore = asyncio.Semaphore(10)  # Limit to 10 simultaneous cleanings
+            concurrency_limit = CONFIG.get("max_concurrency", 20)
+            semaphore = asyncio.Semaphore(concurrency_limit)
 
             @get_decorator("Clean Track")
             async def clean_track(track: Dict[str, str]) -> None:
@@ -738,6 +756,7 @@ def main() -> None:
     """
     Entry point of the script. Parses arguments and starts the asynchronous main function.
     """
+    start_all = time.time()
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -763,6 +782,9 @@ def main() -> None:
 
     # Generate analytics reports even if there's no exception
     analytics.generate_reports()
+
+    end_all = time.time()
+    console_logger.info(f"[Concurrency Experiment] Total time: {end_all - start_all:.2f} seconds")
 
 if __name__ == "__main__":
     main()
