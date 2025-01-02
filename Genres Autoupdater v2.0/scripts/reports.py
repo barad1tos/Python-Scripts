@@ -114,7 +114,7 @@ def save_html_report(
     group_successful_short_calls: bool = False
 ) -> None:
     """
-    Save analytics events to an HTML report, color-coding by duration, 
+    Save analytics events to an HTML report, color-coding by duration,
     and optionally grouping short+successful calls.
 
     :param events: List of event dictionaries.

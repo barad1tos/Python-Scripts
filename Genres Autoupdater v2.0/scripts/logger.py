@@ -54,7 +54,6 @@ def get_loggers(log_file: str, analytics_log_file: str = None) -> Tuple[Logger, 
         console_logger.addHandler(ch_stream)
         console_logger.propagate = False
 
-
     error_logger = logging.getLogger("error_logger")
     if not error_logger.handlers:
         error_logger.setLevel(logging.ERROR)

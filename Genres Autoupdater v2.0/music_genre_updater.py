@@ -26,7 +26,7 @@ from scripts.analytics import Analytics
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
-CACHE_TTL = 300  # 5 minutes
+CACHE_TTL = 900  # 15 minutes
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -47,6 +47,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
+
 # Initialize the configuration
 CONFIG = load_config(CONFIG_PATH)
 
@@ -56,6 +57,7 @@ console_logger, error_logger, analytics_logger = get_loggers(
     CONFIG["log_file"],
     CONFIG.get("analytics", {}).get("analytics_log_file")
 )
+
 
 # Check the necessary paths
 def check_paths(paths: List[str], error_logger: Any) -> None:
@@ -73,6 +75,7 @@ def check_paths(paths: List[str], error_logger: Any) -> None:
             print(f"No read access to {path}.", file=sys.stderr)
             sys.exit(1)
 
+
 check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger=logging.getLogger("error_logger"))
 
 # Initialize analytics
@@ -81,9 +84,11 @@ analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 # Initialize the cache
 fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
 
+
 # Add analytics decorator to functions
 def get_decorator(event_type: str):
     return analytics.decorator(event_type)
+
 
 # Use decorators for functions
 @get_decorator("AppleScript Execution")
@@ -496,7 +501,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
             # Assign this genre to “new” tracks
             for track in new_tracks:
                 if (
-                    track.get("genre", "Unknown") != dom_genre 
+                    track.get("genre", "Unknown") != dom_genre
                     and track.get("trackStatus", "unknown") == "subscription"
                 ):
                     task = asyncio.create_task(process_track(track, dom_genre))
@@ -638,10 +643,9 @@ async def main_async(args: argparse.Namespace) -> None:
         if not tracks:
             console_logger.warning(f"No tracks found for artist: {artist}")
             return
-
         # Clean the names
         await process_artist_tracks_async(artist)
-        
+
         # Update genres (treat all as "existing" with last_run_time = datetime.min)
         last_run_time = datetime.min
         updated_tracks, changes_log = await update_genres_by_artist_async(tracks, last_run_time)
@@ -717,7 +721,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     async with semaphore:
                         if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
                             if new_tn:
-                                track["name"] = cleaned_nm
+                                track["name"] = cleaned_name
                             if new_an:
                                 track["album"] = cleaned_album
                             changes_log.append({

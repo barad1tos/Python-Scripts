@@ -1,13 +1,12 @@
 """
 Analytics Module
 
-Provides decorators to measure function execution time, 
+Provides decorators to measure function execution time,
 track success/failure, and generate an HTML report for analytics.
 """
 
 import time
 import asyncio
-import logging
 from datetime import datetime
 from functools import wraps
 from typing import Callable, Any, Dict, List
@@ -152,7 +151,7 @@ class Analytics:
 
     def generate_reports(self) -> None:
         """
-        Generate an optimized HTML report, grouping short & successful calls 
+        Generate an optimized HTML report, grouping short & successful calls
         to reduce file size.
         """
         try:
