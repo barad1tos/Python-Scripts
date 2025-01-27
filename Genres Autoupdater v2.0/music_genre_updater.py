@@ -23,7 +23,7 @@ import yaml
 import asyncio
 
 from scripts.logger import get_loggers
-from scripts.reports import save_to_csv, save_changes_report
+from scripts.reports import save_to_csv, save_changes_report, sync_track_list_with_current
 from scripts.analytics import Analytics
 
 # Define the directory and configuration path
@@ -458,29 +458,23 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     :param last_run_time: Datetime of the last incremental run.
     :return: Tuple of (updated_tracks, changes_log).
     """
-    # Group tracks by artist
-    grouped = group_tracks_by_artist(tracks)
+    # Load existing CSV map to see older statuses
+    from scripts.reports import load_track_list
+    csv_path = CONFIG["csv_output_file"]
+    csv_map = load_track_list(csv_path)
 
+    grouped = group_tracks_by_artist(tracks)
     updated_tracks = []
     changes_log = []
 
-    # Dynamically take the concurrency limit from the config
     concurrency_limit = CONFIG.get("max_concurrency", 20)
     semaphore = asyncio.Semaphore(concurrency_limit)
 
     @get_decorator("Process Track")
     async def process_track(track: Dict[str, str], dom_genre: str) -> None:
-        """
-        Process and update a single track's genre if necessary.
-
-        :param track: The track dictionary.
-        :param dom_genre: The dominant genre to apply.
-        """
         old_genre = track.get("genre", "Unknown")
         track_id = track.get("id", "")
         status = track.get("trackStatus", "unknown")
-
-        # Update the genre of “new” tracks if they are “subscription” / "downloaded" and have a different genre
         if track_id and old_genre != dom_genre and status in ("subscription", "downloaded"):
             console_logger.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})")
             async with semaphore:
@@ -498,40 +492,33 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
                 else:
                     error_logger.error(f"Failed to update genre for track {track_id}")
 
+    # Process each artist's tracks
     tasks = []
     for artist, artist_tracks in grouped.items():
-        # Separate into “old” and “new” tracks based on last_run_time
-        existing_tracks = [
-            t for t in artist_tracks
-            if datetime.strptime(t.get("dateAdded", ""), "%Y-%m-%d %H:%M:%S") <= last_run_time
-        ]
-        new_tracks = [
-            t for t in artist_tracks
-            if datetime.strptime(t.get("dateAdded", ""), "%Y-%m-%d %H:%M:%S") > last_run_time
-        ]
+        if not artist_tracks:
+            continue
 
-        if existing_tracks:
-            # If there are “old” tracks, determine the dominant genre among them
-            dom_genre = determine_dominant_genre_for_artist(existing_tracks)
-            console_logger.info(
-                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on {len(existing_tracks)} old tracks), "
-                f"Total Tracks: {len(artist_tracks)}"
+        # 1) Find the earliest track by dateAdded
+        try:
+            earliest = min(
+                artist_tracks,
+                key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
             )
-            # Assign this genre to “new” tracks
-            for track in new_tracks:
-                if track.get("genre", "Unknown") != dom_genre:
-                    tasks.append(asyncio.create_task(process_track(track, dom_genre)))
-        else:
-            # If there are no “old” tracks, determine the dominant genre from all tracks
-            dom_genre = determine_dominant_genre_for_artist(artist_tracks)
-            console_logger.info(
-                f"Artist: {artist}, Dominant Genre: {dom_genre} (based on all {len(artist_tracks)} tracks)"
-            )
-            for track in artist_tracks:
-                if track.get("genre", "Unknown") != dom_genre:
-                    tasks.append(asyncio.create_task(process_track(track, dom_genre)))
+            dom_genre = earliest.get("genre", "Unknown")
+        except Exception as e:
+            error_logger.error(f"Error determining earliest track for artist '{artist}': {e}")
+            dom_genre = "Unknown"
 
-    # Execute all genre update tasks concurrently
+        console_logger.info(
+            f"Artist: {artist}, Dominant Genre: {dom_genre} (earliest track among {len(artist_tracks)})."
+        )
+
+        # 2) Compare all tracks of the artist to dom_genre
+        for track in artist_tracks:
+            if track.get("genre", "Unknown") != dom_genre:
+                # queue update
+                tasks.append(asyncio.create_task(process_track(track, dom_genre)))
+
     await asyncio.gather(*tasks)
     return updated_tracks, changes_log
 
@@ -640,8 +627,14 @@ async def main_async(args: argparse.Namespace) -> None:
 
         # Save the results if any tracks were updated
         if updated_tracks:
-            # Saving results
-            save_to_csv(tracks, CONFIG["csv_output_file"], console_logger, error_logger)
+            # PARTIAL sync — do not remove other artists' tracks from CSV
+            sync_track_list_with_current(
+                updated_tracks, 
+                CONFIG["csv_output_file"], 
+                console_logger, 
+                error_logger,
+                partial_sync=True
+            )
             save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
             console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (clean_artist).")
         else:
@@ -651,7 +644,13 @@ async def main_async(args: argparse.Namespace) -> None:
         last_run_time = datetime.min  # Treat all as existing to ensure genre updates
         updated_g, changes_g = await update_genres_by_artist_async(tracks, last_run_time)
         if updated_g:
-            save_to_csv(tracks, CONFIG["csv_output_file"], console_logger, error_logger)
+            sync_track_list_with_current(
+                updated_g, 
+                CONFIG["csv_output_file"],
+                console_logger, 
+                error_logger,
+                partial_sync=True
+            )
             save_changes_report(changes_g, CONFIG["changes_report_file"], console_logger, error_logger)
             console_logger.info(f"Updated {len(updated_g)} tracks with new genres (clean_artist).")
         else:
@@ -752,8 +751,14 @@ async def main_async(args: argparse.Namespace) -> None:
         # 2) Then always update genres
         updated_g, changes_g = await update_genres_by_artist_async(all_tracks, last_run_time)
         if updated_g:
-            # Overwrite CSV (since some changes occurred)
-            save_to_csv(all_tracks, CONFIG["csv_output_file"], console_logger, error_logger)
+            # Sync with the current CSV file, removing missing tracks
+            sync_track_list_with_current(
+                all_tracks,
+                CONFIG["csv_output_file"],
+                console_logger,
+                error_logger,
+                partial_sync=False  # full removal of missing
+            )
             save_changes_report(changes_g, CONFIG["changes_report_file"], console_logger, error_logger)
             console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
             update_last_incremental_run()

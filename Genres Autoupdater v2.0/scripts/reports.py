@@ -355,20 +355,26 @@ def sync_track_list_with_current(
     all_tracks: List[Dict[str, str]],
     csv_path: str,
     console_logger: Logger,
-    error_logger: Logger
+    error_logger: Logger,
+    partial_sync: bool = False
 ) -> None:
     """
-    Synchronize track_list.csv with current AppleScript data (FULL sync of all fields).
+    Synchronize track_list.csv with the given list of tracks (all_tracks).
 
-    1) Load the existing CSV into a dict (csv_map).
-    2) Remove tracks not in all_tracks.
-    3) Add/update tracks from all_tracks.
-    4) Rewrite CSV fully.
+    If partial_sync=False (default), this performs a FULL sync:
+      1) Remove tracks from CSV that are NOT in all_tracks
+      2) Add/update any changed/added tracks
+      3) Rewrite CSV fully
 
-    :param all_tracks: List of all track dictionaries from AppleScript.
+    If partial_sync=True, this only merges changes/additions
+    without removing tracks that do not appear in all_tracks.
+    (i.e., we do NOT delete tracks missing from all_tracks.)
+
+    :param all_tracks: The list of track dicts to sync (possibly for one artist).
     :param csv_path: Path to the track_list.csv file.
     :param console_logger: Logger for info messages.
     :param error_logger: Logger for error messages.
+    :param partial_sync: Whether to skip removing "missing" tracks. Default=False.
     """
     csv_map = load_track_list(csv_path)
 
@@ -388,24 +394,26 @@ def sync_track_list_with_current(
             "trackStatus": tr.get("trackStatus", "").strip(),
         }
 
-    # 1) Remove tracks that no longer exist
+    # 1) Remove tracks from CSV that are NOT in current_map
     removed_count = 0
-    for old_tid in list(csv_map.keys()):
-        if old_tid not in current_map:
-            del csv_map[old_tid]
-            removed_count += 1
+    if not partial_sync:
+        # FULL SYNC: remove any tracks from csv_map not in current_map
+        for old_tid in list(csv_map.keys()):
+            if old_tid not in current_map:
+                del csv_map[old_tid]
+                removed_count += 1
 
     # 2) Add/Update all fields if changed
     added_or_updated_count = 0
     for tid, new_data in current_map.items():
         old_data = csv_map.get(tid)
         if not old_data:
-            # Completely new track
+            # 3) Add new track to csv_map
             csv_map[tid] = new_data
             added_or_updated_count += 1
         else:
             changed = False
-            # Full synchronization of all fields
+            # 4) Update track fields if changed
             for field in ["name", "artist", "album", "genre", "dateAdded", "trackStatus"]:
                 if old_data.get(field) != new_data[field]:
                     old_data[field] = new_data[field]
@@ -414,9 +422,10 @@ def sync_track_list_with_current(
                 added_or_updated_count += 1
 
     console_logger.info(
-        f"Syncing track_list.csv (FULL) with up-to-date AppleScript tracks: "
+        f"Syncing track_list.csv ({'PARTIAL' if partial_sync else 'FULL'}) with AppleScript tracks: "
         f"Removed {removed_count}, Added/Updated {added_or_updated_count}."
     )
 
+    # 5) Rewrite CSV fully with the final merged dict
     final_list = list(csv_map.values())
     save_to_csv(final_list, csv_path, console_logger, error_logger)
