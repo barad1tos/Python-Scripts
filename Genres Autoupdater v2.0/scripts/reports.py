@@ -351,6 +351,7 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
     return track_map
 
 
+# Modified sync_track_list_with_current in reports.py
 def sync_track_list_with_current(
     all_tracks: List[Dict[str, str]],
     csv_path: str,
@@ -368,18 +369,39 @@ def sync_track_list_with_current(
 
     If partial_sync=True, this only merges changes/additions
     without removing tracks that do not appear in all_tracks.
-    (i.e., we do NOT delete tracks missing from all_tracks.)
 
-    :param all_tracks: The list of track dicts to sync (possibly for one artist).
-    :param csv_path: Path to the track_list.csv file.
-    :param console_logger: Logger for info messages.
-    :param error_logger: Logger for error messages.
-    :param partial_sync: Whether to skip removing "missing" tracks. Default=False.
+    Additional logging is provided for track counts.
+    Also verifies that the fetched track count matches the cache before sync.
     """
-    csv_map = load_track_list(csv_path)
+    # Log initial counts
+    console_logger.info(f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}")
 
-    # Create a dictionary of current tracks (from all_tracks)
-    current_map: Dict[str, Dict[str, str]] = {}
+    # Verify that the cache is valid (using the "ALL" key)
+    from music_genre_updater import fetch_cache  # import global cache
+    if "ALL" in fetch_cache:
+        cached_tracks, _ = fetch_cache["ALL"]
+        if len(all_tracks) != len(cached_tracks):
+            console_logger.error(
+                f"Track count mismatch: fetched {len(all_tracks)} tracks but cache has {len(cached_tracks)}. Aborting sync."
+            )
+            return
+        else:
+            console_logger.info("Cache verification passed: track counts match.")
+
+    csv_map = load_track_list(csv_path)
+    console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
+
+    if not partial_sync:
+        removed_count = 0
+        fetched_ids = {tr.get("id", "").strip() for tr in all_tracks if tr.get("id", "").strip()}
+        for old_tid in list(csv_map.keys()):
+            if old_tid not in fetched_ids:
+                del csv_map[old_tid]
+                removed_count += 1
+        console_logger.info(f"Removed {removed_count} tracks from CSV that are missing in fetched data.")
+
+    added_or_updated_count = 0
+    current_map = {}
     for tr in all_tracks:
         tid = tr.get("id", "").strip()
         if not tid:
@@ -393,27 +415,13 @@ def sync_track_list_with_current(
             "dateAdded": tr.get("dateAdded", "").strip(),
             "trackStatus": tr.get("trackStatus", "").strip(),
         }
-
-    # 1) Remove tracks from CSV that are NOT in current_map
-    removed_count = 0
-    if not partial_sync:
-        # FULL SYNC: remove any tracks from csv_map not in current_map
-        for old_tid in list(csv_map.keys()):
-            if old_tid not in current_map:
-                del csv_map[old_tid]
-                removed_count += 1
-
-    # 2) Add/Update all fields if changed
-    added_or_updated_count = 0
     for tid, new_data in current_map.items():
         old_data = csv_map.get(tid)
         if not old_data:
-            # 3) Add new track to csv_map
             csv_map[tid] = new_data
             added_or_updated_count += 1
         else:
             changed = False
-            # 4) Update track fields if changed
             for field in ["name", "artist", "album", "genre", "dateAdded", "trackStatus"]:
                 if old_data.get(field) != new_data[field]:
                     old_data[field] = new_data[field]
@@ -421,11 +429,8 @@ def sync_track_list_with_current(
             if changed:
                 added_or_updated_count += 1
 
-    console_logger.info(
-        f"Syncing track_list.csv ({'PARTIAL' if partial_sync else 'FULL'}) with AppleScript tracks: "
-        f"Removed {removed_count}, Added/Updated {added_or_updated_count}."
-    )
-
-    # 5) Rewrite CSV fully with the final merged dict
+    console_logger.info(f"Added/Updated {added_or_updated_count} tracks in CSV.")
     final_list = list(csv_map.values())
-    save_to_csv(final_list, csv_path, console_logger, error_logger)
+    console_logger.info(f"Final CSV track count after sync: {len(final_list)}")
+
+    _save_csv(final_list, ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus"], csv_path, console_logger, error_logger, "tracks")

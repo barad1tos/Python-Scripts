@@ -523,21 +523,24 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     return updated_tracks, changes_log
 
 
+# Modified fetch_tracks_async in music_genre_updater.py
 @get_decorator("Fetch Tracks")
-async def fetch_tracks_async(artist: Optional[str] = None) -> List[Dict[str, str]]:
+async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, str]]:
     """
     Retrieve tracks for a specific artist or all tracks. Uses a cache to reduce AppleScript calls.
-
-    :param artist: Artist name to fetch or None for all.
-    :return: List of track dictionaries.
+    Allows forced cache refresh.
     """
     cache_key = artist if artist else "ALL"
     now = time.time()
-    if cache_key in fetch_cache:
+    # Use cached result if available and not forcing refresh
+    if not force_refresh and cache_key in fetch_cache:
         cached_result, cached_time = fetch_cache[cache_key]
         if now - cached_time < CACHE_TTL:
-            console_logger.info(f"Returning cached tracks for '{cache_key}' from cache.")
+            console_logger.info(f"Returning cached tracks for '{cache_key}' from cache. Cached count: {len(cached_result)}")
             return cached_result
+
+    if force_refresh:
+        console_logger.info(f"Forced cache refresh requested for '{cache_key}'")
 
     # Getting tracks via AppleScript
     if artist:
@@ -549,14 +552,21 @@ async def fetch_tracks_async(artist: Optional[str] = None) -> List[Dict[str, str
 
     if raw_data:
         tracks = parse_tracks(raw_data)
+        console_logger.info(f"Fetched {len(tracks)} tracks for key '{cache_key}'")
+        # If force_refresh is True and there is cached data, compare counts
+        if force_refresh and cache_key in fetch_cache:
+            old_tracks, _ = fetch_cache[cache_key]
+            if len(old_tracks) != len(tracks):
+                console_logger.error(
+                    f"Track count mismatch on forced refresh for '{cache_key}': cached count {len(old_tracks)} vs new count {len(tracks)}. Aborting sync."
+                )
+                return []
+        # Update cache with new data
         fetch_cache[cache_key] = (tracks, now)
         return tracks
     else:
         msg = "No data fetched"
-        if artist:
-            msg += f" for artist: {artist}."
-        else:
-            msg += " for all artists."
+        msg += f" for artist: {artist}." if artist else " for all artists."
         console_logger.warning(msg)
         return []
 
