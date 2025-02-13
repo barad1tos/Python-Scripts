@@ -364,72 +364,6 @@ async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) ->
         return False  
 
 
-@get_decorator("Fix Album Release Years")
-async def fix_album_release_years(tracks: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    """
-    Fix missing release years for albums:
-      - If at least one track has a year, use the most common year for the entire album.
-      - If no track has a year, use the year from the oldest 'dateAdded'.
-      - Log conflicts when different years are found.
-      Changes are logged to changes_report.csv.
-    
-    :param tracks: List of track dictionaries.
-    :return: List of updated tracks.
-    """
-    changes_log = []    
-    albums = {}    
-    for track in tracks:
-        album = track.get("album", "Unknown Album")
-        albums.setdefault(album, []).append(track)    
-    updated_tracks = []    
-    tasks = []    
-    async def update_album_year(album_tracks):
-        album_name = album_tracks[0].get("album", "Unknown Album")
-        album_artist = album_tracks[0].get("artist", "Unknown Artist")
-        track_ids = [t["id"] for t in album_tracks]
-        years = [t.get("year") for t in album_tracks if t.get("year") and t.get("year").isdigit()]
-        added_dates = [t.get("dateAdded") for t in album_tracks if t.get("dateAdded")]
-        new_year = None    
-        if years:
-            year_counts = Counter(years)
-            most_common_year, _ = year_counts.most_common(1)[0]
-            new_year = most_common_year
-            if len(year_counts) > 1:
-                console_logger.info(f"Conflict in album '{album_name}': found multiple years {dict(year_counts)}. Using most common: {new_year}")
-        elif added_dates:
-            try:
-                oldest_date = min(added_dates, key=lambda d: datetime.strptime(d, "%Y-%m-%d %H:%M:%S"))
-                new_year = str(datetime.strptime(oldest_date, "%Y-%m-%d %H:%M:%S").year)
-                console_logger.info(f"Album '{album_name}' has no year info; using year from oldest dateAdded: {new_year}")
-            except Exception as e:
-                error_logger.error(f"Error parsing dateAdded for album '{album_name}': {e}")
-        if new_year:
-            for track in album_tracks:
-                if not track.get("year") or track["year"] != new_year:
-                    # Using keys expected by save_changes_report (old_genre/new_genre)
-                    changes_log.append({
-                        "artist": album_artist,
-                        "album": album_name,
-                        "track_name": track.get("name", "Unknown"),
-                        "old_genre": track.get("year", "Unknown"),
-                        "new_genre": new_year,
-                        "new_track_name": ""
-                    })
-                    track["year"] = new_year  
-            success = await update_album_tracks_bulk_async(track_ids, new_year)
-            if success:
-                updated_tracks.extend(album_tracks)
-                console_logger.info(f"📅 [Updated] Album '{album_name}' by '{album_artist}' → Set year to {new_year}")
-            else:
-                error_logger.error(f"Failed to bulk update album '{album_name}' with year {new_year}")
-    for album_tracks in albums.values():
-        tasks.append(asyncio.create_task(update_album_year(album_tracks)))
-    await asyncio.gather(*tasks)
-    if changes_log:
-        save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
-    return updated_tracks 
-
-
 @get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
     """
@@ -796,10 +730,6 @@ async def main_async(args: argparse.Namespace) -> None:
         if not all_tracks:
             console_logger.warning("No tracks fetched.")
             return
-
-        # 0) Fix album release years
-        await fix_album_release_years(all_tracks)
-        console_logger.info("Album release years fixed.")
 
         # 1) Always clean all tracks
         updated_tracks = []
