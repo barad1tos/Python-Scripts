@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import defaultdict, Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -42,13 +43,11 @@ def load_config(config_path: str) -> Dict[str, Any]:
     if not os.path.exists(config_path):
         print(f"Config file {config_path} does not exist.", file=sys.stderr)
         sys.exit(1)
-
     if not os.access(config_path, os.R_OK):
         print(f"No read access to config file {config_path}.", file=sys.stderr)
         sys.exit(1)
-
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f)    
 
 
 # Initialize the configuration
@@ -78,7 +77,6 @@ def check_paths(paths: List[str], error_logger: Any) -> None:
             error_logger.error(f"No read access to {path}.")
             sys.exit(1)
 
-
 # Verify necessary paths are accessible
 check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger=logging.getLogger("error_logger"))
 
@@ -87,7 +85,6 @@ analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 
 # Initialize the cache to store fetched tracks temporarily
 fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
-
 
 # Add analytics decorator to functions
 def get_decorator(event_type: str):
@@ -98,7 +95,6 @@ def get_decorator(event_type: str):
     :return: The decorator function.
     """
     return analytics.decorator(event_type)
-
 
 @get_decorator("AppleScript Execution")
 async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
@@ -144,7 +140,7 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     :return: List of track dictionaries.
     """
     if not raw_data:
-        error_logger.error("No data to parse.")
+        error_logger.error("No data fetched from AppleScript.")
         return []
 
     tracks = []
@@ -169,16 +165,17 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
 @get_decorator("Group Tracks by Artist")
 def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
-    Group tracks by artist.
+    Group tracks by artist. 
 
     :param tracks: List of track dictionaries.
-    :return: Dictionary grouped by artist name.
+    :return: Dictionary of artist names to lists of track dictionaries.
     """
-    artists: Dict[str, List[Dict[str, str]]] = {}
+    artists = defaultdict(list)
     for track in tracks:
         artist = track.get("artist", "Unknown")
-        artists.setdefault(artist, []).append(track)
-    return artists
+        artists[artist].append(track)
+    
+    return dict(artists)
 
 
 @get_decorator("Determine Dominant Genre")
@@ -344,6 +341,95 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
     return cleaned_track, cleaned_album
 
 
+@get_decorator("Batch Bulk Update Album Year")
+async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) -> bool:
+    """
+    Bulk update the release year for all tracks of an album in a single AppleScript call.
+    
+    :param track_ids: List of track IDs.
+    :param new_year: New release year.
+    :return: True if update is successful, False otherwise.
+    """
+    if not track_ids:
+        error_logger.error("No track IDs provided for bulk update.")
+        return False    
+    # Join track IDs into a comma-separated string    
+    track_ids_str = ",".join(track_ids)    
+    res = await run_applescript_async("update_property.applescript", ["year", new_year, track_ids_str])
+    if res and "Success" in res:
+        console_logger.info(f"Bulk update success: {res}")
+        return True    
+    else:
+        error_logger.error(f"Bulk update failed: {res}")
+        return False  
+
+
+@get_decorator("Fix Album Release Years")
+async def fix_album_release_years(tracks: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """
+    Fix missing release years for albums:
+      - If at least one track has a year, use the most common year for the entire album.
+      - If no track has a year, use the year from the oldest 'dateAdded'.
+      - Log conflicts when different years are found.
+      Changes are logged to changes_report.csv.
+    
+    :param tracks: List of track dictionaries.
+    :return: List of updated tracks.
+    """
+    changes_log = []    
+    albums = {}    
+    for track in tracks:
+        album = track.get("album", "Unknown Album")
+        albums.setdefault(album, []).append(track)    
+    updated_tracks = []    
+    tasks = []    
+    async def update_album_year(album_tracks):
+        album_name = album_tracks[0].get("album", "Unknown Album")
+        album_artist = album_tracks[0].get("artist", "Unknown Artist")
+        track_ids = [t["id"] for t in album_tracks]
+        years = [t.get("year") for t in album_tracks if t.get("year") and t.get("year").isdigit()]
+        added_dates = [t.get("dateAdded") for t in album_tracks if t.get("dateAdded")]
+        new_year = None    
+        if years:
+            year_counts = Counter(years)
+            most_common_year, _ = year_counts.most_common(1)[0]
+            new_year = most_common_year
+            if len(year_counts) > 1:
+                console_logger.info(f"Conflict in album '{album_name}': found multiple years {dict(year_counts)}. Using most common: {new_year}")
+        elif added_dates:
+            try:
+                oldest_date = min(added_dates, key=lambda d: datetime.strptime(d, "%Y-%m-%d %H:%M:%S"))
+                new_year = str(datetime.strptime(oldest_date, "%Y-%m-%d %H:%M:%S").year)
+                console_logger.info(f"Album '{album_name}' has no year info; using year from oldest dateAdded: {new_year}")
+            except Exception as e:
+                error_logger.error(f"Error parsing dateAdded for album '{album_name}': {e}")
+        if new_year:
+            for track in album_tracks:
+                if not track.get("year") or track["year"] != new_year:
+                    # Using keys expected by save_changes_report (old_genre/new_genre)
+                    changes_log.append({
+                        "artist": album_artist,
+                        "album": album_name,
+                        "track_name": track.get("name", "Unknown"),
+                        "old_genre": track.get("year", "Unknown"),
+                        "new_genre": new_year,
+                        "new_track_name": ""
+                    })
+                    track["year"] = new_year  
+            success = await update_album_tracks_bulk_async(track_ids, new_year)
+            if success:
+                updated_tracks.extend(album_tracks)
+                console_logger.info(f"📅 [Updated] Album '{album_name}' by '{album_artist}' → Set year to {new_year}")
+            else:
+                error_logger.error(f"Failed to bulk update album '{album_name}' with year {new_year}")
+    for album_tracks in albums.values():
+        tasks.append(asyncio.create_task(update_album_year(album_tracks)))
+    await asyncio.gather(*tasks)
+    if changes_log:
+        save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
+    return updated_tracks 
+
+
 @get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
     """
@@ -477,20 +563,23 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
         status = track.get("trackStatus", "unknown")
         if track_id and old_genre != dom_genre and status in ("subscription", "downloaded"):
             console_logger.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})")
+            update_lock = asyncio.Lock()
+
             async with semaphore:
-                if await update_track_async(track_id, new_genre=dom_genre):
-                    track["genre"] = dom_genre
-                    changes_log.append({
-                        "artist": track.get("artist", "Unknown"),
-                        "album": track.get("album", "Unknown"),
-                        "track_name": track.get("name", "Unknown"),
-                        "old_genre": old_genre,
-                        "new_genre": dom_genre,
-                        "new_track_name": track.get("name", "Unknown"),
-                    })
-                    updated_tracks.append(track)
-                else:
-                    error_logger.error(f"Failed to update genre for track {track_id}")
+                async with update_lock:
+                    if await update_track_async(track_id, new_genre=dom_genre):
+                        track["genre"] = dom_genre
+                        changes_log.append({
+                            "artist": track.get("artist", "Unknown"),
+                            "album": track.get("album", "Unknown"),
+                            "track_name": track.get("name", "Unknown"),
+                            "old_genre": old_genre,
+                            "new_genre": dom_genre,
+                            "new_track_name": track.get("name", "Unknown"),
+                        })
+                        updated_tracks.append(track)
+                    else:
+                        error_logger.error(f"Failed to update genre for track {track_id}")
 
     # Process each artist's tracks
     tasks = []
@@ -560,7 +649,6 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
                 console_logger.error(
                     f"Track count mismatch on forced refresh for '{cache_key}': cached count {len(old_tracks)} vs new count {len(tracks)}. Aborting sync."
                 )
-                return []
         # Update cache with new data
         fetch_cache[cache_key] = (tracks, now)
         return tracks
@@ -676,16 +764,23 @@ async def main_async(args: argparse.Namespace) -> None:
 
         # Determine last_run_time
         last_run_file = CONFIG["last_incremental_run_file"]
+        last_run_time_str = None
+
         if os.path.exists(last_run_file):
-            with open(last_run_file, "r", encoding="utf-8") as f:
-                last_run_time_str = f.read().strip()
+            try:
+                with open(last_run_file, "r", encoding="utf-8") as f:
+                    last_run_time_str = f.read().strip()
+            except Exception as e:
+                error_logger.error(f"Failed to read {last_run_file}: {e}")
+
+        if last_run_time_str:
             try:
                 last_run_time = datetime.strptime(last_run_time_str, "%Y-%m-%d %H:%M:%S")
             except ValueError:
-                console_logger.warning("Invalid date in last_run_time. Proceeding as if no previous run.")
+                error_logger.error(f"Invalid date format in {last_run_file}. Resetting to full run.")
                 last_run_time = datetime.min
         else:
-            console_logger.info("No last_incremental_run_file found. Considering all tracks as existing.")
+            console_logger.info("No valid last run timestamp found. Considering all tracks as existing.")
             last_run_time = datetime.min
 
         # Fetch tracks from test_artists if specified, else fetch all
@@ -701,6 +796,10 @@ async def main_async(args: argparse.Namespace) -> None:
         if not all_tracks:
             console_logger.warning("No tracks fetched.")
             return
+
+        # 0) Fix album release years
+        await fix_album_release_years(all_tracks)
+        console_logger.info("Album release years fixed.")
 
         # 1) Always clean all tracks
         updated_tracks = []
@@ -786,13 +885,9 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     # Subparser for cleaning artist
-    clean_artist_parser = subparsers.add_parser(
-        "clean_artist", help="Clean track/album names for a given artist"
-    )
+    clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track/album names for a given artist")
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name")
-    clean_artist_parser.add_argument(
-        "--force", action="store_true", help="Force, bypassing incremental checks"
-    )
+    clean_artist_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
 
     # Global argument for force
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
