@@ -487,9 +487,6 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     updated_tracks = []
     changes_log = []
 
-    concurrency_limit = CONFIG.get("max_concurrency", 20)
-    semaphore = asyncio.Semaphore(concurrency_limit)
-
     @get_decorator("Process Track")
     async def process_track(track: Dict[str, str], dom_genre: str) -> None:
         old_genre = track.get("genre", "Unknown")
@@ -499,21 +496,19 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
             console_logger.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})")
             update_lock = asyncio.Lock()
 
-            async with semaphore:
-                async with update_lock:
-                    if await update_track_async(track_id, new_genre=dom_genre):
-                        track["genre"] = dom_genre
-                        changes_log.append({
-                            "artist": track.get("artist", "Unknown"),
-                            "album": track.get("album", "Unknown"),
-                            "track_name": track.get("name", "Unknown"),
-                            "old_genre": old_genre,
-                            "new_genre": dom_genre,
-                            "new_track_name": track.get("name", "Unknown"),
-                        })
-                        updated_tracks.append(track)
-                    else:
-                        error_logger.error(f"Failed to update genre for track {track_id}")
+            if await update_track_async(track_id, new_genre=dom_genre):
+                track["genre"] = dom_genre
+                changes_log.append({
+                    "artist": track.get("artist", "Unknown"),
+                    "album": track.get("album", "Unknown"),
+                    "track_name": track.get("name", "Unknown"),
+                    "old_genre": old_genre,
+                    "new_genre": dom_genre,
+                    "new_track_name": track.get("name", "Unknown"),
+                })
+                updated_tracks.append(track)
+            else:
+                error_logger.error(f"Failed to update genre for track {track_id}")
 
     # Process each artist's tracks
     tasks = []
@@ -540,7 +535,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
         for track in artist_tracks:
             if track.get("genre", "Unknown") != dom_genre:
                 # queue update
-                tasks.append(asyncio.create_task(process_track(track, dom_genre)))
+                await process_track(track, dom_genre)
 
     await asyncio.gather(*tasks)
     return updated_tracks, changes_log
@@ -614,8 +609,6 @@ async def main_async(args: argparse.Namespace) -> None:
         # 1) Clean names for each track
         updated_tracks = []
         changes_log = []
-        concurrency_limit = CONFIG.get("max_concurrency", 20)
-        semaphore = asyncio.Semaphore(concurrency_limit)
 
         @get_decorator("Clean Track (Artist Only)")
         async def clean_track(track: Dict[str, str]) -> None:
@@ -635,27 +628,26 @@ async def main_async(args: argparse.Namespace) -> None:
             new_an = cleaned_al if cleaned_al != orig_album else None
 
             if new_tn or new_an:
-                async with semaphore:
-                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                        if new_tn:
-                            track["name"] = cleaned_nm
-                        if new_an:
-                            track["album"] = cleaned_al
-                        changes_log.append({
-                            "artist": artist_name,
-                            "album": track.get("album", "Unknown"),
-                            "track_name": orig_name,
-                            "old_genre": track.get("genre", "Unknown"),
-                            "new_genre": track.get("genre", "Unknown"),
-                            "new_track_name": track.get("name", "Unknown"),
-                        })
-                        updated_tracks.append(track)
-                    else:
-                        error_logger.error(f"Failed to update track ID {track_id}")
+                if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                    if new_tn:
+                        track["name"] = cleaned_nm
+                    if new_an:
+                        track["album"] = cleaned_al
+                    changes_log.append({
+                        "artist": artist_name,
+                        "album": track.get("album", "Unknown"),
+                        "track_name": orig_name,
+                        "old_genre": track.get("genre", "Unknown"),
+                        "new_genre": track.get("genre", "Unknown"),
+                        "new_track_name": track.get("name", "Unknown"),
+                    })
+                    updated_tracks.append(track)
+                else:
+                    error_logger.error(f"Failed to update track ID {track_id}")
 
         # Create and gather all cleaning tasks
-        tasks_clean = [asyncio.create_task(clean_track(t)) for t in tracks]
-        await asyncio.gather(*tasks_clean)
+        for t in tracks:
+            await clean_track(t)
 
         # Save the results if any tracks were updated
         if updated_tracks:
@@ -734,8 +726,6 @@ async def main_async(args: argparse.Namespace) -> None:
         # 1) Always clean all tracks
         updated_tracks = []
         changes_log = []
-        concurrency_limit = CONFIG.get("max_concurrency", 20)
-        semaphore = asyncio.Semaphore(concurrency_limit)
 
         @get_decorator("Clean Track (Global)")
         async def clean_track(track: Dict[str, str]) -> None:
@@ -755,29 +745,28 @@ async def main_async(args: argparse.Namespace) -> None:
             new_an = cleaned_al if cleaned_al != orig_album else None
 
             if new_tn or new_an:
-                async with semaphore:
-                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                        if new_tn:
-                            track["name"] = cleaned_nm
-                        if new_an:
-                            track["album"] = cleaned_al
-                        changes_log.append({
-                            "artist": artist_name,
-                            "album": track.get("album", "Unknown"),
-                            "track_name": orig_name,
-                            "old_genre": track.get("genre", "Unknown"),
-                            "new_genre": track.get("genre", "Unknown"),
-                            "new_track_name": track.get("name", "Unknown"),
-                        })
-                        updated_tracks.append(track)
-                    else:
-                        error_logger.error(f"Failed to update track ID {track_id}")
+                if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                    if new_tn:
+                        track["name"] = cleaned_nm
+                    if new_an:
+                        track["album"] = cleaned_al
+                    changes_log.append({
+                        "artist": artist_name,
+                        "album": track.get("album", "Unknown"),
+                        "track_name": orig_name,
+                        "old_genre": track.get("genre", "Unknown"),
+                        "new_genre": track.get("genre", "Unknown"),
+                        "new_track_name": track.get("name", "Unknown"),
+                    })
+                    updated_tracks.append(track)
+                else:
+                    error_logger.error(f"Failed to update track ID {track_id}")
             else:
                 console_logger.info(f"No cleaning needed for track '{orig_name}'")
 
-        # Create and gather all cleaning tasks
-        tasks_clean = [asyncio.create_task(clean_track(t)) for t in all_tracks]
-        await asyncio.gather(*tasks_clean)
+        # Create and gather all cleaning tasks using the correct variable "all_tracks"
+        for t in all_tracks:
+            await clean_track(t)
 
         # Save the results if any tracks were updated
         if updated_tracks:
