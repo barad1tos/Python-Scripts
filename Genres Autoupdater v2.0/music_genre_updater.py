@@ -181,23 +181,35 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
 @get_decorator("Determine Dominant Genre")
 def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
-    Determine the dominant genre by picking the genre of the oldest track.
-
+    Determine the dominant genre by picking the genre from the oldest track of the earliest album.
+    
     :param artist_tracks: List of track dictionaries for a specific artist.
-    :return: Genre of the oldest track or "Unknown".
+    :return: Genre from the earliest album's oldest track or "Unknown".
     """
     if not artist_tracks:
         return "Unknown"
-
     try:
-        # Find the track with the smallest (earliest) date dateAdded
-        oldest_track = min(
-            artist_tracks,
-            key=lambda t: datetime.strptime(
-                t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
-            ),
+        # Group tracks by album and determine the earliest track for each album
+        album_earliest: Dict[str, Dict[str, str]] = {}
+        for track in artist_tracks:
+            album = track.get("album", "Unknown")
+            track_date = datetime.strptime(
+                track.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+            )
+            if album not in album_earliest:
+                album_earliest[album] = track
+            else:
+                existing_date = datetime.strptime(
+                    album_earliest[album].get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+                )
+                if track_date < existing_date:
+                    album_earliest[album] = track
+        # Select the album with the earliest added track
+        earliest_album_track = min(
+            album_earliest.values(),
+            key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
         )
-        return oldest_track.get("genre") or "Unknown"
+        return earliest_album_track.get("genre") or "Unknown"
     except Exception as e:
         logging.error(f"Error in determine_dominant_genre_for_artist: {e}")
         return "Unknown"
