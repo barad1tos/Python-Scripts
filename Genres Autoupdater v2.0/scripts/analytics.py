@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Analytics Module
 
@@ -123,6 +125,8 @@ class Analytics:
                         overhead = decorator_duration - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
+                        # Log an additional record to signal end of section
+                        self.analytics_logger.info("SECTION_END", extra={"section_end": True})
                 return async_wrapper
             else:
                 @wraps(func)
@@ -146,6 +150,8 @@ class Analytics:
                         overhead = decorator_duration - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
+                        # Log a section end record for file loggers
+                        self.analytics_logger.info("SECTION_END", extra={"section_end": True})
                 return sync_wrapper
         return decorator_function
 

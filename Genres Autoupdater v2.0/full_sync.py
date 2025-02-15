@@ -1,4 +1,12 @@
-# full_sync.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Full Sync Module
+
+This module runs a one-time full sync of the track list from the external API.
+It fetches all tracks, updates the CSV file, and logs the changes.
+"""
+
 import asyncio
 from scripts.reports import sync_track_list_with_current
 from music_genre_updater import fetch_tracks_async, console_logger, error_logger, CONFIG
