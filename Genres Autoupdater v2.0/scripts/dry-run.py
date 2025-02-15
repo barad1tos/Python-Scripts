@@ -31,8 +31,8 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "my-config.yaml")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
-# Define the path for the dry run CSV report
-DRY_RUN_REPORT_CSV = os.path.join(SCRIPT_DIR, "dry_run_report.csv")
+# Use config to determine where to store the dry run CSV report
+DRY_RUN_REPORT_CSV = CONFIG.get("dry_run_report_file", os.path.join(SCRIPT_DIR, "dry_run_report.csv"))
 
 async def simulate_cleaning() -> List[Dict[str, str]]:
     """
@@ -42,6 +42,9 @@ async def simulate_cleaning() -> List[Dict[str, str]]:
     simulated_changes = []
     tracks = await fetch_tracks_async()
     for track in tracks:
+        # Skip tracks with prerelease status
+        if track.get("trackStatus", "").lower() == "prerelease":
+            continue
         original_name = track.get("name", "")
         original_album = track.get("album", "")
         cleaned_name, cleaned_album = clean_names(track.get("artist", "Unknown"), original_name, original_album)
@@ -65,6 +68,9 @@ async def simulate_genre_update() -> List[Dict[str, str]]:
     """
     simulated_changes = []
     tracks = await fetch_tracks_async()
+    # Skip tracks with prerelease status
+    tracks = [track for track in tracks if track.get("trackStatus", "").lower() != "prerelease"]
+    
     # Group tracks by artist
     artists: Dict[str, List[Dict[str, str]]] = {}
     for track in tracks:
@@ -98,7 +104,7 @@ async def main():
     # Sort changes by artist and dateAdded
     all_changes.sort(key=lambda x: (x.get("artist", ""), x.get("dateAdded", "")))
     
-    # Compute the union of all keys across all change dictionaries
+    # Compute the union of all keys across change dictionaries
     all_keys = set()
     for change in all_changes:
         all_keys.update(change.keys())
