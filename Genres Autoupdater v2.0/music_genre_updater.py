@@ -10,6 +10,7 @@ with specific commands to clean and update genres for all tracks or particular a
 """
 
 import argparse
+import asyncio
 import logging
 import os
 import re
@@ -21,10 +22,9 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-import asyncio
 
-from scripts.logger import get_loggers
-from scripts.reports import save_to_csv, save_changes_report, sync_track_list_with_current
+from scripts.logger import get_loggers, get_full_log_path
+from scripts.reports import save_to_csv, save_changes_report, sync_track_list_with_current, load_track_list
 from scripts.analytics import Analytics
 
 # Define the directory and configuration path
@@ -47,7 +47,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         print(f"No read access to config file {config_path}.", file=sys.stderr)
         sys.exit(1)
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)    
+        return yaml.safe_load(f)
 
 
 # Initialize the configuration
@@ -55,11 +55,9 @@ CONFIG = load_config(CONFIG_PATH)
 
 # Initialize the loggers
 # Returns a tuple of three loggers: (console_logger, error_logger, analytics_logger)
-console_logger, error_logger, analytics_logger = get_loggers(
-    CONFIG["log_file"],
-    CONFIG.get("analytics", {}).get("analytics_log_file")
-)
-
+console_logger, error_logger, analytics_logger, _ = get_loggers(CONFIG)
+# Get the full path for the analytics log file
+analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/analytics.log")
 
 # Check the necessary paths
 def check_paths(paths: List[str], error_logger: Any) -> None:
@@ -386,7 +384,7 @@ def can_run_incremental(force_run: bool = False) -> bool:
     """
     if force_run:
         return True
-    last_file = CONFIG["last_incremental_run_file"]
+    last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
     interval = CONFIG["incremental_interval_minutes"]
     if not os.path.exists(last_file):
         console_logger.info("Last incremental run file not found. Proceeding.")
@@ -408,10 +406,8 @@ def can_run_incremental(force_run: bool = False) -> bool:
         diff = next_run_time - now
         minutes_remaining = diff.seconds // 60
         console_logger.info(
-            f"Last incremental run was at {last_run_time.strftime('%Y-%m-%d %H:%M:%S')}. "
-            f"Next run allowed after {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} "
-            f"({minutes_remaining} minutes remaining)."
-        )
+            f"Last incremental run was at {last_run_time.strftime('%Y-%m-%d %H:%M:%S')}. Next run allowed after {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} ({minutes_remaining} minutes remaining)."
+            )
         return False
 
 
@@ -420,7 +416,7 @@ def update_last_incremental_run() -> None:
     """
     Update the last incremental run timestamp in the config file.
     """
-    last_file = CONFIG["last_incremental_run_file"]
+    last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
     with open(last_file, "w", encoding="utf-8") as f:
         f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
@@ -492,7 +488,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     """
     # Load existing CSV map to see older statuses
     from scripts.reports import load_track_list
-    csv_path = CONFIG["csv_output_file"]
+    csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
     csv_map = load_track_list(csv_path)
 
     grouped = group_tracks_by_artist(tracks)
@@ -666,12 +662,12 @@ async def main_async(args: argparse.Namespace) -> None:
             # PARTIAL sync — do not remove other artists' tracks from CSV
             sync_track_list_with_current(
                 updated_tracks, 
-                CONFIG["csv_output_file"], 
+                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), 
                 console_logger, 
                 error_logger,
                 partial_sync=True
             )
-            save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
+            save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
             console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (clean_artist).")
         else:
             console_logger.info("No track names or album names needed cleaning (clean_artist).")
@@ -682,12 +678,12 @@ async def main_async(args: argparse.Namespace) -> None:
         if updated_g:
             sync_track_list_with_current(
                 updated_g, 
-                CONFIG["csv_output_file"],
+                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
                 console_logger, 
                 error_logger,
                 partial_sync=True
             )
-            save_changes_report(changes_g, CONFIG["changes_report_file"], console_logger, error_logger)
+            save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
             console_logger.info(f"Updated {len(updated_g)} tracks with new genres (clean_artist).")
         else:
             console_logger.info("No tracks needed genre updates (clean_artist).")
@@ -701,7 +697,7 @@ async def main_async(args: argparse.Namespace) -> None:
             return
 
         # Determine last_run_time
-        last_run_file = CONFIG["last_incremental_run_file"]
+        last_run_file = CONFIG["logging"]["last_incremental_run_file"]
         last_run_time_str = None
 
         if os.path.exists(last_run_file):
@@ -782,8 +778,8 @@ async def main_async(args: argparse.Namespace) -> None:
 
         # Save the results if any tracks were updated
         if updated_tracks:
-            save_to_csv(updated_tracks, CONFIG["csv_output_file"], console_logger, error_logger)
-            save_changes_report(changes_log, CONFIG["changes_report_file"], console_logger, error_logger)
+            save_to_csv(updated_tracks, CONFIG["logging"]["csv_output_file"], console_logger, error_logger)
+            save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
             console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (global cleaning).")
         else:
             console_logger.info("No track names or album names needed cleaning in this run.")
@@ -794,12 +790,12 @@ async def main_async(args: argparse.Namespace) -> None:
             # Sync with the current CSV file, removing missing tracks
             sync_track_list_with_current(
                 all_tracks,
-                CONFIG["csv_output_file"],
+                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
                 console_logger,
                 error_logger,
                 partial_sync=False  # full removal of missing
             )
-            save_changes_report(changes_g, CONFIG["changes_report_file"], console_logger, error_logger)
+            save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
             console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
             update_last_incremental_run()
         else:
@@ -822,9 +818,21 @@ def main() -> None:
 
     # Global argument for force
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
-
+    
+    # Global argument for dry-run
+    parser.add_argument("--dry-run", action="store_true", help="Simulate changes without applying them")
+    
     args = parser.parse_args()
 
+    if args.dry_run:
+        try:
+            from scripts import dry_run
+        except ImportError:
+            error_logger.error("Dry run module not found. Ensure 'scripts/dry_run.py' exists.")
+            sys.exit(1)
+        console_logger.info("Running in dry-run mode. No changes will be applied.")
+        asyncio.run(dry_run.main())
+        sys.exit(0)
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
