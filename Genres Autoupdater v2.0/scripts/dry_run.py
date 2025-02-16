@@ -12,10 +12,14 @@ import sys
 import os
 import asyncio
 import csv
+import logging
+
 from datetime import datetime
 from typing import Dict, List
 
 import yaml
+
+from logging.handlers import RotatingFileHandler
 
 # Add parent directory to sys.path to allow importing music_genre_updater module
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +27,7 @@ parent_dir = os.path.join(current_dir, "..")
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from scripts.logger import get_full_log_path, get_loggers
 from music_genre_updater import fetch_tracks_async, clean_names, determine_dominant_genre_for_artist
 
 # Load configuration from my-config.yaml
@@ -34,6 +39,19 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 # Use config to determine where to store the dry run CSV report
 DRY_RUN_REPORT_CSV = CONFIG.get("dry_run_report_file", os.path.join(SCRIPT_DIR, "dry_run_report.csv"))
 
+# Initialize loggers
+dry_run_log_file = get_full_log_path(CONFIG, "dry_run_log_file", "main logic/dry_run.log")
+dry_run_logger = logging.getLogger("dry_run_logger")
+
+if not dry_run_logger.handlers:
+    dry_run_logger.setLevel(logging.INFO)
+    fh = RotatingFileHandler(dry_run_log_file, maxBytes=CONFIG["logging"].get("max_bytes", 5000000), backupCount=CONFIG["logging"].get("backup_count", 3), encoding="utf-8")
+
+    from scripts.logger import ColoredFormatter
+    fh.setFormatter(ColoredFormatter("%(asctime)s - %(levelname)s - %(message)s", include_separator=True))
+    dry_run_logger.addHandler(fh)
+    dry_run_logger.propagate = False
+
 async def simulate_cleaning() -> List[Dict[str, str]]:
     """
     Simulate cleaning of track and album names without applying changes.
@@ -43,7 +61,7 @@ async def simulate_cleaning() -> List[Dict[str, str]]:
     tracks = await fetch_tracks_async()
     for track in tracks:
         # Skip tracks with prerelease status
-        if track.get("trackStatus", "").lower() == "prerelease":
+        if track.get("trackStatus", "").lower() in ("prerelease", "no longer available"):
             continue
         original_name = track.get("name", "")
         original_album = track.get("album", "")
@@ -68,8 +86,8 @@ async def simulate_genre_update() -> List[Dict[str, str]]:
     """
     simulated_changes = []
     tracks = await fetch_tracks_async()
-    # Skip tracks with prerelease status
-    tracks = [track for track in tracks if track.get("trackStatus", "").lower() != "prerelease"]
+    # Skip tracks with prerelease or no longer available status
+    tracks = [track for track in tracks if track.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
     
     # Group tracks by artist
     artists: Dict[str, List[Dict[str, str]]] = {}
