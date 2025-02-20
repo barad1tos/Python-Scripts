@@ -3,10 +3,10 @@
 """
 Music Genre Updater Script
 
-This script interacts with AppleScript to fetch tracks from the Music.app,
-applies name cleaning and genre updates and manages track data in CSV reports.
-It is designed to run periodically (e.g., via launchd) and can also be run manually
-with specific commands to clean and update genres for all tracks or particular artists.
+This script interacts with AppleScript to retrieve tracks from the Music.app,
+applies name cleansing and genre updates, and manages track data in CSV reports.
+It is designed to run periodically (e.g. via launchd) and can also be run manually.
+with specific commands to clean and update genres for all tracks or specific artists.
 """
 
 import argparse
