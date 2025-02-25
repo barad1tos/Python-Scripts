@@ -53,8 +53,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 # Initialize the configuration
 CONFIG = load_config(CONFIG_PATH)
 
-# Initialize the loggers
-# Returns a tuple of three loggers: (console_logger, error_logger, analytics_logger)
+# Initialize the loggers 
 console_logger, error_logger, analytics_logger, _ = get_loggers(CONFIG)
 # Get the full path for the analytics log file
 analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/analytics.log")
