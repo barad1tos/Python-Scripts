@@ -54,7 +54,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
 CONFIG = load_config(CONFIG_PATH)
 
 # Initialize the loggers 
-console_logger, error_logger, analytics_logger, _ = get_loggers(CONFIG)
+console_logger, error_logger, analytics_logger, cleaning_exceptions_logger = get_loggers(CONFIG)
 # Get the full path for the analytics log file
 analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/analytics.log")
 
@@ -179,7 +179,9 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
 def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
     Determine the dominant genre by picking the genre from the oldest track of the earliest album.
-    
+    Then there's an additional check which album's added date is the earliest to prevent situations
+    where the proper genre is on the newer album but the oldest track is on the older album.
+        
     :param artist_tracks: List of track dictionaries for a specific artist.
     :return: Genre from the earliest album's oldest track or "Unknown".
     """
@@ -201,12 +203,21 @@ def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> 
                 )
                 if track_date < existing_date:
                     album_earliest[album] = track
-        # Select the album with the earliest added track
-        earliest_album_track = min(
+
+        # Determine the earliest album by the date it was added to the library
+        earliest_album = min(
             album_earliest.values(),
             key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+        ).get("album", "Unknown")
+
+        # Find the earliest track within the earliest album
+        earliest_album_tracks = [track for track in artist_tracks if track.get("album") == earliest_album]
+        earliest_track = min(
+            earliest_album_tracks,
+            key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
         )
-        return earliest_album_track.get("genre") or "Unknown"
+
+        return earliest_track.get("genre") or "Unknown"
     except Exception as e:
         logging.error(f"Error in determine_dominant_genre_for_artist: {e}")
         return "Unknown"
@@ -238,7 +249,7 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     :return: Cleaned string.
     """
     try:
-        logging.info(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
+        logging.debug(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
         # Removes brackets and their contents if they contain one of the keywords.
         stack = []
         to_remove = set()
@@ -268,12 +279,12 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
             if any(keyword in content.lower() for keyword in keyword_set):
                 # Remove this pair of brackets
                 to_remove.add((start, end))
-                logging.info(f"Marking brackets ({start}, {end}) for removal due to keyword match")
+                logging.debug(f"Marking brackets ({start}, {end}) for removal due to keyword match")
                 # Also delete all external pairs containing this pair
                 for outer_start, outer_end in pairs:
                     if outer_start < start and outer_end > end:
                         to_remove.add((outer_start, outer_end))
-                        logging.info(f"Marking outer brackets ({outer_start}, {outer_end}) as well")
+                        logging.debug(f"Marking outer brackets ({outer_start}, {outer_end}) as well")
 
         # Remove the marked brackets, starting from the end of the line
         new_name = name
@@ -283,7 +294,7 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
 
         # Remove extra spaces
         new_name = re.sub(r"\s+", " ", new_name).strip()
-        logging.info(f"Cleaned name: '{new_name}'")
+        logging.debug(f"Cleaned name: '{new_name}'")
 
         return new_name
     except Exception as e:
@@ -318,9 +329,9 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
         return track_name.strip(), album_name.strip()
 
     remaster_keywords = CONFIG.get("cleaning", {}).get("remaster_keywords", ["remaster", "remastered"])
-    album_suffixes = CONFIG.get("cleaning", {}).get("album_suffixes_to_remove", [])
+    album_suffixes = set(CONFIG.get("cleaning", {}).get("album_suffixes_to_remove", []))
 
-    def clean_string(val: str) -> str:
+    def clean_string(val: str, remaster_keywords: List[str]) -> str:
         """
         Helper function to clean a string by removing specified patterns.
 
@@ -333,12 +344,12 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
 
     original_track = track_name
     original_album = album_name
-    cleaned_track = clean_string(track_name)
-    cleaned_album = clean_string(album_name)
+    cleaned_track = clean_string(track_name, remaster_keywords)
+    cleaned_album = clean_string(album_name, remaster_keywords)
 
     # Delete album suffixes
     for suffix in album_suffixes:
-        if cleaned_album.endswith(suffix):
+        if any(cleaned_album.endswith(suffix) for suffix in album_suffixes):
             cleaned_album = cleaned_album[: -len(suffix)].strip()
             console_logger.info(
                 f"Removed suffix '{suffix}' from album. New album name: '{cleaned_album}'"

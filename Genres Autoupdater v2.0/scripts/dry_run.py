@@ -36,11 +36,11 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "my-config.yaml")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
-# Use config to determine where to store the dry run CSV report
-DRY_RUN_REPORT_CSV = CONFIG.get("dry_run_report_file", os.path.join(SCRIPT_DIR, "dry_run_report.csv"))
-
-# Initialize loggers
+# Use config to determine where to store the dry run CSV report and log file
+DRY_RUN_REPORT_CSV = get_full_log_path(CONFIG, "dry_run_report_file", "main logic/dry_run_report.csv")
 dry_run_log_file = get_full_log_path(CONFIG, "dry_run_log_file", "main logic/dry_run.log")
+
+# Initialize dry run logger
 dry_run_logger = logging.getLogger("dry_run_logger")
 
 if not dry_run_logger.handlers:

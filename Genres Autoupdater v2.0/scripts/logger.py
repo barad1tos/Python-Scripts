@@ -56,10 +56,10 @@ class ColoredFormatter(logging.Formatter):
 def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger, Logger]:
     """
     Creates and returns four loggers:
-      1) console_logger (INFO+ to console, without dividing line),
-      2) error_logger (ERROR+ to rotating file, with dividing line),
-      3) analytics_logger (INFO+ to rotating file, with dividing line),
-      4) cleaning_exceptions_logger (for cleaning/exceptions, to rotating file, with dividing line).
+        1) console_logger (INFO+ to console, without dividing line),
+        2) error_logger (ERROR+ to rotating file, with dividing line),
+        3) analytics_logger (INFO+ to rotating file, with dividing line),
+        4) cleaning_exceptions_logger (for cleaning/exceptions, to rotating file, with dividing line).
     
     Paths are built using the 'logs_base_dir' parameter from the configuration.
     """
