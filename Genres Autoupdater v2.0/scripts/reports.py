@@ -4,7 +4,8 @@
 Reports Module
 
 Provides functions for generating CSV and HTML reports, as well as track list synchronisation.
-HTML reports are stored in the analytics/reports directory relative to logs_base_dir.
+HTML reports are stored in a fixed file (e.g., analytics/reports/analytics.html) under logs_base_dir,
+so that each run overwrites the report rather than creating new files.
 """
 
 import os
@@ -107,10 +108,9 @@ def save_html_report(
 ) -> None:
     """
     Generate an HTML report from the provided analytics data.
-
-    The output file name is made unique per run if it contains '{timestamp}'.
-    The HTML report is stored in the directory specified by the configuration.
-
+    
+    The HTML report is written to a fixed file (e.g., analytics/reports/analytics.html),
+    so that each run overwrites the previous report.
     Args:
         events (List[Dict[str, Any]]): List of event dictionaries.
         call_counts (Dict[str, int]): Mapping of function names to call counts.
@@ -128,13 +128,11 @@ def save_html_report(
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     logs_base_dir = config.get("logs_base_dir", ".")
-    reports_dir = os.path.join(logs_base_dir, "analytics", "logging")
+    reports_dir = os.path.join(logs_base_dir, "analytics", "reports")
     os.makedirs(reports_dir, exist_ok=True)
     
-    # Задаємо date_str на самому початку
-    html_template = config.get("reports", {}).get("html_report_file", "analytics/reports/analytics.html")
+    html_template = config["logging"].get("html_report_file", "analytics/reports/analytics.html")
     report_file = os.path.join(logs_base_dir, html_template)
-    report_file = report_file
     
     duration_thresholds = config.get("analytics", {}).get("duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10})
     colors = config.get("analytics", {}).get("colors", {"short": "#90EE90", "medium": "#D3D3D3", "long": "#FFB6C1"})
