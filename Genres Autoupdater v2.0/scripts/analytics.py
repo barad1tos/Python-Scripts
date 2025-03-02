@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Analytics Module
 
@@ -52,7 +50,7 @@ class Analytics:
         success: bool
     ) -> None:
         """
-        Write the event to self.events and do minimal logging.
+        Write the event to self.events and perform minimal logging.
 
         :param function_name: Name of the function being called.
         :param event_type: Type/description of the event.
@@ -74,16 +72,13 @@ class Analytics:
         if success:
             self.success_counts[function_name] = self.success_counts.get(function_name, 0) + 1
 
-        # Minimal logging
         if success:
-            # If the call is successful; we log it at DEBUG level for minimal spam
             msg = f"[A] {function_name} ({event_type}) took {duration:.3f}s (OK)."
             if duration > self.long_duration_threshold:
                 msg += " [LONG!]"
             self.console_logger.debug(msg)
             self.analytics_logger.debug(msg)
         else:
-            # If there is an error, display warning
             msg = f"[A] {function_name} ({event_type}) failed after {duration:.3f}s!"
             self.console_logger.warning(msg)
             self.analytics_logger.warning(msg)
@@ -108,24 +103,24 @@ class Analytics:
                 async def async_wrapper(*args, **kwargs):
                     func_name = func.__name__
                     decorator_start = time.time()
+                    function_start = time.time()
+                    function_end = function_start
+                    success = False
                     try:
-                        function_start = time.time()
                         result = await func(*args, **kwargs)
-                        function_end = time.time()
                         success = True
                         return result
                     except Exception as e:
                         function_end = time.time()
-                        success = False
                         raise e
                     finally:
+                        function_end = time.time()
                         decorator_end = time.time()
                         function_duration = function_end - function_start
                         decorator_duration = decorator_end - decorator_start
                         overhead = decorator_duration - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
-                        # Log an additional record to signal end of section
                         self.analytics_logger.info("SECTION_END", extra={"section_end": True})
                 return async_wrapper
             else:
@@ -133,24 +128,24 @@ class Analytics:
                 def sync_wrapper(*args, **kwargs):
                     func_name = func.__name__
                     decorator_start = time.time()
+                    function_start = time.time()
+                    function_end = function_start
+                    success = False
                     try:
-                        function_start = time.time()
                         result = func(*args, **kwargs)
-                        function_end = time.time()
                         success = True
                         return result
                     except Exception as e:
                         function_end = time.time()
-                        success = False
                         raise e
                     finally:
+                        function_end = time.time()
                         decorator_end = time.time()
                         function_duration = function_end - function_start
                         decorator_duration = decorator_end - decorator_start
                         overhead = decorator_duration - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
-                        # Log a section end record for file loggers
                         self.analytics_logger.info("SECTION_END", extra={"section_end": True})
                 return sync_wrapper
         return decorator_function

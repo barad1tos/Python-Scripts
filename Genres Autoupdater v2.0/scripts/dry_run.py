@@ -3,9 +3,11 @@
 """
 Dry Run Module
 
-This module simulates upcoming changes (cleaning and genre updates)
-without applying them, and outputs the simulated changes in a CSV report.
-The report is overwritten each time.
+Simulates upcoming changes (cleaning and genre updates)
+without applying them, outputting each type of changes
+into a separate CSV report.
+
+The CSV files are overwritten each time.
 """
 
 import sys
@@ -21,7 +23,7 @@ import yaml
 
 from logging.handlers import RotatingFileHandler
 
-# Add parent directory to sys.path to allow importing music_genre_updater module
+# Add path to music_genre_updater and scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.join(current_dir, "..")
 if parent_dir not in sys.path:
@@ -30,32 +32,27 @@ if parent_dir not in sys.path:
 from scripts.logger import get_full_log_path, get_loggers
 from music_genre_updater import fetch_tracks_async, clean_names, determine_dominant_genre_for_artist
 
-# Load configuration from my-config.yaml
+# Load the configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "my-config.yaml")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
-# Use config to determine where to store the dry run CSV report and log file
-DRY_RUN_REPORT_CSV = get_full_log_path(CONFIG, "dry_run_report_file", "main logic/dry_run_report.csv")
-dry_run_log_file = get_full_log_path(CONFIG, "dry_run_log_file", "main logic/dry_run.log")
+# Loggers (optional, but can be used)
+console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
 
-# Initialize dry run logger
-dry_run_logger = logging.getLogger("dry_run_logger")
+# Steps to CSV for dry-run (for cleaning ta genre)
+DRY_RUN_CLEANING_CSV = get_full_log_path(CONFIG, "dry_run_cleaning_file", "csv/dry_run_cleaning.csv")
+DRY_RUN_GENRE_CSV = get_full_log_path(CONFIG, "dry_run_genre_file", "csv/dry_run_genre_update.csv")
 
-if not dry_run_logger.handlers:
-    dry_run_logger.setLevel(logging.INFO)
-    fh = RotatingFileHandler(dry_run_log_file, maxBytes=CONFIG["logging"].get("max_bytes", 5000000), backupCount=CONFIG["logging"].get("backup_count", 3), encoding="utf-8")
-
-    from scripts.logger import ColoredFormatter
-    fh.setFormatter(ColoredFormatter("%(asctime)s - %(levelname)s - %(message)s", include_separator=True))
-    dry_run_logger.addHandler(fh)
-    dry_run_logger.propagate = False
 
 async def simulate_cleaning() -> List[Dict[str, str]]:
     """
-    Simulate cleaning of track and album names without applying changes.
-    Returns a list of simulated cleaning changes.
+    Simulate cleaning of track/album names without applying changes.
+    Returns a list of simulated cleaning changes, each with relevant fields.
+
+    Returns:
+        List[Dict[str, str]]: List of dictionaries describing the 'cleaning' changes.
     """
     simulated_changes = []
     tracks = await fetch_tracks_async()
@@ -79,22 +76,27 @@ async def simulate_cleaning() -> List[Dict[str, str]]:
             })
     return simulated_changes
 
+
 async def simulate_genre_update() -> List[Dict[str, str]]:
     """
     Simulate genre updates without applying changes.
-    Returns a list of simulated genre update changes.
+    Returns a list of simulated 'genre_update' changes.
+
+    Returns:
+        List[Dict[str, str]]: List of dictionaries describing the 'genre_update' changes.
     """
     simulated_changes = []
     tracks = await fetch_tracks_async()
-    # Skip tracks with prerelease or no longer available status
-    tracks = [track for track in tracks if track.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
+    # Skip tracks with unusable status
+    tracks = [t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
     
     # Group tracks by artist
     artists: Dict[str, List[Dict[str, str]]] = {}
     for track in tracks:
         artist = track.get("artist", "Unknown")
         artists.setdefault(artist, []).append(track)
-    # For each artist, determine the dominant genre using the new logic
+    
+    # We determine the dominant genre for each artist
     for artist, artist_tracks in artists.items():
         dominant_genre = determine_dominant_genre_for_artist(artist_tracks)
         for track in artist_tracks:
@@ -112,34 +114,84 @@ async def simulate_genre_update() -> List[Dict[str, str]]:
                 })
     return simulated_changes
 
+
+def save_cleaning_csv(changes: List[Dict[str, str]], file_path: str) -> None:
+    """
+    Save cleaning changes to a dedicated CSV file.
+
+    Args:
+        changes (List[Dict[str, str]]): The list of 'cleaning' changes.
+        file_path (str): Full path to the CSV file.
+    """
+    fieldnames = [
+        "change_type",
+        "track_id",
+        "artist",
+        "original_name",
+        "cleaned_name",
+        "original_album",
+        "cleaned_album",
+        "dateAdded",
+    ]
+    console_logger.info(f"Saving cleaning changes to {file_path}")
+    csv_dir = os.path.dirname(file_path)
+    if csv_dir and not os.path.exists(csv_dir):
+        os.makedirs(csv_dir, exist_ok=True)
+
+    with open(file_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in changes:
+            writer.writerow(row)
+    console_logger.info(f"Cleaning changes saved: {len(changes)} rows.")
+
+
+def save_genre_csv(changes: List[Dict[str, str]], file_path: str) -> None:
+    """
+    Save genre update changes to a dedicated CSV file.
+
+    Args:
+        changes (List[Dict[str, str]]): The list of 'genre_update' changes.
+        file_path (str): Full path to the CSV file.
+    """
+    fieldnames = [
+        "change_type",
+        "track_id",
+        "artist",
+        "album",
+        "track_name",
+        "original_genre",
+        "simulated_genre",
+        "dateAdded",
+    ]
+    console_logger.info(f"Saving genre update changes to {file_path}")
+    csv_dir = os.path.dirname(file_path)
+    if csv_dir and not os.path.exists(csv_dir):
+        os.makedirs(csv_dir, exist_ok=True)
+
+    with open(file_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in changes:
+            writer.writerow(row)
+    console_logger.info(f"Genre update changes saved: {len(changes)} rows.")
+
+
 async def main():
     """
-    Main function for dry run simulation.
+    Main function for dry run simulation:
+    1) simulate cleaning changes,
+    2) simulate genre update changes,
+    3) save them into two separate CSV files.
     """
     cleaning_changes = await simulate_cleaning()
     genre_changes = await simulate_genre_update()
-    all_changes = cleaning_changes + genre_changes
-    # Sort changes by artist and dateAdded
-    all_changes.sort(key=lambda x: (x.get("artist", ""), x.get("dateAdded", "")))
-    
-    # Compute the union of all keys across change dictionaries
-    all_keys = set()
-    for change in all_changes:
-        all_keys.update(change.keys())
-    # Sort fieldnames for consistency
-    fieldnames = sorted(all_keys)
-    
-    # Ensure every change dict has all keys (fill missing with empty string)
-    for change in all_changes:
-        for key in fieldnames:
-            if key not in change:
-                change[key] = ""
-    
-    with open(DRY_RUN_REPORT_CSV, "w", newline="", encoding="utf-8") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(all_changes)
-    print(f"Dry run simulation completed. Report saved to {DRY_RUN_REPORT_CSV}")
+
+    save_cleaning_csv(cleaning_changes, DRY_RUN_CLEANING_CSV)
+    save_genre_csv(genre_changes, DRY_RUN_GENRE_CSV)
+
+    console_logger.info("Dry run simulation completed.")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
