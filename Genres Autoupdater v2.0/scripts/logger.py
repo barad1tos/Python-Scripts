@@ -105,7 +105,7 @@ def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger]:
     # Initialize console_logger
     console_logger = logging.getLogger("console_logger")
     if not console_logger.handlers:
-        console_logger.setLevel(logging.INFO)
+        console_logger.setLevel(logging.WARNING)
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(console_formatter)
         console_logger.addHandler(ch)
@@ -128,7 +128,7 @@ def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger]:
     # Initialize analytics_logger (writes INFO+ to rotating file)
     analytics_logger = logging.getLogger("analytics_logger")
     if not analytics_logger.handlers:
-        analytics_logger.setLevel(logging.INFO)
+        analytics_logger.setLevel(logging.WARNING)
         max_bytes = config.get("logging", {}).get("max_bytes", 5000000)
         backup_count = config.get("logging", {}).get("backup_count", 2)
         ah = RotatingFileHandler(
