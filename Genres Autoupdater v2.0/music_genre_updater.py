@@ -109,8 +109,9 @@ async def run_applescript_async(script_name: str, args: Optional[List[str]] = No
     Returns:
         Optional[str]: Output from the script or None if failed.
     """
+    global AP_CLIENT
     if AP_CLIENT is None:
-        raise RuntimeError("AppleScriptClient (AP_CLIENT) is not initialized.")
+        AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
     return await AP_CLIENT.run_script(script_name, args)
 
 @get_decorator("Parse Tracks")
