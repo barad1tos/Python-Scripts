@@ -314,12 +314,17 @@ Parameter Descriptions:
 The project utilizes two loggers for comprehensive logging:
 
 1. Console Logger (console_logger):
-  - Logs messages with a severity level of INFO and above to the console.
-  - Provides real-time feedback during script execution.
+
+     - Logs messages with a severity level of INFO and above to the console.
+     - Provides real-time feedback during script execution.
+
 2. Error Logger (error_logger):
+
      - Logs messages with a severity level of ERROR to a specified log file.
      - Helps in diagnosing issues by providing detailed error information.
+
 3. Analytics Logger (analytics_logger):
+
      - Logs information related to function durations, overhead, and call counts.
      - If analytics_log_file is configured in config.yaml, logs are written to that file using a rotating file handler.
      - Otherwise, analytics logs go to the console.
