@@ -1,7 +1,7 @@
 
-![image](https://github.com/user-attachments/assets/ec7fc8b7-5825-4eb5-81ad-0dc5d9fb3755)
-
 # Music Genre Updater
+
+![image](https://github.com/user-attachments/assets/ec7fc8b7-5825-4eb5-81ad-0dc5d9fb3755)
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue.svg)
@@ -9,7 +9,7 @@
 ![GitHub Forks](https://img.shields.io/github/forks/yourusername/music-genre-updater)
 ![GitHub Stars](https://img.shields.io/github/stars/yourusername/music-genre-updater)
 
-Automated Music Genre Updater for Apple Music. This project leverages Python, AppleScript, and an analytics module to analyze your music library, determine dominant genres for each artist, and update track genres accordingly.
+Music Genre Updater is a Python-based tool that automatically updates the genres of your music tracks in Apple Music. By analyzing your music library, it determines the dominant genre for each artist and updates all corresponding tracks accordingly. The project now includes a sophisticated algorithm to better handle various edge cases.
 
 ## Table of Contents
 
@@ -30,8 +30,8 @@ Automated Music Genre Updater for Apple Music. This project leverages Python, Ap
 - [Configuration Details](#configuration-details)
   - [config.yaml](#configyaml)
 - [Logging](#logging)
-  - [Log Configuration:](#log-configuration)
-  - [Log Files:](#log-files)
+  - [Log Configuration](#log-configuration)
+  - [Log Files](#log-files)
   - [Analytics Module](#analytics-module)
 - [Auxiliary Scripts](#auxiliary-scripts)
   - [AppleScript Scripts](#applescript-scripts)
@@ -76,6 +76,7 @@ Begin by cloning the repository to your local machine:
 git clone https://github.com/yourusername/music-genre-updater.git
 cd music-genre-updater
 ```
+
 Set Up a Virtual Environment
 
 It’s recommended to use a Python virtual environment to manage dependencies:
@@ -108,22 +109,23 @@ Open config.yaml in your preferred text editor and update the paths and settings
 ## Setting Up the Launch Agent with launchctl
 
 To automate the execution of the Music Genre Updater, set up a launchctl agent:
-1.	Create the LaunchAgents Directory (if it doesn’t exist):
+
+1. Create the LaunchAgents Directory (if it doesn’t exist):
 
 ```bash
 mkdir -p ~/Library/LaunchAgents
 ```
 
-2.	Create the plist File:
- 
+2. Create the plist File:
+
 Create a file named com.barad1tos.MusicGenreUpdater.plist in the ~/Library/LaunchAgents/ directory:
 
 ```bash
 nano ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
-3.	Add the Following Content to the plist File:
- 
+3. Add the Following Content to the plist File:
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -157,18 +159,20 @@ nano ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
 Important:
+
 - Replace /path/to/your/music_genre_updater.py with the actual path to your music_genre_updater.py script.
 - Replace /path/to/your/project/directory with the path to your project’s root directory.
 - Update the paths for StandardOutPath and StandardErrorPath to desired log file locations.
 
-4.	Load the Launch Agent:
+4. Load the Launch Agent:
+
 Load the newly created agent using launchctl:
 
 ```bash
 launchctl load ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
-5.	Verify the Launch Agent is Loaded:
+5. Verify the Launch Agent is Loaded:
 Check if the agent is running:
 
 ```bash
@@ -177,7 +181,7 @@ launchctl list | grep com.barad1tos.MusicGenreUpdater
 
 If loaded successfully, you should see an entry corresponding to com.barad1tos.MusicGenreUpdater.
 
-6.	Unload the Launch Agent (Optional):
+6. the Launch Agent (Optional):
 If you need to unload the agent in the future:
 
 ```bash
@@ -200,6 +204,7 @@ python music_genre_updater.py
 ## Command-Line Arguments
 
 The script supports several command-line arguments to customize its behavior:
+
 - --force: Force the execution, bypassing incremental checks.
 - clean_artist --artist "Artist Name": Clean track and album names for a specified artist.
 
@@ -288,6 +293,7 @@ analytics:
 ```
 
 Parameter Descriptions:
+
 - music_library_path: Absolute path to your Apple Music library file.
 - apple_scripts_dir: Directory where AppleScript files (fetch_tracks.applescript, update_property.applescript) are located.
 - log_file: File path where logs will be stored.
@@ -306,24 +312,27 @@ Parameter Descriptions:
 # Logging
 
 The project utilizes two loggers for comprehensive logging:
-1.	Console Logger (console_logger):
-  - Logs messages with a severity level of INFO and above to the console.
-  - Provides real-time feedback during script execution.
-2.	Error Logger (error_logger):
-  - Logs messages with a severity level of ERROR to a specified log file.
-  - Helps in diagnosing issues by providing detailed error information.
-3.	Analytics Logger (analytics_logger):
-  -	Logs information related to function durations, overhead, and call counts.
-  -	If analytics_log_file is configured in config.yaml, logs are written to that file using a rotating file handler.
-  -	Otherwise, analytics logs go to the console.
 
-## Log Configuration:
+1. Console Logger (console_logger):
+     - Logs messages with a severity level of INFO and above to the console.
+     - Provides real-time feedback during script execution.
+2. Error Logger (error_logger):
+     - Logs messages with a severity level of ERROR to a specified log file.
+     - Helps in diagnosing issues by providing detailed error information.
+3. Analytics Logger (analytics_logger):
+     - Logs information related to function durations, overhead, and call counts.
+     - If analytics_log_file is configured in config.yaml, logs are written to that file using a rotating file handler.
+     - Otherwise, analytics logs go to the console.
+
+## Log Configuration
 
 Logging is configured in the logger.py module. The ColoredFormatter class adds color to log messages based on their severity:
+
 - Errors: Displayed in red.
 - Info Messages: Displayed in the default console color.
 
-## Log Files:
+## Log Files
+
 - Standard Output Log: Defined by StandardOutPath in the .plist file (e.g., music_genre_updater_stdout.log).
 - Standard Error Log: Defined by StandardErrorPath in the .plist file (e.g., music_genre_updater_stderr.log).
 - Main Log File: Defined in config.yaml (log_file).
@@ -332,6 +341,7 @@ Logging is configured in the logger.py module. The ColoredFormatter class adds c
 ## Analytics Module
 
 A new analytics module provides detailed performance metrics for key functions, leveraging Python decorators to measure:
+
 - Execution Duration
 - Call Counts & Success Counts
 - Decorator Overhead
@@ -343,61 +353,71 @@ It optionally generates an HTML report (stored in the directory specified by ana
 The project includes AppleScript scripts to interact with Apple Music. These scripts are essential for fetching track information and updating track properties.
 
 ## AppleScript Scripts
-1.	fetch_tracks.applescript:
-  - Purpose: Retrieves information about tracks from Apple Music.
-  - Functionality:
-    - Fetches track details such as ID, name, artist, album, genre, date added, and status.
-    - Supports filtering by a specific artist if provided as an argument.
-    - Formats the output in a structured manner for the Python script to parse.
-2.	update_property.applescript:
-  - Purpose: Updates specified properties (name, album, genre) of a track in Apple Music.
-  - Functionality:
-    - Takes a track ID, property name, and new property value as arguments.
-    - Updates the specified property of the given track.
-    - Returns a success or error message based on the operation outcome.
+
+1. fetch_tracks.applescript:
+     - Purpose: Retrieves information about tracks from Apple Music.
+     - Functionality:
+       - Fetches track details such as ID, name, artist, album, genre, date added, and status.
+       - Supports filtering by a specific artist if provided as an argument.
+       - Formats the output in a structured manner for the Python script to parse.
+2. update_property.applescript:
+     - Purpose: Updates specified properties (name, album, genre) of a track in Apple Music.
+     - Functionality:
+       - Takes a track ID, property name, and new property value as arguments.
+       - Updates the specified property of the given track.
+       - Returns a success or error message based on the operation outcome.
 
 Location:
+
 - Both scripts are stored in the directory specified by the apple_scripts_dir parameter in config.yaml.
 
 Usage:
+
 - The Python script music_genre_updater.py invokes these AppleScript scripts using the osascript command to perform necessary operations on the Apple Music library.
 
 # Contributing
 
 Contributions to the Music Genre Updater are welcome! To contribute, please follow these steps:
-1.	Fork the Repository:
+
+1. Fork the Repository:
+
 Click the “Fork” button at the top-right corner of the repository page to create your own fork.
-2.	Clone Your Fork:
+
+2. Clone Your Fork:
+
 ```bash
 git clone https://github.com/yourusername/music-genre-updater.git
 cd music-genre-updater
 ```
 
-3.	Create a New Branch:
+3. Create a New Branch:
 
 ```bash
 git checkout -b feature/YourFeatureName
 ```
 
-4.	Make Your Changes:
+4. Make Your Changes:
+
 Implement your feature or bug fix in your local branch.
-5.	Commit Your Changes:
+
+5. Commit Your Changes:
 
 ```bash
 git commit -m "Add feature: YourFeatureName"
 ```
 
-6.	Push to Your Fork:
+6. Push to Your Fork:
 
 ```bash
 git push origin feature/YourFeatureName
 ```
 
+7. Create a Pull Request:
 
-7.	Create a Pull Request:
 Navigate to your forked repository on GitHub and click the “Compare & pull request” button to submit your changes for review.
 
 Please ensure your contributions adhere to the following guidelines:
+
 - Follow the existing code style and conventions.
 - Write clear and concise commit messages.
 - Include relevant documentation or tests for your changes.
@@ -409,8 +429,9 @@ This project is licensed under the MIT License. You are free to use, modify, and
 # Contact
 
 For any questions, suggestions, or support, please reach out:
+
 - Author: Roman Borodavkin
-- Email: roman.borodavkin@gmail.com
+- Email:[roman.borodavkin@gmail.com](mailto:roman.borodavkin@gmail.com)
 - GitHub: [@barad1tos](https://github.com/barad1tos)
 - LinkedIn: [Roman Borodavkin](https://www.linkedin.com/in/barad1tos/)
 
@@ -419,15 +440,16 @@ Note: This project is intended for personal use. Before using the scripts, ensur
 # Troubleshooting
 
 If you encounter issues while setting up or running the Music Genre Updater, consider the following troubleshooting steps:
-1.	Check Log Files:
-  - Review the log files specified in config.yaml and the plist file for error messages.
-2.	Verify Paths:
-  - Ensure all paths in config.yaml and the plist file are correct and accessible.
-3.	Permissions:
-  - Confirm that the script has the necessary permissions to read and write to the specified directories and files.
-4.	AppleScript Execution:
-  - Test the AppleScript scripts manually to ensure they function correctly.
-  - Open the Terminal and run:
+
+1. Check Log Files:
+     - Review the log files specified in config.yaml and the plist file for error messages.
+2.Verify Paths:
+     - Ensure all paths in config.yaml and the plist file are correct and accessible.
+3.Permissions:
+     - Confirm that the script has the necessary permissions to read and write to the specified directories and files.
+4.AppleScript Execution:
+     - Test the AppleScript scripts manually to ensure they function correctly.
+     - Open the Terminal and run:
 
 ```bash
 osascript /path/to/fetch_tracks.applescript
@@ -435,30 +457,31 @@ osascript /path/to/fetch_tracks.applescript
 osascript /path/to/fetch_tracks.applescript
 ```
 
-5.	Python Dependencies:
-  - Ensure all Python dependencies are installed correctly within your virtual environment.
-  - Reinstall dependencies if necessary:
+5. Python Dependencies:
+     - Ensure all Python dependencies are installed correctly within your virtual environment.
+     - Reinstall dependencies if necessary:
 
 ```bash
 pip install --upgrade --force-reinstall -r requirements.txt
 ```
 
-6.	Launch Agent Status:
-  - Verify that the launchctl agent is loaded and running:
+6.Launch Agent Status:
+     - Verify that the launchctl agent is loaded and running:
 
 ```bash
 launchctl list | grep com.barad1tos.MusicGenreUpdater
 ```
 
-  - If not running, reload the agent:
+- If not running, reload the agent:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 launchctl load ~/Library/LaunchAgents/com.barad1tos.MusicGenreUpdater.plist
 ```
 
-7.	Python Version:
-  - Ensure you are using Python 3.8 or higher:
+7. Python Version:
+     - Ensure you are using Python 3.8 or higher:
+
   ```bash
   python3 --version
   ```
@@ -488,7 +511,7 @@ A: Yes and no. Apple Music syncs your changes almost instantly, so there's no wa
 
 **Q5: How can I see the changes made by the script?**
 
-A: The script creates a changes_report.csv file as specified in config.yaml. This file contains details of all changes made during the update process, including artist, album, track name, old genre, new genre, and new track name. 
+A: The script creates a changes_report.csv file as specified in config.yaml. This file contains details of all changes made during the update process, including artist, album, track name, old genre, new genre, and new track name.
 
 **Q6: Can I run multiple instances of the script at the same time?**
 
@@ -507,4 +530,3 @@ Make sure you check for any configuration or dependency updates and adjust your 
 A: Yes, you can. You can modify the remaster_keywords and album_suffixes_to_remove in the cleaning section of config.yaml to include or exclude specific keywords based on your preferences.
 
 Disclaimer: Always make sure you have backups of your music library before running automated scripts that modify your data. Use this tool at your own risk.
-
