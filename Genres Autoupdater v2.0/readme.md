@@ -314,8 +314,8 @@ Parameter Descriptions:
 The project utilizes two loggers for comprehensive logging:
 
 1. Console Logger (console_logger):
-     - Logs messages with a severity level of INFO and above to the console.
-     - Provides real-time feedback during script execution.
+  - Logs messages with a severity level of INFO and above to the console.
+  - Provides real-time feedback during script execution.
 2. Error Logger (error_logger):
      - Logs messages with a severity level of ERROR to a specified log file.
      - Helps in diagnosing issues by providing detailed error information.
