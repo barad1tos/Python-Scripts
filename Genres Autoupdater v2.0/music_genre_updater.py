@@ -227,6 +227,7 @@ def is_music_app_running() -> bool:
 def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     """
     Remove parentheses and their content if they contain any of the specified keywords.
+    Handles nested parentheses correctly and iteratively processes from inner to outer.
 
     :param name: The name to clean.
     :param keywords: A list of keywords to check for in the parentheses.
@@ -234,37 +235,55 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     """
     try:
         logging.debug(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
-        stack = []
-        to_remove = set()
+        if not name or not keywords:
+            return name
+            
+        # Convert keywords to lowercase for case-insensitive comparison
         keyword_set = set(k.lower() for k in keywords)
-        pairs = []
-        for i, char in enumerate(name):
-            if char in "([":
-                stack.append((char, i))
-            elif char in ")]":
-                if stack:
-                    start_char, start = stack.pop()
-                    if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
-                        pairs.append((start, i))
-        logging.debug(f"Bracket pairs found: {pairs}")
-        pairs.sort()
-        for start, end in reversed(pairs):
-            content = name[start + 1:end]
-            logging.debug(f"Checking content inside brackets: '{content}'")
-            if any(keyword in content.lower() for keyword in keyword_set):
-                to_remove.add((start, end))
-                logging.debug(f"Marking brackets ({start}, {end}) for removal due to keyword match")
-                for outer_start, outer_end in pairs:
-                    if outer_start < start and outer_end > end:
-                        to_remove.add((outer_start, outer_end))
-                        logging.debug(f"Marking outer brackets ({outer_start}, {outer_end}) as well")
-        new_name = name
-        for start, end in sorted(to_remove, reverse=True):
-            logging.debug(f"Removing brackets from index {start} to {end}")
-            new_name = new_name[:start] + new_name[end + 1:]
-        new_name = re.sub(r"\s+", " ", new_name).strip()
-        logging.debug(f"Cleaned name: '{new_name}'")
-        return new_name
+        
+        # Iteratively clean brackets until no more matches are found
+        prev_name = ""
+        current_name = name
+        
+        while prev_name != current_name:
+            prev_name = current_name
+            
+            # Find all bracket pairs in the current version of the string
+            stack = []
+            pairs = []
+            
+            for i, char in enumerate(current_name):
+                if char in "([":
+                    stack.append((char, i))
+                elif char in ")]":
+                    if stack:
+                        start_char, start_idx = stack.pop()
+                        if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
+                            pairs.append((start_idx, i))
+            
+            # Sort pairs by start index
+            pairs.sort()
+            
+            # Find which pairs to remove based on keywords
+            to_remove = set()
+            for start, end in pairs:
+                content = current_name[start + 1:end]
+                if any(keyword.lower() in content.lower() for keyword in keyword_set):
+                    to_remove.add((start, end))
+            
+            # If nothing found to remove, we're done
+            if not to_remove:
+                break
+                
+            # Remove brackets (from right to left to maintain indices)
+            for start, end in sorted(to_remove, reverse=True):
+                current_name = current_name[:start] + current_name[end + 1:]
+        
+        # Clean up multiple spaces
+        result = re.sub(r"\s+", " ", current_name).strip()
+        logging.debug(f"Cleaned result: '{result}'")
+        return result
+        
     except Exception as e:
         logging.error(f"Error in remove_parentheses_with_keywords: {e}", exc_info=True)
         return name
