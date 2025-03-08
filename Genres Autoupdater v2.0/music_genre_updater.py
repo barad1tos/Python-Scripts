@@ -3,9 +3,26 @@
 """
 Music Genre Updater Script
 
-This script interacts with AppleScript via the AppleScriptClient to retrieve tracks from Music.app,
-applies name cleansing and genre updates, and manages track data in CSV reports.
-It supports periodic execution via launchd and manual run with specific commands.
+This script fetches tracks from the Music app using AppleScript and updates the genres
+based on the earliest album and track for each artist. It also cleans track and album names
+by removing remaster keywords and album suffixes. The script can be run in incremental mode
+to update only the tracks that have been added since the last run.
+
+The script can be run in two modes:
+1. Global Cleaning: Cleans all track and album names and updates genres for all tracks.
+2. Artist Cleaning: Cleans track and album names for a specific artist and updates genres.
+
+The script requires the following configuration in 'my-config.yaml':
+1. music_library_path: Path to the Music library XML file.
+2. apple_scripts_dir: Path to the directory containing the AppleScript files.
+3. logs_base_dir: Base directory for logs and reports.
+4. cache_ttl_seconds: Cache TTL for fetched tracks in seconds (default 900).
+5. incremental_interval_minutes: Interval between incremental runs in minutes (default 60).
+6. exceptions: List of exceptions for track cleaning and genre updates.
+7. cleaning: Configuration for cleaning track and album names.
+8. test_artists: List of test artists to fetch tracks for (for testing purposes).
+
+The script logs errors and changes to CSV files and generates reports for analytics.
 
 Example usage:
     python3 music_genre_updater.py --dry-run
@@ -21,16 +38,16 @@ import re
 import subprocess
 import sys
 import time
+import yaml
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-import yaml
-
-from scripts.logger import get_loggers, get_full_log_path
-from scripts.reports import save_to_csv, save_changes_report, sync_track_list_with_current, load_track_list
 from scripts.analytics import Analytics
 from scripts.applescript_client import AppleScriptClient
+from scripts.logger import get_full_log_path, get_loggers
+from scripts.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
 
 # Global variable for AppleScriptClient; it will be initialized inside main_async()
 AP_CLIENT: Optional[AppleScriptClient] = None
@@ -41,13 +58,10 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """
-    Load the YAML configuration file.
+    Load the configuration from the specified YAML file.
 
-    Args:
-        config_path (str): Path to the configuration file.
-
-    Returns:
-        Dict[str, Any]: The configuration as a dictionary.
+    :param config_path: Path to the YAML configuration file.
+    :return: A dictionary containing the configuration.
     """
     if not os.path.exists(config_path):
         print(f"Config file {config_path} does not exist.", file=sys.stderr)
@@ -66,11 +80,10 @@ analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/
 
 def check_paths(paths: List[str], logger: logging.Logger) -> None:
     """
-    Check if provided paths exist and are readable.
+    Check if the specified paths exist and are readable.
 
-    Args:
-        paths (List[str]): List of file/directory paths.
-        logger (logging.Logger): Logger to log error messages.
+    :param paths: A list of paths to check.
+    :param logger: The logger to use for error messages.
     """
     for path in paths:
         if not os.path.exists(path):
@@ -86,37 +99,41 @@ check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_l
 analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 
 # Global cache for fetched tracks; cache TTL is set in config (default 900 seconds)
+# The cache stores the results of requests to Music.app to reduce the load on AppleScript
+# Format: {cache_key: (track_data, timestamp)}
 CACHE_TTL = CONFIG.get("cache_ttl_seconds", 900)
 fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
 
 def get_decorator(event_type: str):
     """
-    Retrieve an analytics decorator for a specified event type.
+    Decorator function to track function calls with the specified event type.
 
-    Args:
-        event_type (str): The event type to be logged.
-
-    Returns:
-        Callable: A decorator function.
+    :param event_type: The event type to track.
+    :return: A decorator function.
     """
     return analytics.decorator(event_type)
 
 @get_decorator("AppleScript Execution")
 async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
     """
-    Execute an AppleScript asynchronously via AppleScriptClient.
-    
-    Returns:
-        Optional[str]: Output from the script or None if failed.
+    Run an AppleScript asynchronously using the AppleScriptClient.
+
+    :param script_name: The name of the AppleScript file to run.
+    :param args: A list of arguments to pass to the AppleScript.
+    :return: The output of the AppleScript execution.
     """
+    global AP_CLIENT
     if AP_CLIENT is None:
-        raise RuntimeError("AppleScriptClient (AP_CLIENT) is not initialized.")
+        AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
     return await AP_CLIENT.run_script(script_name, args)
 
 @get_decorator("Parse Tracks")
 def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     """
-    Parse raw AppleScript output into a list of track dictionaries.
+    Parse the raw track data fetched from AppleScript into a list of dictionaries.
+
+    :param raw_data: The raw data string fetched from AppleScript.
+    :return: A list of dictionaries containing track information.
     """
     if not raw_data:
         error_logger.error("No data fetched from AppleScript.")
@@ -140,20 +157,40 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     return tracks
 
 @get_decorator("Group Tracks by Artist")
+@get_decorator("Group Tracks by Artist")
 def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
-    Group tracks by artist.
+    Group tracks by artist name into a dictionary for efficient processing.
+    This allows the script to process tracks by artist, which is necessary for
+    determining the dominant genre for each artist.
+    
+    :param tracks: A list of dictionaries containing track information.
+    :return: A dictionary with artist names as keys and lists of tracks as values.
     """
+    # Use defaultdict for efficient grouping without checking for key existence
     artists = defaultdict(list)
     for track in tracks:
         artist = track.get("artist", "Unknown")
         artists[artist].append(track)
-    return dict(artists)
+    # Return defaultdict directly without converting to dict for better performance
+    return artists
 
 @get_decorator("Determine Dominant Genre")
 def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
-    Determine the dominant genre for an artist based on the oldest track of the earliest album.
+    Determine the dominant genre for an artist based on the earliest album and track.
+    
+    The logic of genre definition:
+    1. Find the earliest track for each album
+    2. From these tracks, find the earliest album (by the date of addition)
+    3. In the earliest album, find the earliest track
+    4. Return the genre of this track as the dominant one for the artist
+    
+    Rationale: The earliest track from the earliest album usually
+    best represents the artist's main genre in the Music library.
+    
+    :param artist_tracks: A list of dictionaries containing track information for the artist.
+    :return: The dominant genre for the artist.
     """
     if not artist_tracks:
         return "Unknown"
@@ -190,7 +227,9 @@ def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> 
 @get_decorator("Check Music App Running")
 def is_music_app_running() -> bool:
     """
-    Check if Music.app is currently running.
+    Check if the Music.app is currently running.
+
+    :return: True if the Music.app is running, False otherwise.
     """
     try:
         script = 'tell application "System Events" to (name of processes) contains "Music"'
@@ -203,41 +242,71 @@ def is_music_app_running() -> bool:
 @get_decorator("Remove Parentheses with Keywords")
 def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     """
-    Remove parentheses (or brackets) and their contents if they contain any specified keywords.
+    Remove parentheses and their content if they contain any of the specified keywords.
+    Handles nested parentheses correctly using a stack-based algorithm that processes
+    brackets from inner to outer, ensuring proper handling of complex cases.
+    
+    Algorithm:
+    1. Finds all pairs of brackets (using the stack to track opening brackets)
+    2. For each pair, checks whether the text inside contains keywords
+    3. Removes brackets with keywords (from the end to the beginning to preserve indexes)
+    4. Repeats the process until all keyword brackets are found and removed
+    
+    :param name: The name to clean (e.g. "Track Name (2019 Remaster) [Deluxe Edition]")
+    :param keywords: A list of keywords to check for (e.g. ["remaster", "deluxe"]) 
+    :return: The cleaned name with matching parentheses removed
     """
     try:
         logging.debug(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
-        stack = []
-        to_remove = set()
+        if not name or not keywords:
+            return name
+            
+        # Convert keywords to lowercase for case-insensitive comparison
         keyword_set = set(k.lower() for k in keywords)
-        pairs = []
-        for i, char in enumerate(name):
-            if char in "([":
-                stack.append((char, i))
-            elif char in ")]":
-                if stack:
-                    start_char, start = stack.pop()
-                    if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
-                        pairs.append((start, i))
-        logging.debug(f"Bracket pairs found: {pairs}")
-        pairs.sort()
-        for start, end in reversed(pairs):
-            content = name[start + 1:end]
-            logging.debug(f"Checking content inside brackets: '{content}'")
-            if any(keyword in content.lower() for keyword in keyword_set):
-                to_remove.add((start, end))
-                logging.debug(f"Marking brackets ({start}, {end}) for removal due to keyword match")
-                for outer_start, outer_end in pairs:
-                    if outer_start < start and outer_end > end:
-                        to_remove.add((outer_start, outer_end))
-                        logging.debug(f"Marking outer brackets ({outer_start}, {outer_end}) as well")
-        new_name = name
-        for start, end in sorted(to_remove, reverse=True):
-            logging.debug(f"Removing brackets from index {start} to {end}")
-            new_name = new_name[:start] + new_name[end + 1:]
-        new_name = re.sub(r"\s+", " ", new_name).strip()
-        logging.debug(f"Cleaned name: '{new_name}'")
-        return new_name
+        
+        # Iteratively clean brackets until no more matches are found
+        prev_name = ""
+        current_name = name
+        
+        while prev_name != current_name:
+            prev_name = current_name
+            
+            # Find all bracket pairs in the current version of the string
+            stack = []
+            pairs = []
+            
+            for i, char in enumerate(current_name):
+                if char in "([":
+                    stack.append((char, i))
+                elif char in ")]":
+                    if stack:
+                        start_char, start_idx = stack.pop()
+                        if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
+                            pairs.append((start_idx, i))
+            
+            # Sort pairs by start index
+            pairs.sort()
+            
+            # Find which pairs to remove based on keywords
+            to_remove = set()
+            for start, end in pairs:
+                content = current_name[start + 1:end]
+                if any(keyword.lower() in content.lower() for keyword in keyword_set):
+                    to_remove.add((start, end))
+            
+            # If nothing found to remove, we're done
+            if not to_remove:
+                break
+                
+            # Remove brackets (from right to left to maintain indices)
+            for start, end in sorted(to_remove, reverse=True):
+                current_name = current_name[:start] + current_name[end + 1:]
+        
+        # Clean up multiple spaces
+        result = re.sub(r"\s+", " ", current_name).strip()
+        logging.debug(f"Cleaned result: '{result}'")
+        return result
+        
     except Exception as e:
         logging.error(f"Error in remove_parentheses_with_keywords: {e}", exc_info=True)
         return name
@@ -245,7 +314,18 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
 @get_decorator("Clean Names")
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
     """
-    Clean the track and album names by removing unwanted patterns unless exceptions apply.
+    Clean the track and album names by removing remaster keywords and album suffixes.
+    
+    The cleaning process includes:
+    1. Checking for exceptions (some albums do not need to be cleaned)
+    2. Removing brackets with remaster keywords (e.g. "(2019 Remaster)")
+    3. Remove album suffixes from the configuration list
+    4. Normalize spaces and remove redundant characters
+    
+    :param artist: The artist name (used to check for exceptions).
+    :param track_name: The track name to clean.
+    :param album_name: The album name to clean.
+    :return: A tuple containing the cleaned track name and album name.
     """
     console_logger.info(f"clean_names called with: artist='{artist}', track_name='{track_name}', album_name='{album_name}'")
     exceptions = CONFIG.get("exceptions", {}).get("track_cleaning", [])
@@ -283,7 +363,11 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
 @get_decorator("Batch Bulk Update Album Year")
 async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) -> bool:
     """
-    Bulk update the release year for tracks using a single AppleScript call.
+    Update the album year for a batch of tracks asynchronously via AppleScript.
+
+    :param track_ids: A list of track IDs to update.
+    :param new_year: The new year to set for the album.
+    :return: True if the bulk update was successful, False otherwise.
     """
     if not track_ids:
         error_logger.error("No track IDs provided for bulk update.")
@@ -300,7 +384,10 @@ async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) ->
 @get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
     """
-    Determine whether an incremental update can be performed based on the last run time.
+    Check if the incremental interval has passed since the last run.
+
+    :param force_run: True to force the run, False to check the interval.
+    :return: True if the script can run, False otherwise.
     """
     if force_run:
         return True
@@ -323,13 +410,19 @@ def can_run_incremental(force_run: bool = False) -> bool:
     else:
         diff = next_run_time - now
         minutes_remaining = diff.seconds // 60
-        console_logger.info(f"Last incremental run was at {last_run_time.strftime('%Y-%m-%d %H:%M:%S')}. Next run allowed after {next_run_time.strftime('%Y-%m-%d %H:%M:%S')} ({minutes_remaining} minutes remaining).")
+        console_logger.info(f"Last run: {last_run_time.strftime('%Y-%m-%d %H:%M')}. Next run in {minutes_remaining} mins.")
         return False
 
 @get_decorator("Update Last Incremental Run")
 def update_last_incremental_run() -> None:
     """
-    Update the last incremental run timestamp.
+    Update the timestamp of the last incremental run in a file.
+    
+    This file is used to track the interval between incremental script runs. 
+    The can_run_incremental() function checks the time of the last run and
+    determines whether the required interval has passed for the next run.
+    
+    :return: None
     """
     last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
     with open(last_file, "w", encoding="utf-8") as f:
@@ -343,7 +436,13 @@ async def update_track_async(
     new_genre: Optional[str] = None
 ) -> bool:
     """
-    Update a track's properties asynchronously via AppleScript.
+    Update the track properties asynchronously via AppleScript.
+
+    :param track_id: The ID of the track to update.
+    :param new_track_name: The new track name.
+    :param new_album_name: The new album name.
+    :param new_genre: The new genre.
+    :return: True if the update was successful, False otherwise.
     """
     if not track_id:
         error_logger.error("No track_id provided.")
@@ -386,7 +485,20 @@ async def update_track_async(
 async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_time: datetime
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
-    Update track genres asynchronously, grouping tracks by artist and applying the dominant genre.
+    Update the genres for tracks based on the dominant genre of the artist.
+    
+    The process of updating genres:
+    1. Grouping tracks by artist
+    2. Determining the dominant genre for each artist
+    3. Asynchronously update all tracks of the artist to the dominant genre
+    4. Track changes for reporting purposes
+    
+    Parallel execution: The function creates a separate asynchronous task for each
+    track that needs to be updated, which allows you to efficiently process large collections.
+    
+    :param tracks: A list of dictionaries containing track information.
+    :param last_run_time: The last run time for the incremental update.
+    :return: A tuple containing the updated tracks and the changes log.
     """
     from scripts.reports import load_track_list
     csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
@@ -438,7 +550,17 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
 
 async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, str]]:
     """
-    Retrieve tracks for a specified artist or all tracks, using a cache to minimize AppleScript calls.
+    Fetch tracks asynchronously from AppleScript and cache the results.
+    
+    Caching strategy:
+    - Uses a global time-to-live (TTL) cache from the configuration
+    - Cache is identified by artist name or "ALL" for all tracks
+    - Forced cache refresh is possible through the force_refresh parameter
+    - An empty list is returned on an unsuccessful request
+    
+    :param artist: The artist name to fetch tracks for (None fetches all tracks).
+    :param force_refresh: True to force a cache refresh, False to use cached data if available.
+    :return
     """
     cache_key = artist if artist else "ALL"
     now = time.time()
@@ -474,7 +596,20 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
 
 async def main_async(args: argparse.Namespace) -> None:
     """
-    Main asynchronous function that handles different commands (clean_artist or global run).
+    The main asynchronous function that runs the script based on the specified command.
+    
+    Modes of operation:
+    1. "clean_artist" - clears track and album names for a specific artist and updates genres for that artist
+    2. Global mode - processing of all tracks in the library with the possibility of incremental updates (only new tracks)
+    
+    The process of execution:
+    1. Creating an AppleScriptClient
+    2. Getting tracks from Music.app (with caching)
+    3. Clearing track and album names
+    4. Update genres based on the dominant genre for each artist
+    5. Saves changes and updates the last run time
+    
+    :param args: The parsed command-line arguments.
     """
     # Creating an AppleScriptClient within the current loop and bind it to a global variable
     global AP_CLIENT
@@ -613,6 +748,7 @@ async def main_async(args: argparse.Namespace) -> None:
             else:
                 console_logger.info(f"No cleaning needed for track '{orig_name}'")
         
+        # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
         tasks = [clean_track(t) for t in all_tracks]
         await asyncio.gather(*tasks)
         if updated_tracks:
@@ -639,7 +775,7 @@ async def main_async(args: argparse.Namespace) -> None:
 
 def main() -> None:
     """
-    The entry point of the script. Parses arguments and starts the asynchronous main function.
+    The main function that parses command-line arguments and runs the script.
     """
     start_all = time.time()
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
