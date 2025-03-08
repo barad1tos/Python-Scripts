@@ -105,7 +105,7 @@ def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger]:
     # Initialize console_logger
     console_logger = logging.getLogger("console_logger")
     if not console_logger.handlers:
-        console_logger.setLevel(logging.INFO)
+        console_logger.setLevel(logging.WARNING)
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(console_formatter)
         console_logger.addHandler(ch)
