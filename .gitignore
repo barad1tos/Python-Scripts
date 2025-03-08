@@ -3,3 +3,4 @@
 /.vscode
 my-config.yaml
 /30DaysOfPython
+pyproject.toml
