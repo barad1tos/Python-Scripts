@@ -99,6 +99,8 @@ check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_l
 analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 
 # Global cache for fetched tracks; cache TTL is set in config (default 900 seconds)
+# The cache stores the results of requests to Music.app to reduce the load on AppleScript
+# Format: {cache_key: (track_data, timestamp)}
 CACHE_TTL = CONFIG.get("cache_ttl_seconds", 900)
 fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
 
@@ -155,24 +157,38 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     return tracks
 
 @get_decorator("Group Tracks by Artist")
+@get_decorator("Group Tracks by Artist")
 def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
-    Group tracks by artist name into a dictionary.
-
+    Group tracks by artist name into a dictionary for efficient processing.
+    This allows the script to process tracks by artist, which is necessary for
+    determining the dominant genre for each artist.
+    
     :param tracks: A list of dictionaries containing track information.
     :return: A dictionary with artist names as keys and lists of tracks as values.
     """
+    # Use defaultdict for efficient grouping without checking for key existence
     artists = defaultdict(list)
     for track in tracks:
         artist = track.get("artist", "Unknown")
         artists[artist].append(track)
-    return dict(artists)
+    # Return defaultdict directly without converting to dict for better performance
+    return artists
 
 @get_decorator("Determine Dominant Genre")
 def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
     Determine the dominant genre for an artist based on the earliest album and track.
-
+    
+    The logic of genre definition:
+    1. Find the earliest track for each album
+    2. From these tracks, find the earliest album (by the date of addition)
+    3. In the earliest album, find the earliest track
+    4. Return the genre of this track as the dominant one for the artist
+    
+    Rationale: The earliest track from the earliest album usually
+    best represents the artist's main genre in the Music library.
+    
     :param artist_tracks: A list of dictionaries containing track information for the artist.
     :return: The dominant genre for the artist.
     """
@@ -227,11 +243,18 @@ def is_music_app_running() -> bool:
 def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     """
     Remove parentheses and their content if they contain any of the specified keywords.
-    Handles nested parentheses correctly and iteratively processes from inner to outer.
-
-    :param name: The name to clean.
-    :param keywords: A list of keywords to check for in the parentheses.
-    :return: The cleaned name with parentheses removed.
+    Handles nested parentheses correctly using a stack-based algorithm that processes
+    brackets from inner to outer, ensuring proper handling of complex cases.
+    
+    Algorithm:
+    1. Finds all pairs of brackets (using the stack to track opening brackets)
+    2. For each pair, checks whether the text inside contains keywords
+    3. Removes brackets with keywords (from the end to the beginning to preserve indexes)
+    4. Repeats the process until all keyword brackets are found and removed
+    
+    :param name: The name to clean (e.g. "Track Name (2019 Remaster) [Deluxe Edition]")
+    :param keywords: A list of keywords to check for (e.g. ["remaster", "deluxe"]) 
+    :return: The cleaned name with matching parentheses removed
     """
     try:
         logging.debug(f"remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}")
@@ -292,10 +315,16 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
     """
     Clean the track and album names by removing remaster keywords and album suffixes.
-
-    :param artist: The artist name.
-    :param track_name: The track name.
-    :param album_name: The album name.
+    
+    The cleaning process includes:
+    1. Checking for exceptions (some albums do not need to be cleaned)
+    2. Removing brackets with remaster keywords (e.g. "(2019 Remaster)")
+    3. Remove album suffixes from the configuration list
+    4. Normalize spaces and remove redundant characters
+    
+    :param artist: The artist name (used to check for exceptions).
+    :param track_name: The track name to clean.
+    :param album_name: The album name to clean.
     :return: A tuple containing the cleaned track name and album name.
     """
     console_logger.info(f"clean_names called with: artist='{artist}', track_name='{track_name}', album_name='{album_name}'")
@@ -387,9 +416,12 @@ def can_run_incremental(force_run: bool = False) -> bool:
 @get_decorator("Update Last Incremental Run")
 def update_last_incremental_run() -> None:
     """
-    Update the timestamp of the last incremental run in a
-    file to track the interval between incremental runs.
-
+    Update the timestamp of the last incremental run in a file.
+    
+    This file is used to track the interval between incremental script runs. 
+    The can_run_incremental() function checks the time of the last run and
+    determines whether the required interval has passed for the next run.
+    
     :return: None
     """
     last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
@@ -454,7 +486,16 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Update the genres for tracks based on the dominant genre of the artist.
-
+    
+    The process of updating genres:
+    1. Grouping tracks by artist
+    2. Determining the dominant genre for each artist
+    3. Asynchronously update all tracks of the artist to the dominant genre
+    4. Track changes for reporting purposes
+    
+    Parallel execution: The function creates a separate asynchronous task for each
+    track that needs to be updated, which allows you to efficiently process large collections.
+    
     :param tracks: A list of dictionaries containing track information.
     :param last_run_time: The last run time for the incremental update.
     :return: A tuple containing the updated tracks and the changes log.
@@ -510,10 +551,16 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
 async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, str]]:
     """
     Fetch tracks asynchronously from AppleScript and cache the results.
-
-    :param artist: The artist name to fetch tracks for.
-    :param force_refresh: True to force a cache refresh, False otherwise.
-    :return: A list of dictionaries containing track information.
+    
+    Caching strategy:
+    - Uses a global time-to-live (TTL) cache from the configuration
+    - Cache is identified by artist name or "ALL" for all tracks
+    - Forced cache refresh is possible through the force_refresh parameter
+    - An empty list is returned on an unsuccessful request
+    
+    :param artist: The artist name to fetch tracks for (None fetches all tracks).
+    :param force_refresh: True to force a cache refresh, False to use cached data if available.
+    :return
     """
     cache_key = artist if artist else "ALL"
     now = time.time()
@@ -550,7 +597,18 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
 async def main_async(args: argparse.Namespace) -> None:
     """
     The main asynchronous function that runs the script based on the specified command.
-
+    
+    Modes of operation:
+    1. "clean_artist" - clears track and album names for a specific artist and updates genres for that artist
+    2. Global mode - processing of all tracks in the library with the possibility of incremental updates (only new tracks)
+    
+    The process of execution:
+    1. Creating an AppleScriptClient
+    2. Getting tracks from Music.app (with caching)
+    3. Clearing track and album names
+    4. Update genres based on the dominant genre for each artist
+    5. Saves changes and updates the last run time
+    
     :param args: The parsed command-line arguments.
     """
     # Creating an AppleScriptClient within the current loop and bind it to a global variable
@@ -690,6 +748,7 @@ async def main_async(args: argparse.Namespace) -> None:
             else:
                 console_logger.info(f"No cleaning needed for track '{orig_name}'")
         
+        # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
         tasks = [clean_track(t) for t in all_tracks]
         await asyncio.gather(*tasks)
         if updated_tracks:
