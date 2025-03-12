@@ -44,10 +44,10 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from scripts.analytics import Analytics
-from scripts.applescript_client import AppleScriptClient
-from scripts.logger import get_full_log_path, get_loggers
-from scripts.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
+from services.applescript_client import AppleScriptClient
+from utils.analytics import Analytics
+from utils.logger import get_full_log_path, get_loggers
+from utils.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
 
 # Global variable for AppleScriptClient; it will be initialized inside main_async()
 AP_CLIENT: Optional[AppleScriptClient] = None
@@ -499,7 +499,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     :param last_run_time: The last run time for the incremental update.
     :return: A tuple containing the updated tracks and the changes log.
     """
-    from scripts.reports import load_track_list
+    from utils.reports import load_track_list
     csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
     csv_map = load_track_list(csv_path)
     grouped = group_tracks_by_artist(tracks)
@@ -787,7 +787,7 @@ def main() -> None:
     args = parser.parse_args()
     if args.dry_run:
         try:
-            from scripts import dry_run
+            from utils import dry_run
         except ImportError:
             error_logger.error("Dry run module not found. Ensure 'scripts/dry_run.py' exists.")
             sys.exit(1)
