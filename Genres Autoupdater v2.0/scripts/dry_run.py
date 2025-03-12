@@ -10,18 +10,16 @@ into a separate CSV report.
 The CSV files are overwritten each time.
 """
 
-import sys
-import os
 import asyncio
 import csv
 import logging
-
-from datetime import datetime
-from typing import Dict, List
-
+import os
+import sys
 import yaml
 
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
+from typing import Dict, List
 
 # Add path to music_genre_updater and scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,8 +27,8 @@ parent_dir = os.path.join(current_dir, "..")
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
+from music_genre_updater import clean_names, determine_dominant_genre_for_artist, fetch_tracks_async
 from scripts.logger import get_full_log_path, get_loggers
-from music_genre_updater import fetch_tracks_async, clean_names, determine_dominant_genre_for_artist
 
 # Load the configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

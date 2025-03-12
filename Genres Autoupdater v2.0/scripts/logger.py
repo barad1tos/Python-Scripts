@@ -13,12 +13,13 @@ Additionally, provides a helper function to ensure a directory exists, and
 functions to get the full log path from config.
 """
 
-import sys
-import os
 import logging
-from typing import Tuple
+import os
+import sys
+
 from logging import Logger
 from logging.handlers import RotatingFileHandler
+from typing import Tuple
 
 # ANSI escape codes for colours
 RESET = "\033[0m"

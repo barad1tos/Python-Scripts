@@ -7,14 +7,14 @@ Provides decorators to measure function execution time,
 track success/failure, and generate an HTML report for analytics.
 """
 
-import time
 import asyncio
+import time
+
 from datetime import datetime
 from functools import wraps
-from typing import Callable, Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from scripts.reports import save_html_report
-
 
 class Analytics:
     """
