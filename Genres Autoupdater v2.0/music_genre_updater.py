@@ -157,7 +157,6 @@ def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
     return tracks
 
 @get_decorator("Group Tracks by Artist")
-@get_decorator("Group Tracks by Artist")
 def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
     """
     Group tracks by artist name into a dictionary for efficient processing.
