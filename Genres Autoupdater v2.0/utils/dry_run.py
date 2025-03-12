@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
 Dry Run Module
 
@@ -15,11 +15,12 @@ import csv
 import logging
 import os
 import sys
-import yaml
 
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List
+
+import yaml
 
 # Add path to music_genre_updater and scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))

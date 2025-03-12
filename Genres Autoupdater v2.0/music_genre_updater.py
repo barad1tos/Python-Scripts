@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
 Music Genre Updater Script
 
@@ -29,7 +29,6 @@ Example usage:
     python3 music_genre_updater.py --force
     python3 music_genre_updater.py clean_artist --artist "Artist Name" --force
 """
-
 import argparse
 import asyncio
 import logging
@@ -38,18 +37,20 @@ import re
 import subprocess
 import sys
 import time
-import yaml
 
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 from services.applescript_client import AppleScriptClient
 from utils.analytics import Analytics
 from utils.logger import get_full_log_path, get_loggers
 from utils.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
 
-# Global variable for AppleScriptClient; it will be initialized inside main_async()
+# This client is used to run AppleScript commands asynchronously throughout the script.
+# It is initialized once and reused to avoid creating multiple instances.
 AP_CLIENT: Optional[AppleScriptClient] = None
 
 # Load configuration from YAML
@@ -64,10 +65,10 @@ def load_config(config_path: str) -> Dict[str, Any]:
     :return: A dictionary containing the configuration.
     """
     if not os.path.exists(config_path):
-        print(f"Config file {config_path} does not exist.", file=sys.stderr)
+        error_logger.error(f"Config file {config_path} does not exist.")
         sys.exit(1)
     if not os.access(config_path, os.R_OK):
-        print(f"No read access to config file {config_path}.", file=sys.stderr)
+        error_logger.error(f"No read access to config file {config_path}.")
         sys.exit(1)
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -220,7 +221,7 @@ def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> 
         )
         return earliest_track.get("genre") or "Unknown"
     except Exception as e:
-        logging.error(f"Error in determine_dominant_genre_for_artist: {e}", exc_info=True)
+        error_logger.error(f"Error in determine_dominant_genre_for_artist: {e}", exc_info=True)
         return "Unknown"
 
 @get_decorator("Check Music App Running")
@@ -307,7 +308,7 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
         return result
         
     except Exception as e:
-        logging.error(f"Error in remove_parentheses_with_keywords: {e}", exc_info=True)
+        error_logger.error(f"Error in remove_parentheses_with_keywords: {e}", exc_info=True)
         return name
 
 @get_decorator("Clean Names")
@@ -499,9 +500,8 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     :param last_run_time: The last run time for the incremental update.
     :return: A tuple containing the updated tracks and the changes log.
     """
-    from utils.reports import load_track_list
     csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
-    csv_map = load_track_list(csv_path)
+    load_track_list(csv_path)
     grouped = group_tracks_by_artist(tracks)
     updated_tracks = []
     changes_log = []
@@ -789,7 +789,7 @@ def main() -> None:
         try:
             from utils import dry_run
         except ImportError:
-            error_logger.error("Dry run module not found. Ensure 'scripts/dry_run.py' exists.")
+            error_logger.error("Dry run module not found. Ensure 'utils/dry_run.py' exists.")
             sys.exit(1)
         console_logger.info("Running in dry-run mode. No changes will be applied.")
         asyncio.run(dry_run.main())
@@ -800,9 +800,9 @@ def main() -> None:
         console_logger.info("Script interrupted by user.")
     except Exception as exc:
         error_logger.error(f"An unexpected error occurred: {exc}", exc_info=True)
-        analytics.generate_reports()
         sys.exit(1)
-    analytics.generate_reports()
+    finally:
+        analytics.generate_reports()
     end_all = time.time()
     console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 
