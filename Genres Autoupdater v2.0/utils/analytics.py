@@ -14,7 +14,7 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Dict, List
 
-from scripts.reports import save_html_report
+from utils.reports import save_html_report
 
 class Analytics:
     """
