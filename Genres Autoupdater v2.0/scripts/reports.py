@@ -8,12 +8,12 @@ HTML reports are stored in a fixed file (e.g., analytics/reports/analytics.html)
 so that each run overwrites the report rather than creating new files.
 """
 
-import os
 import csv
 import logging
-from datetime import datetime
-from typing import List, Dict, Optional, Any
+import os
 
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 def _save_csv(
     data: List[Dict[str, str]],

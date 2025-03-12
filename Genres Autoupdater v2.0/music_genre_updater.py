@@ -4,8 +4,8 @@
 Music Genre Updater Script
 
 This script fetches tracks from the Music app using AppleScript and updates the genres
-based on the earliest album and track for each artist. It also cleans track and album names
-by removing remaster keywords and album suffixes. The script can be run in incremental mode
+based on each artist's earliest album and track. It also cleans track and album names
+by removing remaster keywords and suffixes. The script can be run in incremental mode
 to update only the tracks that have been added since the last run.
 
 The script can be run in two modes:
