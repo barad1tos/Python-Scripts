@@ -28,7 +28,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from music_genre_updater import clean_names, determine_dominant_genre_for_artist, fetch_tracks_async
-from utils.logger import get_full_log_path, get_loggers
+from scripts.logger import get_full_log_path, get_loggers
 
 # Load the configuration
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
