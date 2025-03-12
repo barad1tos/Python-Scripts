@@ -9,18 +9,18 @@ by removing remaster keywords and suffixes. The script can be run in incremental
 to update only the tracks that have been added since the last run.
 
 The script can be run in two modes:
-1. Global Cleaning: Cleans all track and album names and updates genres for all tracks.
-2. Artist Cleaning: Cleans track and album names for a specific artist and updates genres.
+    1. Global Cleaning: Cleans all track and album names and updates genres for all tracks.
+    2. Artist Cleaning: Cleans track and album names for a specific artist and updates genres.
 
 The script requires the following configuration in 'my-config.yaml':
-1. music_library_path: Path to the Music library XML file.
-2. apple_scripts_dir: Path to the directory containing the AppleScript files.
-3. logs_base_dir: Base directory for logs and reports.
-4. cache_ttl_seconds: Cache TTL for fetched tracks in seconds (default 900).
-5. incremental_interval_minutes: Interval between incremental runs in minutes (default 60).
-6. exceptions: List of exceptions for track cleaning and genre updates.
-7. cleaning: Configuration for cleaning track and album names.
-8. test_artists: List of test artists to fetch tracks for (for testing purposes).
+    1. music_library_path: Path to the Music library XML file.
+    2. apple_scripts_dir: Path to the directory containing the AppleScript files.
+    3. logs_base_dir: Base directory for logs and reports.
+    4. cache_ttl_seconds: Cache TTL for fetched tracks in seconds (default 900).
+    5. incremental_interval_minutes: Interval between incremental runs in minutes (default 60).
+    6. exceptions: List of exceptions for track cleaning and genre updates.
+    7. cleaning: Configuration for cleaning track and album names.
+    8. test_artists: List of test artists to fetch tracks for (for testing purposes).
 
 The script logs errors and changes to CSV files and generates reports for analytics.
 
