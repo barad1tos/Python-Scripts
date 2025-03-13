@@ -73,9 +73,16 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-CONFIG = load_config(CONFIG_PATH)
+def get_config() -> Dict[str, Any]:
+    """
+    Get the current configuration by reloading the YAML file.
+
+    :return: A dictionary containing the configuration.
+    """
+    return load_config(CONFIG_PATH)
 
 # Initialize loggers
+CONFIG = get_config()
 console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
 analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/analytics.log")
 
@@ -89,15 +96,15 @@ def check_paths(paths: List[str], logger: logging.Logger) -> None:
     for path in paths:
         if not os.path.exists(path):
             logger.error(f"Path {path} does not exist.")
-            sys.exit(1)
+            raise FileNotFoundError(f"Path {path} does not exist.")
         if not os.access(path, os.R_OK):
             logger.error(f"No read access to {path}.")
-            sys.exit(1)
+            raise PermissionError(f"No read access to {path}.")
 
-check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger)
+check_paths([get_config()["music_library_path"], get_config()["apple_scripts_dir"]], error_logger)
 
 # Initialize analytics tracking
-analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
+analytics = Analytics(get_config(), console_logger, error_logger, analytics_logger)
 
 # Global cache for fetched tracks; cache TTL is set in config (default 900 seconds)
 # The cache stores the results of requests to Music.app to reduce the load on AppleScript
@@ -125,7 +132,7 @@ async def run_applescript_async(script_name: str, args: Optional[List[str]] = No
     """
     global AP_CLIENT
     if AP_CLIENT is None:
-        AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
+        AP_CLIENT = AppleScriptClient(get_config(), logger=console_logger)
     return await AP_CLIENT.run_script(script_name, args)
 
 @get_decorator("Parse Tracks")
