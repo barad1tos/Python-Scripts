@@ -8,8 +8,9 @@ It fetches all tracks, updates the CSV file, and logs the changes.
 """
 
 import asyncio
-from scripts.reports import sync_track_list_with_current
-from music_genre_updater import fetch_tracks_async, console_logger, error_logger, CONFIG
+
+from music_genre_updater import CONFIG, console_logger, error_logger, fetch_tracks_async
+from utils.reports import sync_track_list_with_current
 
 async def run_full_sync():
     console_logger.info("Running one-time full sync from external script.")

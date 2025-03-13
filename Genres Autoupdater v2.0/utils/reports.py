@@ -139,9 +139,11 @@ def save_html_report(
 
     def get_color(duration: float) -> str:
         if duration <= duration_thresholds.get("short_max", 2):
-            return colors.get("short", "#90EE90")
+            return ""
         elif duration <= duration_thresholds.get("medium_max", 5):
             return colors.get("medium", "#D3D3D3")
+        elif duration <= duration_thresholds.get("long_max", 10):
+            return colors.get("long", "#FFB6C1")
         else:
             return colors.get("long", "#FFB6C1")
 
@@ -237,7 +239,7 @@ def save_html_report(
             <td>{ev['Event Type']}</td>
             <td>{ev['Start Time']}</td>
             <td>{ev['End Time']}</td>
-            <td style="background-color: {color};">{duration}</td>
+            <td{f' style="background-color: {color};"' if color else ''}>{duration}</td>
             <td>{success}</td>
         </tr>"""
     html_content += """

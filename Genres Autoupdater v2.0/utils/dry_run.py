@@ -12,12 +12,10 @@ The CSV files are overwritten each time.
 
 import asyncio
 import csv
-import logging
 import os
 import sys
 
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
 from typing import Dict, List
 
 import yaml
@@ -40,7 +38,7 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 # Loggers (optional, but can be used)
 console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
 
-# Steps to CSV for dry-run (for cleaning ta genre)
+# Steps to CSV for dry-run (for cleaning and genre)
 DRY_RUN_CLEANING_CSV = get_full_log_path(CONFIG, "dry_run_cleaning_file", "csv/dry_run_cleaning.csv")
 DRY_RUN_GENRE_CSV = get_full_log_path(CONFIG, "dry_run_genre_file", "csv/dry_run_genre_update.csv")
 
@@ -87,7 +85,7 @@ async def simulate_genre_update() -> List[Dict[str, str]]:
     simulated_changes = []
     tracks = await fetch_tracks_async()
     # Skip tracks with unusable status
-    tracks = [t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
+    tracks = (t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available"))
     
     # Group tracks by artist
     artists: Dict[str, List[Dict[str, str]]] = {}
@@ -132,7 +130,7 @@ def save_cleaning_csv(changes: List[Dict[str, str]], file_path: str) -> None:
         "cleaned_album",
         "dateAdded",
     ]
-    console_logger.info(f"Saving cleaning changes to {file_path}")
+    console_logger.info(f"Saving cleaning update changes to {file_path}")
     csv_dir = os.path.dirname(file_path)
     if csv_dir and not os.path.exists(csv_dir):
         os.makedirs(csv_dir, exist_ok=True)
@@ -163,7 +161,7 @@ def save_genre_csv(changes: List[Dict[str, str]], file_path: str) -> None:
         "simulated_genre",
         "dateAdded",
     ]
-    console_logger.info(f"Saving genre update changes to {file_path}")
+    console_logger.info(f"Saving genre changes to {file_path}")
     csv_dir = os.path.dirname(file_path)
     if csv_dir and not os.path.exists(csv_dir):
         os.makedirs(csv_dir, exist_ok=True)
@@ -183,8 +181,9 @@ async def main():
     2) simulate genre update changes,
     3) save them into two separate CSV files.
     """
-    cleaning_changes = await simulate_cleaning()
-    genre_changes = await simulate_genre_update()
+    cleaning_changes, genre_changes = await asyncio.gather(
+        simulate_cleaning(), simulate_genre_update()
+    )
 
     save_cleaning_csv(cleaning_changes, DRY_RUN_CLEANING_CSV)
     save_genre_csv(genre_changes, DRY_RUN_GENRE_CSV)

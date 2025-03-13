@@ -21,7 +21,7 @@ from logging import Logger
 from logging.handlers import RotatingFileHandler
 from typing import Tuple
 
-# ANSI escape codes for colours
+# ANSI escape codes for colors
 RESET = "\033[0m"
 RED = "\033[31m"
 BLUE = "\033[34m"
@@ -55,6 +55,15 @@ class ColoredFormatter(logging.Formatter):
     If the LogRecord has attribute 'section_end' set to True, a blue dividing line is appended.
     """
     def __init__(self, fmt=None, datefmt=None, style='%', include_separator: bool = False):
+        """
+        Initialize the ColoredFormatter.
+
+        Args:
+            fmt (str): The format string.
+            datefmt (str): The date format string.
+            style (str): The style of the format string.
+            include_separator (bool): Whether to include a dividing line after log messages.
+        """
         super().__init__(fmt, datefmt, style)
         self.include_separator = include_separator
         self.separator_line = f"\n{BLUE}{'-'*80}{RESET}"
@@ -106,7 +115,7 @@ def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger]:
     # Initialize console_logger
     console_logger = logging.getLogger("console_logger")
     if not console_logger.handlers:
-        console_logger.setLevel(logging.WARNING)
+        console_logger.setLevel(logging.INFO)
         ch = logging.StreamHandler(sys.stdout)
         ch.setFormatter(console_formatter)
         console_logger.addHandler(ch)
@@ -129,7 +138,7 @@ def get_loggers(config: dict) -> Tuple[Logger, Logger, Logger]:
     # Initialize analytics_logger (writes INFO+ to rotating file)
     analytics_logger = logging.getLogger("analytics_logger")
     if not analytics_logger.handlers:
-        analytics_logger.setLevel(logging.WARNING)
+        analytics_logger.setLevel(logging.INFO)
         max_bytes = config.get("logging", {}).get("max_bytes", 5000000)
         backup_count = config.get("logging", {}).get("backup_count", 2)
         ah = RotatingFileHandler(

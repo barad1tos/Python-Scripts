@@ -73,8 +73,6 @@ class Analytics:
         self.call_counts[function_name] = self.call_counts.get(function_name, 0) + 1
         if success:
             self.success_counts[function_name] = self.success_counts.get(function_name, 0) + 1
-
-        if success:
             msg = f"[A] {function_name} ({event_type}) took {duration:.3f}s (OK)."
             if duration > self.long_duration_threshold:
                 msg += " [LONG!]"
@@ -116,14 +114,13 @@ class Analytics:
                         function_end = time.time()
                         raise e
                     finally:
-                        function_end = time.time()
                         decorator_end = time.time()
                         function_duration = function_end - function_start
                         decorator_duration = decorator_end - decorator_start
                         overhead = decorator_duration - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
-                        self.analytics_logger.info("SECTION_END", extra={"section_end": True})
+                        self.analytics_logger.info("[Analytics] Async function execution completed.", extra={"section_end": True})
                 return async_wrapper
             else:
                 @wraps(func)
