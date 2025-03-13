@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from services.applescript_client import AppleScriptClient
+from services.cache_service import CacheService
 from utils.analytics import Analytics
 from utils.logger import get_full_log_path, get_loggers
 from utils.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
@@ -106,11 +107,9 @@ check_paths([get_config()["music_library_path"], get_config()["apple_scripts_dir
 # Initialize analytics tracking
 analytics = Analytics(get_config(), console_logger, error_logger, analytics_logger)
 
-# Global cache for fetched tracks; cache TTL is set in config (default 900 seconds)
-# The cache stores the results of requests to Music.app to reduce the load on AppleScript
-# Format: {cache_key: (track_data, timestamp)}
-CACHE_TTL = CONFIG.get("cache_ttl_seconds", 900)
-fetch_cache: Dict[str, Tuple[List[Dict[str, str]], float]] = {}
+# Initializing the global cache service
+global cache_service
+cache_service = CacheService(ttl=CONFIG.get("cache_ttl_seconds", 900))
 
 def get_decorator(event_type: str):
     """
@@ -130,10 +129,14 @@ async def run_applescript_async(script_name: str, args: Optional[List[str]] = No
     :param args: A list of arguments to pass to the AppleScript.
     :return: The output of the AppleScript execution.
     """
-    global AP_CLIENT
-    if AP_CLIENT is None:
-        AP_CLIENT = AppleScriptClient(get_config(), logger=console_logger)
-    return await AP_CLIENT.run_script(script_name, args)
+    try:
+        global AP_CLIENT
+        if AP_CLIENT is None:
+            AP_CLIENT = AppleScriptClient(get_config(), logger=console_logger)
+        return await AP_CLIENT.run_script(script_name, args)
+    except Exception as e:
+        error_logger.error(f"Error running AppleScript {script_name}: {e}", exc_info=True)
+        return None
 
 @get_decorator("Parse Tracks")
 def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
@@ -372,21 +375,25 @@ async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) ->
     """
     Update the album year for a batch of tracks asynchronously via AppleScript.
 
-    :param track_ids: A list of track IDs to update.
-    :param new_year: The new year to set for the album.
+    :param track_ids: A list of track IDs to update. Each ID should be a string.
+    :param new_year: The new year to set for the album. The year should be a string in the format 'YYYY'.
     :return: True if the bulk update was successful, False otherwise.
     """
-    if not track_ids:
-        error_logger.error("No track IDs provided for bulk update.")
-        return False    
-    track_ids_str = ",".join(track_ids)    
-    res = await run_applescript_async("update_property.applescript", ["year", new_year, track_ids_str])
-    if res and "Success" in res:
-        console_logger.info(f"Bulk update success: {res}")
-        return True    
-    else:
-        error_logger.error(f"Bulk update failed: {res}")
-        return False  
+    try:
+        if not track_ids:
+            error_logger.error("No track IDs provided for bulk update.")
+            return False    
+        track_ids_str = ",".join(track_ids)    
+        res = await run_applescript_async("update_property.applescript", ["year", new_year, track_ids_str])
+        if res and "Success" in res:
+            console_logger.info(f"Bulk update success: {res}")
+            return True    
+        else:
+            error_logger.error(f"Bulk update failed: {res}")
+            return False  
+    except Exception as e:
+        error_logger.error("Error in update_album_tracks_bulk_async", exc_info=True)
+        return False
 
 @get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
@@ -451,153 +458,158 @@ async def update_track_async(
     :param new_genre: The new genre.
     :return: True if the update was successful, False otherwise.
     """
-    if not track_id:
-        error_logger.error("No track_id provided.")
+    try:
+        if not track_id:
+            error_logger.error("No track_id provided.")
+            return False
+
+        success = True
+
+        if new_track_name:
+            res = await run_applescript_async("update_property.applescript", [track_id, "name", new_track_name])
+            if not res or "Success" not in res:
+                error_logger.error(f"Failed to update track name for {track_id}")
+                success = False
+
+        if new_album_name:
+            res = await run_applescript_async("update_property.applescript", [track_id, "album", new_album_name])
+            if not res or "Success" not in res:
+                error_logger.error(f"Failed to update album name for {track_id}")
+                success = False
+
+        if new_genre:
+            max_retries = CONFIG.get("max_retries", 3)
+            delay = CONFIG.get("retry_delay_seconds", 2)
+            genre_updated = False
+            for attempt in range(1, max_retries + 1):
+                res = await run_applescript_async("update_property.applescript", [track_id, "genre", new_genre])
+                if res and "Success" in res:
+                    console_logger.info(f"Updated genre for {track_id} to {new_genre} (attempt {attempt}/{max_retries})")
+                    genre_updated = True
+                    break
+                else:
+                    console_logger.warning(f"Attempt {attempt}/{max_retries} failed. Retrying in {delay}s...")
+                    await asyncio.sleep(delay)
+            if not genre_updated:
+                error_logger.error(f"Failed to update genre for track {track_id}")
+                success = False
+
+        return success
+    except Exception as e:
+        error_logger.error(f"Error in update_track_async for track {track_id}: {e}", exc_info=True)
         return False
 
-    success = True
-
-    if new_track_name:
-        res = await run_applescript_async("update_property.applescript", [track_id, "name", new_track_name])
-        if not res or "Success" not in res:
-            error_logger.error(f"Failed to update track name for {track_id}")
-            success = False
-
-    if new_album_name:
-        res = await run_applescript_async("update_property.applescript", [track_id, "album", new_album_name])
-        if not res or "Success" not in res:
-            error_logger.error(f"Failed to update album name for {track_id}")
-            success = False
-
-    if new_genre:
-        max_retries = CONFIG.get("max_retries", 3)
-        delay = CONFIG.get("retry_delay_seconds", 2)
-        genre_updated = False
-        for attempt in range(1, max_retries + 1):
-            res = await run_applescript_async("update_property.applescript", [track_id, "genre", new_genre])
-            if res and "Success" in res:
-                console_logger.info(f"Updated genre for {track_id} to {new_genre} (attempt {attempt}/{max_retries})")
-                genre_updated = True
-                break
-            else:
-                console_logger.warning(f"Attempt {attempt}/{max_retries} failed. Retrying in {delay}s...")
-                await asyncio.sleep(delay)
-        if not genre_updated:
-            error_logger.error(f"Failed to update genre for track {track_id}")
-            success = False
-
-    return success
-
 @get_decorator("Update Genres by Artist")
-async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_time: datetime
-) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_time: datetime) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
     """
     Update the genres for tracks based on the dominant genre of the artist.
     
     The process of updating genres:
-    1. Grouping tracks by artist
-    2. Determining the dominant genre for each artist
-    3. Asynchronously update all tracks of the artist to the dominant genre
-    4. Track changes for reporting purposes
+    1. Group tracks by artist.
+    2. Determine the dominant genre for each artist.
+    3. Asynchronously update all tracks of the artist to the dominant genre.
+    4. Track changes for reporting purposes.
     
-    Parallel execution: The function creates a separate asynchronous task for each
-    track that needs to be updated, which allows you to efficiently process large collections.
+    Tasks are processed in batches to avoid overloading the event loop.
     
     :param tracks: A list of dictionaries containing track information.
     :param last_run_time: The last run time for the incremental update.
     :return: A tuple containing the updated tracks and the changes log.
     """
-    csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
-    load_track_list(csv_path)
-    grouped = group_tracks_by_artist(tracks)
-    updated_tracks = []
-    changes_log = []
+    try:
+        csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
+        load_track_list(csv_path)  # Refresh CSV map if needed.
+        grouped = group_tracks_by_artist(tracks)
+        updated_tracks = []
+        changes_log = []
 
-    async def process_track(track: Dict[str, str], dom_genre: str) -> None:
-        old_genre = track.get("genre", "Unknown")
-        track_id = track.get("id", "")
-        status = track.get("trackStatus", "unknown")
-        if track_id and old_genre != dom_genre and status in ("subscription", "downloaded"):
-            console_logger.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})")
-            if await update_track_async(track_id, new_genre=dom_genre):
-                track["genre"] = dom_genre
-                changes_log.append({
-                    "artist": track.get("artist", "Unknown"),
-                    "album": track.get("album", "Unknown"),
-                    "track_name": track.get("name", "Unknown"),
-                    "old_genre": old_genre,
-                    "new_genre": dom_genre,
-                    "new_track_name": track.get("name", "Unknown"),
-                })
-                updated_tracks.append(track)
-            else:
-                error_logger.error(f"Failed to update genre for track {track_id}")
+        async def process_track(track: Dict[str, str], dom_genre: str) -> None:
+            old_genre = track.get("genre", "Unknown")
+            track_id = track.get("id", "")
+            status = track.get("trackStatus", "unknown")
+            if track_id and old_genre != dom_genre and status in ("subscription", "downloaded"):
+                console_logger.info(f"Updating track {track_id} (Old Genre: {old_genre}, New Genre: {dom_genre})")
+                if await update_track_async(track_id, new_genre=dom_genre):
+                    track["genre"] = dom_genre
+                    changes_log.append({
+                        "artist": track.get("artist", "Unknown"),
+                        "album": track.get("album", "Unknown"),
+                        "track_name": track.get("name", "Unknown"),
+                        "old_genre": old_genre,
+                        "new_genre": dom_genre,
+                        "new_track_name": track.get("name", "Unknown"),
+                    })
+                    updated_tracks.append(track)
+                else:
+                    error_logger.error(f"Failed to update genre for track {track_id}")
 
-    tasks = []
-    for artist, artist_tracks in grouped.items():
-        if not artist_tracks:
-            continue
-        try:
-            earliest = min(
-                artist_tracks,
-                key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
-            )
-            dom_genre = earliest.get("genre", "Unknown")
-        except Exception as e:
-            error_logger.error(f"Error determining earliest track for artist '{artist}': {e}", exc_info=True)
-            dom_genre = "Unknown"
-        console_logger.info(f"Artist: {artist}, Dominant Genre: {dom_genre} (from {len(artist_tracks)} tracks)")
-        for track in artist_tracks:
-            if track.get("genre", "Unknown") != dom_genre:
-                tasks.append(process_track(track, dom_genre))
-    if tasks:
-        await asyncio.gather(*tasks)
-    return updated_tracks, changes_log
+        # Helper: process tasks in batches to avoid overwhelming the event loop.
+        async def process_tasks_in_batches(tasks: List[asyncio.Task], batch_size: int = 1000) -> None:
+            for i in range(0, len(tasks), batch_size):
+                batch = tasks[i:i + batch_size]
+                await asyncio.gather(*batch, return_exceptions=True)
+
+        tasks = []
+        for artist, artist_tracks in grouped.items():
+            if not artist_tracks:
+                continue
+            try:
+                earliest = min(
+                    artist_tracks,
+                    key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S")
+                )
+                dom_genre = earliest.get("genre", "Unknown")
+            except Exception as e:
+                error_logger.error(f"Error determining earliest track for artist '{artist}': {e}", exc_info=True)
+                dom_genre = "Unknown"
+            console_logger.info(f"Artist: {artist}, Dominant Genre: {dom_genre} (from {len(artist_tracks)} tracks)")
+            for track in artist_tracks:
+                if track.get("genre", "Unknown") != dom_genre:
+                    tasks.append(asyncio.create_task(process_track(track, dom_genre)))
+        if tasks:
+            await process_tasks_in_batches(tasks, batch_size=1000)
+        return updated_tracks, changes_log
+    except Exception as e:
+        error_logger.error(f"Error in update_genres_by_artist_async: {e}", exc_info=True)
+        return [], []
 
 async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, str]]:
     """
-    Fetch tracks asynchronously from AppleScript and cache the results.
-    
+    Fetch tracks asynchronously from AppleScript and cache the results using CacheService.
+
     Caching strategy:
-    - Uses a global time-to-live (TTL) cache from the configuration
-    - Cache is identified by artist name or "ALL" for all tracks
-    - Forced cache refresh is possible through the force_refresh parameter
-    - An empty list is returned on an unsuccessful request
-    
+        - The cache key is either the artist name or "ALL" for all tracks.
+        - In case of force_refresh, the corresponding cache entry is invalidated.
+        - If the data is not in cache (or expired), it awaits run_applescript_async() directly.
+        - The raw data returned by AppleScript is parsed using parse_tracks.
+        - An empty list is returned if no data is fetched.
+
     :param artist: The artist name to fetch tracks for (None fetches all tracks).
     :param force_refresh: True to force a cache refresh, False to use cached data if available.
-    :return
+    :return: A list of track dictionaries.
     """
-    cache_key = artist if artist else "ALL"
-    now = time.time()
-    if not force_refresh and cache_key in fetch_cache:
-        cached_result, cached_time = fetch_cache[cache_key]
-        if now - cached_time < CACHE_TTL:
-            console_logger.info(f"Returning cached tracks for '{cache_key}'. Cached count: {len(cached_result)}")
-            return cached_result
-
-    if force_refresh:
-        console_logger.info(f"Forced cache refresh requested for '{cache_key}'")
-    
-    if artist:
-        console_logger.info(f"Fetching tracks for artist: {artist}")
-        raw_data = await run_applescript_async("fetch_tracks.applescript", [artist])
-    else:
-        console_logger.info("Fetching all tracks...")
-        raw_data = await run_applescript_async("fetch_tracks.applescript")
-
-    if raw_data:
-        tracks = parse_tracks(raw_data)
-        console_logger.info(f"Fetched {len(tracks)} tracks for key '{cache_key}'")
-        if force_refresh and cache_key in fetch_cache:
-            old_tracks, _ = fetch_cache[cache_key]
-            if len(old_tracks) != len(tracks):
-                console_logger.error(f"Track count mismatch on forced refresh for '{cache_key}': cached {len(old_tracks)} vs new {len(tracks)}. Aborting sync.")
-        fetch_cache[cache_key] = (tracks, now)
-        return tracks
-    else:
-        msg = "No data fetched" + (f" for artist: {artist}." if artist else " for all artists.")
-        console_logger.warning(msg)
+    try:
+        cache_key = artist if artist else "ALL"
+        if force_refresh:
+            console_logger.info(f"Forced cache refresh requested for '{cache_key}'")
+            cache_service.invalidate(cache_key)
+        try:
+            raw_data = await cache_service.get_async(
+                cache_key,
+                compute_func=lambda: run_applescript_async("fetch_tracks.applescript", [artist] if artist else [])
+            )
+        except asyncio.CancelledError:
+            console_logger.info("fetch_tracks_async cancelled.")
+            raise
+        if raw_data is not None:
+            tracks = parse_tracks(raw_data)
+            console_logger.info(f"Fetched {len(tracks)} tracks for key '{cache_key}'")
+            return tracks
+        else:
+            console_logger.warning("No data fetched" + (f" for artist: {artist}." if artist else " for all artists."))
+            return []
+    except Exception as e:
+        error_logger.error(f"Error in fetch_tracks_async: {e}", exc_info=True)
         return []
 
 async def main_async(args: argparse.Namespace) -> None:
@@ -618,166 +630,177 @@ async def main_async(args: argparse.Namespace) -> None:
     :param args: The parsed command-line arguments.
     """
     # Creating an AppleScriptClient within the current loop and bind it to a global variable
-    global AP_CLIENT
-    AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
-    
-    if args.command == "clean_artist":
-        artist = args.artist
-        console_logger.info(f"Running in 'clean_artist' mode for artist='{artist}'")
-        tracks = await fetch_tracks_async(artist=artist)
-        if not tracks:
-            console_logger.warning(f"No tracks found for artist: {artist}")
-            return
-        updated_tracks = []
-        changes_log = []
-
-        async def clean_track(track: Dict[str, str]) -> None:
-            orig_name = track.get("name", "")
-            orig_album = track.get("album", "")
-            track_id = track.get("id", "")
-            artist_name = track.get("artist", artist)
-            console_logger.info(f"Cleaning track ID {track_id} - '{orig_name}' by '{artist_name}' from '{orig_album}'")
-            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album)
-            new_tn = cleaned_nm if cleaned_nm != orig_name else None
-            new_an = cleaned_al if cleaned_al != orig_album else None
-            if new_tn or new_an:
-                if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                    if new_tn:
-                        track["name"] = cleaned_nm
-                    if new_an:
-                        track["album"] = cleaned_al
-                    changes_log.append({
-                        "artist": artist_name,
-                        "album": track.get("album", "Unknown"),
-                        "track_name": orig_name,
-                        "old_genre": track.get("genre", "Unknown"),
-                        "new_genre": track.get("genre", "Unknown"),
-                        "new_track_name": track.get("name", "Unknown"),
-                    })
-                    updated_tracks.append(track)
-                else:
-                    error_logger.error(f"Failed to update track ID {track_id}")
-            else:
-                console_logger.info(f"No cleaning needed for track '{orig_name}'")
+    try:
+        global AP_CLIENT
+        AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
         
-        tasks = [clean_track(t) for t in tracks]
-        await asyncio.gather(*tasks)
-        if updated_tracks:
-            sync_track_list_with_current(
-                updated_tracks, 
-                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), 
-                console_logger, 
-                error_logger,
-                partial_sync=True
-            )
-            save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-            console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (clean_artist).")
-        else:
-            console_logger.info("No track names or album names needed cleaning (clean_artist).")
-        last_run_time = datetime.min
-        updated_g, changes_g = await update_genres_by_artist_async(tracks, last_run_time)
-        if updated_g:
-            sync_track_list_with_current(
-                updated_g, 
-                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
-                console_logger, 
-                error_logger,
-                partial_sync=True
-            )
-            save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-            console_logger.info(f"Updated {len(updated_g)} tracks with new genres (clean_artist).")
-        else:
-            console_logger.info("No tracks needed genre updates (clean_artist).")
-        return
-    else:
-        force_run = args.force
-        if not can_run_incremental(force_run=force_run):
-            console_logger.info("Incremental interval not reached. Skipping.")
-            return
-        last_run_file = CONFIG["logging"]["last_incremental_run_file"]
-        last_run_time_str = None
-        if os.path.exists(last_run_file):
-            try:
-                with open(last_run_file, "r", encoding="utf-8") as f:
-                    last_run_time_str = f.read().strip()
-            except Exception as e:
-                error_logger.error(f"Failed to read {last_run_file}: {e}", exc_info=True)
-        if last_run_time_str:
-            try:
-                last_run_time = datetime.strptime(last_run_time_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                error_logger.error(f"Invalid date format in {last_run_file}. Resetting to full run.")
-                last_run_time = datetime.min
-        else:
-            console_logger.info("No valid last run timestamp found. Considering all tracks as existing.")
+        if args.command == "clean_artist":
+            artist = args.artist
+            console_logger.info(f"Running in 'clean_artist' mode for artist='{artist}'")
+            tracks = await fetch_tracks_async(artist=artist)
+            if not tracks:
+                console_logger.warning(f"No tracks found for artist: {artist}")
+                return
+            updated_tracks = []
+            changes_log = []
+
+            async def clean_track(track: Dict[str, str]) -> None:
+                orig_name = track.get("name", "")
+                orig_album = track.get("album", "")
+                track_id = track.get("id", "")
+                artist_name = track.get("artist", artist)
+                console_logger.info(f"Cleaning track ID {track_id} - '{orig_name}' by '{artist_name}' from '{orig_album}'")
+                cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album)
+                new_tn = cleaned_nm if cleaned_nm != orig_name else None
+                new_an = cleaned_al if cleaned_al != orig_album else None
+                if new_tn or new_an:
+                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                        if new_tn:
+                            track["name"] = cleaned_nm
+                        if new_an:
+                            track["album"] = cleaned_al
+                        changes_log.append({
+                            "artist": artist_name,
+                            "album": track.get("album", "Unknown"),
+                            "track_name": orig_name,
+                            "old_genre": track.get("genre", "Unknown"),
+                            "new_genre": track.get("genre", "Unknown"),
+                            "new_track_name": track.get("name", "Unknown"),
+                        })
+                        updated_tracks.append(track)
+                    else:
+                        error_logger.error(f"Failed to update track ID {track_id}")
+                else:
+                    console_logger.info(f"No cleaning needed for track '{orig_name}'")
+            
+            tasks = [clean_track(t) for t in tracks]
+            await asyncio.gather(*tasks)
+            if updated_tracks:
+                sync_track_list_with_current(
+                    updated_tracks, 
+                    os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), 
+                    cache_service,
+                    console_logger, 
+                    error_logger,
+                    partial_sync=True
+                )
+                save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
+                console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (clean_artist).")
+            else:
+                console_logger.info("No track names or album names needed cleaning (clean_artist).")
             last_run_time = datetime.min
-        test_artists = CONFIG.get("test_artists", [])
-        if test_artists:
-            all_tracks = []
-            for art in test_artists:
-                art_tracks = await fetch_tracks_async(art)
-                all_tracks.extend(art_tracks)
-        else:
-            all_tracks = await fetch_tracks_async()
-        if not all_tracks:
-            console_logger.warning("No tracks fetched.")
-            return
-        updated_tracks = []
-        changes_log = []
-
-        async def clean_track(track: Dict[str, str]) -> None:
-            orig_name = track.get("name", "")
-            orig_album = track.get("album", "")
-            track_id = track.get("id", "")
-            artist_name = track.get("artist", "Unknown")
-            console_logger.info(f"Cleaning track ID {track_id} - '{orig_name}' (global cleaning)")
-            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album)
-            new_tn = cleaned_nm if cleaned_nm != orig_name else None
-            new_an = cleaned_al if cleaned_al != orig_album else None
-            if new_tn or new_an:
-                if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                    if new_tn:
-                        track["name"] = cleaned_nm
-                    if new_an:
-                        track["album"] = cleaned_al
-                    changes_log.append({
-                        "artist": artist_name,
-                        "album": track.get("album", "Unknown"),
-                        "track_name": orig_name,
-                        "old_genre": track.get("genre", "Unknown"),
-                        "new_genre": track.get("genre", "Unknown"),
-                        "new_track_name": track.get("name", "Unknown"),
-                    })
-                    updated_tracks.append(track)
-                else:
-                    error_logger.error(f"Failed to update track ID {track_id}")
+            updated_g, changes_g = await update_genres_by_artist_async(tracks, last_run_time)
+            if updated_g:
+                sync_track_list_with_current(
+                    updated_g, 
+                    os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
+                    cache_service,
+                    console_logger, 
+                    error_logger,
+                    partial_sync=True
+                )
+                save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
+                console_logger.info(f"Updated {len(updated_g)} tracks with new genres (clean_artist).")
             else:
-                console_logger.info(f"No cleaning needed for track '{orig_name}'")
-        
-        # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
-        tasks = [clean_track(t) for t in all_tracks]
-        await asyncio.gather(*tasks)
-        if updated_tracks:
-            save_to_csv(updated_tracks, CONFIG["logging"]["csv_output_file"], console_logger, error_logger)
-            save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-            console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (global cleaning).")
+                console_logger.info("No tracks needed genre updates (clean_artist).")
+            return
         else:
-            console_logger.info("No track names or album names needed cleaning in this run.")
-        updated_g, changes_g = await update_genres_by_artist_async(all_tracks, last_run_time)
-        if updated_g:
-            sync_track_list_with_current(
-                all_tracks,
-                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
-                console_logger,
-                error_logger,
-                partial_sync=False
-            )
-            save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-            console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
-            update_last_incremental_run()
-        else:
-            console_logger.info("No tracks needed genre updates.")
-            update_last_incremental_run()
+            force_run = args.force
+            if not can_run_incremental(force_run=force_run):
+                console_logger.info("Incremental interval not reached. Skipping.")
+                return
+            last_run_file = CONFIG["logging"]["last_incremental_run_file"]
+            last_run_time_str = None
+            if os.path.exists(last_run_file):
+                try:
+                    with open(last_run_file, "r", encoding="utf-8") as f:
+                        last_run_time_str = f.read().strip()
+                except Exception as e:
+                    error_logger.error(f"Failed to read {last_run_file}: {e}", exc_info=True)
+            if last_run_time_str:
+                try:
+                    last_run_time = datetime.strptime(last_run_time_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    error_logger.error(f"Invalid date format in {last_run_file}. Resetting to full run.")
+                    last_run_time = datetime.min
+            else:
+                console_logger.info("No valid last run timestamp found. Considering all tracks as existing.")
+                last_run_time = datetime.min
+            test_artists = CONFIG.get("test_artists", [])
+            if test_artists:
+                all_tracks = []
+                for art in test_artists:
+                    art_tracks = await fetch_tracks_async(art)
+                    all_tracks.extend(art_tracks)
+            else:
+                all_tracks = await fetch_tracks_async()
+            if not all_tracks:
+                console_logger.warning("No tracks fetched.")
+                return
+            updated_tracks = []
+            changes_log = []
+
+            async def clean_track(track: Dict[str, str]) -> None:
+                orig_name = track.get("name", "")
+                orig_album = track.get("album", "")
+                track_id = track.get("id", "")
+                artist_name = track.get("artist", "Unknown")
+                console_logger.info(f"Cleaning track ID {track_id} - '{orig_name}' (global cleaning)")
+                cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album)
+                new_tn = cleaned_nm if cleaned_nm != orig_name else None
+                new_an = cleaned_al if cleaned_al != orig_album else None
+                if new_tn or new_an:
+                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                        if new_tn:
+                            track["name"] = cleaned_nm
+                        if new_an:
+                            track["album"] = cleaned_al
+                        changes_log.append({
+                            "artist": artist_name,
+                            "album": track.get("album", "Unknown"),
+                            "track_name": orig_name,
+                            "old_genre": track.get("genre", "Unknown"),
+                            "new_genre": track.get("genre", "Unknown"),
+                            "new_track_name": track.get("name", "Unknown"),
+                        })
+                        updated_tracks.append(track)
+                    else:
+                        error_logger.error(f"Failed to update track ID {track_id}")
+                else:
+                    console_logger.info(f"No cleaning needed for track '{orig_name}'")
+            
+            # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
+            tasks = [clean_track(t) for t in all_tracks]
+            await asyncio.gather(*tasks)
+            if updated_tracks:
+                save_to_csv(updated_tracks, CONFIG["logging"]["csv_output_file"], console_logger, error_logger)
+                save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
+                console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (global cleaning).")
+            else:
+                console_logger.info("No track names or album names needed cleaning in this run.")
+            updated_g, changes_g = await update_genres_by_artist_async(all_tracks, last_run_time)
+            if updated_g:
+                sync_track_list_with_current(
+                    all_tracks,
+                    os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
+                    cache_service,
+                    console_logger,
+                    error_logger,
+                    partial_sync=False
+                )
+                save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
+                console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
+                update_last_incremental_run()
+            else:
+                console_logger.info("No tracks needed genre updates.")
+                update_last_incremental_run()
+    except Exception as e:
+        console_logger.info("Script interrupted by user. Cancelling pending tasks…")
+        pending = asyncio.all_tasks()
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        raise
 
 def main() -> None:
     """

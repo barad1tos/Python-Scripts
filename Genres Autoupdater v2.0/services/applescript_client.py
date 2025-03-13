@@ -21,6 +21,7 @@ Example:
 import asyncio
 import logging
 import os
+import subprocess
 
 from typing import List, Optional, Union
 
@@ -79,13 +80,26 @@ class AppleScriptClient:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode != 0:
-                    self.logger.error(f"AppleScript failed: {stderr.decode().strip()}")
-                    return None
-                result = stdout.decode().strip()
-                self.logger.debug(f"AppleScript result: {result}")
-                return result
-            except (OSError, asyncio.SubprocessError) as e:
-                self.logger.error(f"Error running AppleScript '{script_name}': {e}", exc_info=True)
+            except Exception as e:
+                self.logger.error(f"Error creating subprocess for '{script_name}': {e}", exc_info=True)
                 return None
+
+            try:
+                stdout, stderr = await asyncio.shield(proc.communicate())
+            except asyncio.CancelledError:
+                self.logger.info(f"AppleScript '{script_name}' execution cancelled. Killing subprocess.")
+                proc.kill()
+                await proc.wait()
+                raise
+            except Exception as e:
+                self.logger.error(f"Error during subprocess communication for '{script_name}': {e}", exc_info=True)
+                proc.kill()
+                await proc.wait()
+                return None
+
+            if proc.returncode != 0:
+                self.logger.error(f"AppleScript failed: {stderr.decode().strip()}")
+                return None
+            result = stdout.decode().strip()
+            self.logger.debug(f"AppleScript result: {result}")
+            return result

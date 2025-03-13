@@ -15,6 +15,8 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from services.cache_service import CacheService
+
 def _save_csv(
     data: List[Dict[str, str]],
     fieldnames: List[str],
@@ -315,6 +317,7 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
 def sync_track_list_with_current(
     all_tracks: List[Dict[str, str]],
     csv_path: str,
+    cache_service: CacheService,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
     partial_sync: bool = False
@@ -330,16 +333,12 @@ def sync_track_list_with_current(
         partial_sync (bool, optional): If True, only update existing tracks; if False, remove missing tracks.
     """
     console_logger.info(f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}")
-    from music_genre_updater import fetch_cache  # using the global cache
-    if "ALL" in fetch_cache:
-        cached_tracks, _ = fetch_cache["ALL"]
-        if len(all_tracks) != len(cached_tracks):
-            console_logger.error(
-                f"Track count mismatch: fetched {len(all_tracks)} tracks but cache has {len(cached_tracks)}. Aborting sync."
-            )
-            return
-        else:
-            console_logger.info("Cache verification passed: track counts match.")
+    cached_tracks = cache_service.get("ALL")
+    if cached_tracks is not None and len(cached_tracks) != len(all_tracks):
+        error_logger.error("Cached tracks count does not match fetched tracks count.")
+        return
+    elif cached_tracks is not None:
+        console_logger.info("Cached verification passed susccessfully: track counts match.")
     csv_map = load_track_list(csv_path)
     console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
     if not partial_sync:
