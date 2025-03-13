@@ -3,7 +3,7 @@
 """
 Reports Module
 
-Provides functions for generating CSV and HTML reports, as well as track list synchronisation.
+Provides functions for generating CSV and HTML reports, as well as track list synchronization.
 HTML reports are stored in a fixed file (e.g., analytics/reports/analytics.html) under logs_base_dir,
 so that each run overwrites the report rather than creating new files.
 """
@@ -338,7 +338,7 @@ def sync_track_list_with_current(
         error_logger.error("Cached tracks count does not match fetched tracks count.")
         return
     elif cached_tracks is not None:
-        console_logger.info("Cached verification passed susccessfully: track counts match.")
+        console_logger.info("Cached verification passed successfully: track counts match.")
     csv_map = load_track_list(csv_path)
     console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
     if not partial_sync:

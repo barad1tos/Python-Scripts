@@ -44,15 +44,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from services.applescript_client import AppleScriptClient
-from services.cache_service import CacheService
+from services.dependencies_service import DependencyContainer
 from utils.analytics import Analytics
 from utils.logger import get_full_log_path, get_loggers
 from utils.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
 
-# This client is used to run AppleScript commands asynchronously throughout the script.
-# It is initialized once and reused to avoid creating multiple instances.
-AP_CLIENT: Optional[AppleScriptClient] = None
+# Global variable for dependency container (set in main_async)
+DEPS: Optional[DependencyContainer] = None
 
 # Load configuration from YAML
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -102,14 +100,10 @@ def check_paths(paths: List[str], logger: logging.Logger) -> None:
             logger.error(f"No read access to {path}.")
             raise PermissionError(f"No read access to {path}.")
 
-check_paths([get_config()["music_library_path"], get_config()["apple_scripts_dir"]], error_logger)
+check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger)
 
 # Initialize analytics tracking
-analytics = Analytics(get_config(), console_logger, error_logger, analytics_logger)
-
-# Initializing the global cache service
-global cache_service
-cache_service = CacheService(ttl=CONFIG.get("cache_ttl_seconds", 900))
+analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 
 def get_decorator(event_type: str):
     """
@@ -123,17 +117,17 @@ def get_decorator(event_type: str):
 @get_decorator("AppleScript Execution")
 async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
     """
-    Run an AppleScript asynchronously using the AppleScriptClient.
+    Run an AppleScript asynchronously using the AppleScriptClient from DEPS.
 
     :param script_name: The name of the AppleScript file to run.
     :param args: A list of arguments to pass to the AppleScript.
     :return: The output of the AppleScript execution.
     """
     try:
-        global AP_CLIENT
-        if AP_CLIENT is None:
-            AP_CLIENT = AppleScriptClient(get_config(), logger=console_logger)
-        return await AP_CLIENT.run_script(script_name, args)
+        if DEPS is None or DEPS.ap_client is None:
+            error_logger.error("AppleScriptClient not initialized in dependency container.")
+            return None
+        return await DEPS.ap_client.run_script(script_name, args)
     except Exception as e:
         error_logger.error(f"Error running AppleScript {script_name}: {e}", exc_info=True)
         return None
@@ -518,7 +512,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     """
     try:
         csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
-        load_track_list(csv_path)  # Refresh CSV map if needed.
+        load_track_list(csv_path)
         grouped = group_tracks_by_artist(tracks)
         updated_tracks = []
         changes_log = []
@@ -592,9 +586,9 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
         cache_key = artist if artist else "ALL"
         if force_refresh:
             console_logger.info(f"Forced cache refresh requested for '{cache_key}'")
-            cache_service.invalidate(cache_key)
+            DEPS.cache_service.invalidate(cache_key)
         try:
-            raw_data = await cache_service.get_async(
+            raw_data = await DEPS.cache_service.get_async(
                 cache_key,
                 compute_func=lambda: run_applescript_async("fetch_tracks.applescript", [artist] if artist else [])
             )
@@ -629,11 +623,19 @@ async def main_async(args: argparse.Namespace) -> None:
     
     :param args: The parsed command-line arguments.
     """
-    # Creating an AppleScriptClient within the current loop and bind it to a global variable
+    # Initialize global variables and dependencies
     try:
-        global AP_CLIENT
-        AP_CLIENT = AppleScriptClient(CONFIG, logger=console_logger)
+        global DEPS
+        # Initialize DependencyContainer – reinitialize on every run to avoid stale cache or globals.
+        DEPS = DependencyContainer(CONFIG_PATH)
         
+        # For convenience, bind local variables from DEPS
+        global CONFIG, console_logger, error_logger
+        CONFIG = DEPS.config
+        console_logger = DEPS.console_logger
+        error_logger = DEPS.error_logger
+
+        # Command-specific logic
         if args.command == "clean_artist":
             artist = args.artist
             console_logger.info(f"Running in 'clean_artist' mode for artist='{artist}'")
@@ -672,14 +674,14 @@ async def main_async(args: argparse.Namespace) -> None:
                         error_logger.error(f"Failed to update track ID {track_id}")
                 else:
                     console_logger.info(f"No cleaning needed for track '{orig_name}'")
-            
-            tasks = [clean_track(t) for t in tracks]
+
+            tasks = [asyncio.create_task(clean_track(t)) for t in tracks]
             await asyncio.gather(*tasks)
             if updated_tracks:
                 sync_track_list_with_current(
                     updated_tracks, 
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), 
-                    cache_service,
+                    DEPS.cache_service,
                     console_logger, 
                     error_logger,
                     partial_sync=True
@@ -692,10 +694,10 @@ async def main_async(args: argparse.Namespace) -> None:
             updated_g, changes_g = await update_genres_by_artist_async(tracks, last_run_time)
             if updated_g:
                 sync_track_list_with_current(
-                    updated_g, 
+                    updated_g,
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
-                    cache_service,
-                    console_logger, 
+                    DEPS.cache_service,
+                    console_logger,
                     error_logger,
                     partial_sync=True
                 )
@@ -709,7 +711,7 @@ async def main_async(args: argparse.Namespace) -> None:
             if not can_run_incremental(force_run=force_run):
                 console_logger.info("Incremental interval not reached. Skipping.")
                 return
-            last_run_file = CONFIG["logging"]["last_incremental_run_file"]
+            last_run_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
             last_run_time_str = None
             if os.path.exists(last_run_file):
                 try:
@@ -770,7 +772,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     console_logger.info(f"No cleaning needed for track '{orig_name}'")
             
             # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
-            tasks = [clean_track(t) for t in all_tracks]
+            tasks = [asyncio.create_task(clean_track(t)) for t in all_tracks]
             await asyncio.gather(*tasks)
             if updated_tracks:
                 save_to_csv(updated_tracks, CONFIG["logging"]["csv_output_file"], console_logger, error_logger)
@@ -783,7 +785,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 sync_track_list_with_current(
                     all_tracks,
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
-                    cache_service,
+                    DEPS.cache_service,
                     console_logger,
                     error_logger,
                     partial_sync=False
@@ -794,12 +796,20 @@ async def main_async(args: argparse.Namespace) -> None:
             else:
                 console_logger.info("No tracks needed genre updates.")
                 update_last_incremental_run()
-    except Exception as e:
+    except KeyboardInterrupt:
         console_logger.info("Script interrupted by user. Cancelling pending tasks…")
-        pending = asyncio.all_tasks()
+        current_task = asyncio.current_task()
+        pending = [t for t in asyncio.all_tasks() if t is not current_task and not t.done()]
+        console_logger.info(f"Cancelling {len(pending)} pending tasks.")
         for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
+            try:
+                task.cancel()
+            except Exception as cancel_e:
+                console_logger.error(f"Error cancelling task {task}: {cancel_e}", exc_info=True)
+        try:
+            await asyncio.gather(*pending, return_exceptions=True)
+        except Exception as e:
+            console_logger.error(f"Error while awaiting cancelled tasks: {e}", exc_info=True)
         raise
 
 def main() -> None:
@@ -832,7 +842,7 @@ def main() -> None:
         error_logger.error(f"An unexpected error occurred: {exc}", exc_info=True)
         sys.exit(1)
     finally:
-        analytics.generate_reports()
+        DEPS.analytics.generate_reports()
     end_all = time.time()
     console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 
