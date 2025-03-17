@@ -8,9 +8,21 @@ based on each artist's earliest album and track. It also cleans track and album 
 by removing remaster keywords and suffixes. The script can be run in incremental mode
 to update only the tracks that have been added since the last run.
 
+Key Features:
+    - Asynchronous processing for improved performance
+    - Caching of fetched tracks to reduce AppleScript calls
+    - Batch processing of updates to avoid overwhelming the Music app
+    - Analytics tracking for operations and performance monitoring
+    - Robust error handling and automatic retries for failed operations
+
 The script can be run in two modes:
     1. Global Cleaning: Cleans all track and album names and updates genres for all tracks.
     2. Artist Cleaning: Cleans track and album names for a specific artist and updates genres.
+
+The script uses a dependency container to manage services including:
+    - AppleScriptClient: For executing AppleScript commands
+    - CacheService: For caching fetched track data
+    - Analytics: For tracking script performance and operations
 
 The script requires the following configuration in 'my-config.yaml':
     1. music_library_path: Path to the Music library XML file.
@@ -20,7 +32,9 @@ The script requires the following configuration in 'my-config.yaml':
     5. incremental_interval_minutes: Interval between incremental runs in minutes (default 60).
     6. exceptions: List of exceptions for track cleaning and genre updates.
     7. cleaning: Configuration for cleaning track and album names.
-    8. test_artists: List of test artists to fetch tracks for (for testing purposes).
+    8. max_retries: Maximum number of retries for failed operations (default 3).
+    9. retry_delay_seconds: Delay between retries in seconds (default 2).
+    10. test_artists: List of test artists to fetch tracks for (for testing purposes).
 
 The script logs errors and changes to CSV files and generates reports for analytics.
 
@@ -816,13 +830,19 @@ def main() -> None:
     """
     The main function that parses command-line arguments and runs the script.
     """
+    # Initialize time tracking
     start_all = time.time()
+    # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
+    # Add subparsers for different commands
     subparsers = parser.add_subparsers(dest="command")
+    # Subparser for cleaning track/album names for a specific artist
     clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track/album names for a given artist")
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name")
     clean_artist_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
+    # Subparser for force processing of all tracks (skips incremental check)
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
+    # Subparser for dry-run mode. Simulates changes without applying them.
     parser.add_argument("--dry-run", action="store_true", help="Simulate changes without applying them")
     args = parser.parse_args()
     if args.dry_run:
