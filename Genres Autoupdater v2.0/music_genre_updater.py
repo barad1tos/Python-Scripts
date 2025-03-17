@@ -826,34 +826,47 @@ async def main_async(args: argparse.Namespace) -> None:
             console_logger.error(f"Error while awaiting cancelled tasks: {e}", exc_info=True)
         raise
 
-def main() -> None:
+def parse_arguments() -> argparse.Namespace:
     """
-    The main function that parses command-line arguments and runs the script.
+    Parse command-line arguments using argparse. The script supports two main commands:
+    - clean_artist: Clean track and album names for a specific artist
+    - global: Process all tracks in the library with incremental updates
     """
-    # Initialize time tracking
-    start_all = time.time()
-    # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
-    # Add subparsers for different commands
     subparsers = parser.add_subparsers(dest="command")
-    # Subparser for cleaning track/album names for a specific artist
     clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track/album names for a given artist")
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name")
     clean_artist_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
-    # Subparser for force processing of all tracks (skips incremental check)
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
-    # Subparser for dry-run mode. Simulates changes without applying them.
     parser.add_argument("--dry-run", action="store_true", help="Simulate changes without applying them")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+def handle_dry_run() -> None:
+    """
+    Handle the dry-run mode by running the script without applying
+    any changes to the Music library. This mode is useful for testing
+    the script logic without modifying the library.
+    """
+    try:
+        from utils import dry_run
+    except ImportError:
+        error_logger.error("Dry run module not found. Ensure 'utils/dry_run.py' exists.")
+        sys.exit(1)
+    console_logger.info("Running in dry-run mode. No changes will be applied.")
+    asyncio.run(dry_run.main())
+    sys.exit(0)
+
+def main() -> None:
+    """
+    Main function to run the script. Parses command-line arguments,
+    initializes the script, and runs the main_async function
+    using asyncio. Handles exceptions and script interruptions
+    gracefully, logging errors and analytics
+    """
+    start_all = time.time()
+    args = parse_arguments()
     if args.dry_run:
-        try:
-            from utils import dry_run
-        except ImportError:
-            error_logger.error("Dry run module not found. Ensure 'utils/dry_run.py' exists.")
-            sys.exit(1)
-        console_logger.info("Running in dry-run mode. No changes will be applied.")
-        asyncio.run(dry_run.main())
-        sys.exit(0)
+        handle_dry_run()
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:
