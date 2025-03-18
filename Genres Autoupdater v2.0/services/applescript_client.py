@@ -35,9 +35,11 @@ class AppleScriptClient:
         logger (logging.Logger): Logger for logging messages.
         semaphore (asyncio.Semaphore): Semaphore to limit concurrent AppleScript executions.
     """
-    def __init__(self, config: dict, logger: Optional[logging.Logger] = None):
+    def __init__(self, config: dict, console_logger: logging.Logger = None, error_logger: logging.Logger = None):
         self.config = config
-        self.logger = logger if logger is not None else logging.getLogger(__name__)
+        self.console_logger = console_logger if console_logger is not None else logging.getLogger(__name__)
+        self.error_logger = error_logger if error_logger is not None else self.console_logger
+        
         if not config.get("apple_scripts_dir"):
             raise ValueError("The 'apple_scripts_dir' key is missing in the configuration.")
         self.apple_scripts_dir = config.get("apple_scripts_dir")
@@ -60,11 +62,11 @@ class AppleScriptClient:
             >>> print(result)
         """
         if not self.apple_scripts_dir:
-            self.logger.error("AppleScript directory is not set.")
+            self.error_logger.error("AppleScript directory is not set.")
             return None
         script_path = os.path.join(self.apple_scripts_dir, script_name)
         if not os.path.exists(script_path):
-            self.logger.error(f"AppleScript not found: {script_path}")
+            self.error_logger.error(f"AppleScript not found: {script_path}")
             return None
         
         # Build command list
@@ -72,7 +74,7 @@ class AppleScriptClient:
         if args:
             cmd.extend(args)
         
-        self.logger.info(f"Executing AppleScript: {' '.join(cmd)}")
+        self.console_logger.info(f"Executing AppleScript: {' '.join(cmd)}")
         async with self.semaphore:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -81,25 +83,26 @@ class AppleScriptClient:
                     stderr=asyncio.subprocess.PIPE
                 )
             except Exception as e:
-                self.logger.error(f"Error creating subprocess for '{script_name}': {e}", exc_info=True)
+                self.error_logger.error(f"Error creating subprocess for '{script_name}': {e}", exc_info=True)
                 return None
 
             try:
                 stdout, stderr = await asyncio.shield(proc.communicate())
             except asyncio.CancelledError:
-                self.logger.info(f"AppleScript '{script_name}' execution cancelled. Killing subprocess.")
+                self.error_logger.info(f"AppleScript '{script_name}' execution cancelled. Killing subprocess.")
                 proc.kill()
                 await proc.wait()
                 raise
             except Exception as e:
-                self.logger.error(f"Error during subprocess communication for '{script_name}': {e}", exc_info=True)
+                self.error_logger.error(f"Error during subprocess communication for '{script_name}': {e}", exc_info=True)
                 proc.kill()
                 await proc.wait()
                 return None
 
             if proc.returncode != 0:
-                self.logger.error(f"AppleScript failed: {stderr.decode().strip()}")
+                self.error_logger.error(f"AppleScript failed: {stderr.decode().strip()}")
                 return None
+
             result = stdout.decode().strip()
-            self.logger.debug(f"AppleScript result: {result}")
+            self.console_logger.debug(f"AppleScript result: {result}")
             return result

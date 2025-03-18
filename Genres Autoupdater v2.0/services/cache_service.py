@@ -8,7 +8,7 @@ with an optional time-to-live (TTL) for each entry. The cache can be used
 to store the results of expensive computations and avoid redundant work.
 
 Example:
-    >>> cache = CacheService(ttl=60)
+    >>> cache = CacheService(config, console_logger, error_logger)
     >>> value = await cache.get_async("some_key", lambda: some_async_function())
     >>> print(value)
 """
@@ -20,84 +20,83 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 class CacheService:
-    def __init__(self, ttl: Optional[int] = None):
-        """
-        Initialize the CacheService with an optional time-to-live (TTL) value.
+    def __init__(self, config: dict, console_logger, error_logger):
+        self.config = config
+        self.console_logger = console_logger
+        self.error_logger = error_logger
+        self.default_ttl = config.get("cache_ttl_seconds", 900)
+        self.cache: Dict[str, Tuple[Any, float]] = {}  # (value, expiry_time)
 
-        :param ttl: Time-to-live (in seconds) for each cache entry.
-        """
-        self.ttl = ttl
-        self.cache: Dict[str, Tuple[Any, float]] = {}
-
-    def _is_expired(self, timestamp: float) -> bool:
-        """
-        Check if the cache entry with the given timestamp is expired.
-
-        :param timestamp: Timestamp of the cache entry.
-        :return: True if the cache entry is expired, False otherwise.
-        """
-        if self.ttl is None:
-            return False
-        return (time.time() - timestamp) > self.ttl
+    def _is_expired(self, expiry_time: float) -> bool:
+        """Checks if the cache has expired"""
+        return time.time() > expiry_time
 
     def _hash_key(self, key_data: Any) -> str:
-        """
-        Generate a unique hash key from the key_data.
-
-        :param key_data: Data to generate the key from.
-        :return: Hashed key string.
-        """
+        """Creates a unique hash for the cache key"""
         if isinstance(key_data, tuple):
             key_str = '|'.join(str(item) for item in key_data)
         else:
             key_str = str(key_data)
         return hashlib.sha256(key_str.encode('utf-8')).hexdigest()
 
-    async def get_async(self, key_data: Any, compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None) -> Any:
-        """
-        Asynchronously retrieve a value from the cache by key_data.
-        If the key is not present or has expired and compute_func is provided,
-        await compute_func() to compute a new value, store it, and return it.
+    def set(self, key_data: Any, value: Any, ttl: Optional[int] = None) -> None:
+        """Saves the value to the cache with the specified TTL"""
+        key = self._hash_key(key_data)
+        ttl_value = ttl if ttl is not None else self.default_ttl
+        expiry_time = time.time() + ttl_value
+        self.cache[key] = (value, expiry_time)
 
-        :param key_data: Data for generating the cache key.
-        :param compute_func: An asynchronous function to compute the value if not found or expired.
-        :return: The cached or computed value.
-        """
+    async def set_async(self, key_data: Any, value: Any, ttl: Optional[int] = None) -> None:
+        """Asynchronous version set for compatibility"""
+        self.set(key_data, value, ttl)
+
+    async def get_async(self, key_data: Any, compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None) -> Any:
+        """Asynchronously fetches a value from the cache or calculates it if necessary"""
+        # Специальный случай для ключа "ALL"
+        if key_data == "ALL":
+            tracks = []
+            for cache_key, (value, expiry_time) in self.cache.items():
+                if isinstance(value, dict) and "id" in value and not self._is_expired(expiry_time):
+                    tracks.append(value)
+            return tracks
+            
+        # Стандартная логика для других ключей
         key = self._hash_key(key_data)
         if key in self.cache:
-            value, timestamp = self.cache[key]
-            if not self._is_expired(timestamp):
+            value, expiry_time = self.cache[key]
+            if not self._is_expired(expiry_time):
+                self.console_logger.debug(f"Cache hit for {key_data}")
                 return value
             else:
+                self.console_logger.debug(f"Cache expired for {key_data}")
                 del self.cache[key]
+                
+        # Если значения нет в кэше или оно устарело, вычисляем его
         if compute_func is not None:
+            self.console_logger.debug(f"Computing value for {key_data}")
             value = await compute_func()
-            self.set(key_data, value)
+            if value is not None:
+                self.set(key_data, value)
             return value
         return None
 
-    def set(self, key_data: Any, value: Any) -> None:
-        """
-        Set a value in the cache with the given key_data.
-
-        :param key_data: Data for generating the cache key.
-        :param value: Value to store in the cache.
-        """
-        key = self._hash_key(key_data)
-        self.cache[key] = (value, time.time())
+    async def get_album_year_from_cache(self, artist: str, album: str) -> Optional[str]:
+        """Gets the year of the album from the cache"""
+        cache_key = f"year_{artist}_{album}".replace(" ", "_").lower()
+        return await self.get_async(cache_key)
+        
+    async def store_album_year_in_cache(self, artist: str, album: str, year: str) -> None:
+        """Saves album year to cache with long-term TTL"""
+        cache_key = f"year_{artist}_{album}".replace(" ", "_").lower()
+        ttl = self.config.get('year_retrieval', {}).get('cache_ttl_days', 365) * 24 * 60 * 60
+        await self.set_async(cache_key, year, ttl)
 
     def invalidate(self, key_data: Any) -> None:
-        """
-        Invalidate a cache entry by key_data.
-
-        :param key_data: Data for generating the cache key.
-        """
+        """Deletes a value from the cache"""
         key = self._hash_key(key_data)
         if key in self.cache:
             del self.cache[key]
 
     def clear(self) -> None:
-        """
-        Clear the entire cache.
-        """
+        """Clears all cache"""
         self.cache.clear()

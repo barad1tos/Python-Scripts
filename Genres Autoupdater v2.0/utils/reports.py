@@ -48,7 +48,10 @@ def _save_csv(
         with open(file_path, mode="w", newline="", encoding="utf-8") as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(data)
+            # Filter each row to include only keys present in fieldnames
+            for row in data:
+                filtered_row = {field: row.get(field, "") for field in fieldnames}
+                writer.writerow(filtered_row)
         console_logger.info(f"{data_type.capitalize()} saved to {file_path}.")
     except Exception as e:
         error_logger.error(f"Failed to save {data_type}: {e}")
@@ -94,7 +97,8 @@ def save_changes_report(
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
         error_logger = logging.getLogger("error_logger")
-    fieldnames = ["artist", "album", "track_name", "old_genre", "new_genre", "new_track_name"]
+    # Updated fieldnames to support additional year_updated and new_year keys
+    fieldnames = ["artist", "album", "track_name", "old_genre", "new_genre", "new_track_name", "year_updated", "new_year"]
     changes_sorted = sorted(changes, key=lambda x: x.get("artist", "Unknown"))
     _save_csv(changes_sorted, fieldnames, file_path, console_logger, error_logger, "changes report")
 
@@ -314,7 +318,7 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
         logger.error(f"Could not read track_list.csv: {e}")
     return track_map
 
-def sync_track_list_with_current(
+async def sync_track_list_with_current(
     all_tracks: List[Dict[str, str]],
     csv_path: str,
     cache_service: CacheService,
@@ -324,31 +328,30 @@ def sync_track_list_with_current(
 ) -> None:
     """
     Synchronize the current list of tracks with the data in the CSV file.
-    
-    Args:
-        all_tracks (List[Dict[str, str]]): List of currently fetched track dictionaries.
-        csv_path (str): Path to the CSV file. (No timestamp substitution.)
-        console_logger (logging.Logger): Logger for informational messages.
-        error_logger (logging.Logger): Logger for error messages.
-        partial_sync (bool, optional): If True, only update existing tracks; if False, remove missing tracks.
     """
     console_logger.info(f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}")
-    cached_tracks = cache_service.get("ALL")
-    if cached_tracks is not None and len(cached_tracks) != len(all_tracks):
-        error_logger.error("Cached tracks count does not match fetched tracks count.")
-        return
-    elif cached_tracks is not None:
-        console_logger.info("Cached verification passed successfully: track counts match.")
+    cached_tracks = None
+    
+    # Correct use of cache_service
+    if cache_service:
+        try:
+            # Call get_async with the correct key
+            cached_tracks = await cache_service.get_async("ALL")
+        except AttributeError:
+            error_logger.warning("Cache service doesn't have get_async method, skipping cache check")
+        except Exception as e:
+            error_logger.error(f"Error accessing cache: {e}")
+    
     csv_map = load_track_list(csv_path)
     console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
-    if not partial_sync:
-        removed_count = 0
-        fetched_ids = {tr.get("id", "").strip() for tr in all_tracks if tr.get("id", "").strip()}
-        for old_tid in list(csv_map.keys()):
-            if old_tid not in fetched_ids:
-                del csv_map[old_tid]
-                removed_count += 1
-        console_logger.info(f"Removed {removed_count} tracks from CSV that are missing in fetched data.")
+    
+    # Check cache if available
+    if cached_tracks is not None:
+        if len(cached_tracks) != len(all_tracks):
+            console_logger.warning("Cached tracks count does not match fetched tracks count. Proceeding with sync update.")
+        else:
+            console_logger.info("Cached verification passed successfully: track counts match.")
+            
     added_or_updated_count = 0
     current_map = {}
     for tr in all_tracks:

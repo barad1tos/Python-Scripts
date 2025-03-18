@@ -126,6 +126,9 @@ def get_decorator(event_type: str):
     :param event_type: The event type to track.
     :return: A decorator function.
     """
+    if DEPS and hasattr(DEPS, 'analytics'):
+        return DEPS.analytics.decorator(event_type)
+    # Fallback to global analytics for backward compatibility
     return analytics.decorator(event_type)
 
 @get_decorator("AppleScript Execution")
@@ -329,6 +332,214 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
         error_logger.error(f"Error in remove_parentheses_with_keywords: {e}", exc_info=True)
         return name
 
+@get_decorator("Update Album Years")
+async def update_album_years_async(tracks: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """
+    Update the album years for tracks by fetching data from external services.
+    
+    The process:
+    1. Group tracks by album to minimize API requests
+    2. Check cache for existing year data
+    3. For albums without cached data, query external APIs
+    4. Update all tracks for an album to the retrieved year
+    5. Track changes for reporting
+    
+    :param tracks: A list of dictionaries containing track information
+    :return: A tuple containing the updated tracks and the changes log
+    """
+    # Helper function to process a single album
+    async def process_album(album_data: Dict[str, Any]) -> None:
+        artist = album_data["artist"]
+        album = album_data["album"]
+        album_tracks = album_data["tracks"]
+        
+        # Skip if no tracks in album
+        if not album_tracks:
+            return
+        
+        # Try to get year from cache first
+        year = await DEPS.cache_service.get_album_year_from_cache(artist, album)
+        
+        # If not in cache, fetch from external API
+        if not year:
+            year_logger.info(f"Fetching year for '{artist} - {album}' from external API")
+            year = await DEPS.external_api_service.get_album_year(artist, album)
+            
+            # Store in cache if found
+            if year:
+                await DEPS.cache_service.store_album_year_in_cache(artist, album, year)
+                year_logger.info(f"Stored year {year} for '{artist} - {album}' in cache")
+            else:
+                year_logger.warning(f"No year found for '{artist} - {album}'")
+                return
+        else:
+            year_logger.info(f"Using cached year {year} for '{artist} - {album}'")
+        
+        # Get track IDs for bulk update
+        track_ids = [track.get("id", "") for track in album_tracks]
+        track_ids = [tid for tid in track_ids if tid]  # Filter empty IDs
+        
+        if track_ids:
+            # Update all tracks in the album in bulk
+            success = await update_album_tracks_bulk_async(track_ids, year)
+            
+            if success:
+                # Update track data in memory
+                for track in album_tracks:
+                    track_id = track.get("id", "")
+                    if track_id:
+                        # Add to updated tracks list
+                        updated_tracks.append(track)
+                        
+                        # Add to changes log
+                        changes_log.append({
+                            "artist": artist,
+                            "album": album,
+                            "track_name": track.get("name", "Unknown"),
+                            "year_updated": "true",
+                            "new_year": year
+                        })
+                        
+                year_logger.info(f"Updated {len(track_ids)} tracks for '{artist} - {album}' to year {year}")
+            else:
+                year_logger.error(f"Failed to update year for '{artist} - {album}'")
+    
+    try:
+        # Initialize log file path for year changes
+        year_changes_log_file = os.path.join(
+            CONFIG["logs_base_dir"], 
+            CONFIG["logging"].get("year_changes_log_file", "main/year_changes.log")
+        )
+        
+        # Ensure log directory exists
+        os.makedirs(os.path.dirname(year_changes_log_file), exist_ok=True)
+        
+        # Create a year-specific logger
+        year_logger = logging.getLogger("year_updates")
+        year_logger.setLevel(logging.INFO)
+        
+        # Add a file handler for the year changes log
+        if not year_logger.handlers:
+            fh = logging.FileHandler(year_changes_log_file)
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            year_logger.addHandler(fh)
+        
+        console_logger.info("Starting album year update process")
+        
+        # Group tracks by album to minimize API requests
+        albums = {}
+        for track in tracks:
+            artist = track.get("artist", "Unknown")
+            album = track.get("album", "Unknown")
+            key = f"{artist}|{album}"
+            
+            if key not in albums:
+                albums[key] = {
+                    "artist": artist,
+                    "album": album,
+                    "tracks": []
+                }
+            albums[key]["tracks"].append(track)
+        
+        console_logger.info(f"Processing {len(albums)} unique albums")
+        year_logger.info(f"Starting year update for {len(albums)} albums")
+        
+        # Lists to track changes
+        updated_tracks = []
+        changes_log = []
+
+        # Process albums in parallel
+        async def process_album(album_data):
+            nonlocal updated_tracks, changes_log
+            artist = album_data["artist"]
+            album = album_data["album"]
+            album_tracks = album_data["tracks"]
+            
+            # Skip if no tracks in album
+            if not album_tracks:
+                return
+            
+            # Try to get year from cache first
+            year = await DEPS.cache_service.get_album_year_from_cache(artist, album)
+            
+            # If not in cache, fetch from external API
+            if not year:
+                year_logger.info(f"Fetching year for '{artist} - {album}' from external API")
+                year = await DEPS.external_api_service.get_album_year(artist, album)
+                
+                # Store in cache if found
+                if year:
+                    await DEPS.cache_service.store_album_year_in_cache(artist, album, year)
+                    year_logger.info(f"Stored year {year} for '{artist} - {album}' in cache")
+                else:
+                    year_logger.warning(f"No year found for '{artist} - {album}'")
+                    return
+            else:
+                year_logger.info(f"Using cached year {year} for '{artist} - {album}'")
+            
+            # Get track IDs for bulk update
+            track_ids = [track.get("id", "") for track in album_tracks]
+            track_ids = [tid for tid in track_ids if tid]  # Filter empty IDs
+            
+            if track_ids:
+                # Update all tracks in the album in bulk
+                success = await update_album_tracks_bulk_async(track_ids, year)
+                
+                if success:
+                    # Update track data in memory
+                    for track in album_tracks:
+                        track_id = track.get("id", "")
+                        if track_id:
+                            # Add to updated tracks list
+                            updated_tracks.append(track)
+                            
+                            # Add to changes log
+                            changes_log.append({
+                                "artist": artist,
+                                "album": album,
+                                "track_name": track.get("name", "Unknown"),
+                                "year_updated": "true",
+                                "new_year": year
+                            })
+                            
+                    year_logger.info(f"Updated {len(track_ids)} tracks for '{artist} - {album}' to year {year}")
+                else:
+                    year_logger.error(f"Failed to update year for '{artist} - {album}'")
+
+        # Batch size and delay settings to respect API limits
+        batch_size = CONFIG.get("year_retrieval", {}).get("batch_size", 10)
+        delay_between_batches = CONFIG.get("year_retrieval", {}).get("delay_between_batches", 60)
+        
+        # Process albums in batches
+        album_items = list(albums.items())
+        
+        for i in range(0, len(album_items), batch_size):
+            batch = album_items[i:i + batch_size]
+            batch_tasks = []
+            
+            for _, album_data in batch:
+                batch_tasks.append(process_album(album_data))
+            
+            # Process current batch
+            await asyncio.gather(*batch_tasks)
+            
+            # Log progress
+            console_logger.info(f"Processed batch {i//batch_size + 1}/{(len(album_items) + batch_size - 1)//batch_size}")
+            
+            # Delay between batches to respect API rate limits
+            if i + batch_size < len(album_items):
+                console_logger.info(f"Waiting {delay_between_batches} seconds before next batch")
+                await asyncio.sleep(delay_between_batches)
+        
+        # Log final stats
+        console_logger.info(f"Album year update complete. Updated {len(updated_tracks)} tracks.")
+        year_logger.info(f"Album year update complete. Updated {len(updated_tracks)} tracks.")
+        
+        return updated_tracks, changes_log
+    except Exception as e:
+        error_logger.error(f"Error in update_album_years_async: {e}", exc_info=True)
+        return [], []
+
 @get_decorator("Clean Names")
 def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str]:
     """
@@ -380,17 +591,19 @@ def clean_names(artist: str, track_name: str, album_name: str) -> Tuple[str, str
 
 @get_decorator("Batch Bulk Update Album Year")
 async def update_album_tracks_bulk_async(track_ids: List[str], new_year: str) -> bool:
-    """
-    Update the album year for a batch of tracks asynchronously via AppleScript.
-
-    :param track_ids: A list of track IDs to update. Each ID should be a string.
-    :param new_year: The new year to set for the album. The year should be a string in the format 'YYYY'.
-    :return: True if the bulk update was successful, False otherwise.
-    """
     try:
         if not track_ids:
             error_logger.error("No track IDs provided for bulk update.")
-            return False    
+            return False
+        
+        # Convert year to integer for AppleScript
+        try:
+            year_int = int(new_year)  # Convert to integer
+            new_year = str(year_int)  # Convert back to clean integer string
+        except ValueError:
+            error_logger.error(f"Invalid year format: {new_year}")
+            return False
+            
         track_ids_str = ",".join(track_ids)    
         res = await run_applescript_async("update_property.applescript", ["year", new_year, track_ids_str])
         if res and "Success" in res:
@@ -692,7 +905,7 @@ async def main_async(args: argparse.Namespace) -> None:
             tasks = [asyncio.create_task(clean_track(t)) for t in tracks]
             await asyncio.gather(*tasks)
             if updated_tracks:
-                sync_track_list_with_current(
+                await sync_track_list_with_current(
                     updated_tracks, 
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), 
                     DEPS.cache_service,
@@ -705,21 +918,83 @@ async def main_async(args: argparse.Namespace) -> None:
             else:
                 console_logger.info("No track names or album names needed cleaning (clean_artist).")
             last_run_time = datetime.min
-            updated_g, changes_g = await update_genres_by_artist_async(tracks, last_run_time)
             if updated_g:
-                sync_track_list_with_current(
-                    updated_g,
+                await sync_track_list_with_current(
+                    all_tracks,
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
                     DEPS.cache_service,
                     console_logger,
                     error_logger,
-                    partial_sync=True
+                    partial_sync=False
                 )
                 save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-                console_logger.info(f"Updated {len(updated_g)} tracks with new genres (clean_artist).")
+                console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
+                update_last_incremental_run()
             else:
-                console_logger.info("No tracks needed genre updates (clean_artist).")
+                console_logger.info("No tracks needed genre updates.")
+
+        elif args.command == "update_years":
+            artist = args.artist
+            force_run = args.force
+            
+            if not can_run_incremental(force_run=force_run):
+                console_logger.info("Incremental interval not reached. Skipping.")
+                return
+            
+            # Add this section to respect test_artists configuration
+            if not artist:
+                test_artists = CONFIG.get("test_artists", [])
+                if test_artists:
+                    all_tracks = []
+                    console_logger.info(f"Using test artists from config: {test_artists}")
+                    for art in test_artists:
+                        art_tracks = await fetch_tracks_async(art)
+                        all_tracks.extend(art_tracks)
+                    tracks = all_tracks
+                else:
+                    console_logger.info("No test_artists specified, fetching all tracks")
+                    tracks = await fetch_tracks_async()
+            else:
+                console_logger.info(f"Running in 'update_years' mode for artist={artist}")
+                tracks = await fetch_tracks_async(artist=artist)
+            
+            if not tracks:
+                console_logger.warning(f"No tracks found{f' for artist: {artist}' if artist else ''}.")
+                return
+                    
+            try:
+                # Initialize the external API service
+                await DEPS.external_api_service.initialize()
+                
+                # Update album years
+                updated_y, changes_y = await update_album_years_async(tracks)
+                
+                if updated_y:
+                    await sync_track_list_with_current(
+                        updated_y,
+                        os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
+                        DEPS.cache_service,
+                        console_logger,
+                        error_logger,
+                        partial_sync=True
+                    )
+                    save_changes_report(
+                        changes_y, 
+                        os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "reports/year_changes_report.csv")), 
+                        console_logger, 
+                        error_logger
+                    )
+                    console_logger.info(f"Updated {len(updated_y)} tracks with album years.")
+                else:
+                    console_logger.info("No tracks needed album year updates.")
+            finally:
+                # Always close the API session
+                await DEPS.external_api_service.close()
+            
+            # Update the last run time
+            update_last_incremental_run()
             return
+
         else:
             force_run = args.force
             if not can_run_incremental(force_run=force_run):
@@ -796,7 +1071,7 @@ async def main_async(args: argparse.Namespace) -> None:
                 console_logger.info("No track names or album names needed cleaning in this run.")
             updated_g, changes_g = await update_genres_by_artist_async(all_tracks, last_run_time)
             if updated_g:
-                sync_track_list_with_current(
+                await sync_track_list_with_current(
                     all_tracks,
                     os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
                     DEPS.cache_service,
@@ -807,8 +1082,48 @@ async def main_async(args: argparse.Namespace) -> None:
                 save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
                 console_logger.info(f"Updated {len(updated_g)} tracks with new genres.")
                 update_last_incremental_run()
-            else:
-                console_logger.info("No tracks needed genre updates.")
+                    
+                try:
+                    # Initialize variables before use
+                    updated_y = []
+                    changes_y = []
+                    
+                    # Update year information if enabled in config
+                    if CONFIG.get("year_retrieval", {}).get("enabled", False):
+                        console_logger.info("Starting album year updates")
+                        try:
+                            # Initialize the external API service
+                            await DEPS.external_api_service.initialize()
+                            
+                            # Update album years
+                            updated_y, changes_y = await update_album_years_async(all_tracks)
+                        finally:
+                            # Always close the API session
+                            await DEPS.external_api_service.close()
+                    
+                    if updated_y:
+                        await sync_track_list_with_current(
+                            updated_y,
+                            os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
+                            DEPS.cache_service,
+                            console_logger,
+                            error_logger,
+                            partial_sync=True
+                        )
+                        save_changes_report(
+                            changes_y, 
+                            os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "reports/year_changes_report.csv")), 
+                            console_logger, 
+                            error_logger
+                        )
+                        console_logger.info(f"Updated {len(updated_y)} tracks with album years.")
+                    else:
+                        console_logger.info("No tracks needed album year updates.")
+                finally:
+                    # Always close the API session
+                    await DEPS.external_api_service.close()
+                
+                # Update the last run time
                 update_last_incremental_run()
     except KeyboardInterrupt:
         console_logger.info("Script interrupted by user. Cancelling pending tasks…")
@@ -830,15 +1145,25 @@ def parse_arguments() -> argparse.Namespace:
     """
     Parse command-line arguments using argparse. The script supports two main commands:
     - clean_artist: Clean track and album names for a specific artist
+    - update_years: Update album years from external APIs
     - global: Process all tracks in the library with incremental updates
     """
+    # Create the main parser and subparsers for different commands
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
+    # Add a subparser for each command
     subparsers = parser.add_subparsers(dest="command")
+    # Clean artist commands
     clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track/album names for a given artist")
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name")
     clean_artist_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
+    # Update years command
+    update_years_parser = subparsers.add_parser("update_years", help="Update album years from external APIs")
+    update_years_parser.add_argument("--artist", help="Artist name (optional)")
+    update_years_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
+    # Global commands
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
     parser.add_argument("--dry-run", action="store_true", help="Simulate changes without applying them")
+
     return parser.parse_args()
 
 def handle_dry_run() -> None:
@@ -875,7 +1200,9 @@ def main() -> None:
         error_logger.error(f"An unexpected error occurred: {exc}", exc_info=True)
         sys.exit(1)
     finally:
-        DEPS.analytics.generate_reports()
+        # Only generate reports if DEPS was initialized successfully
+        if DEPS is not None and hasattr(DEPS, 'analytics'):
+            DEPS.analytics.generate_reports()
     end_all = time.time()
     console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 

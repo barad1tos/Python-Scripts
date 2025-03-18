@@ -13,25 +13,60 @@ import yaml
 
 from services.applescript_client import AppleScriptClient
 from services.cache_service import CacheService
+from services.external_api_service import ExternalApiService
 from utils.analytics import Analytics
 from utils.logger import get_loggers
 
 class DependencyContainer:
+    """
+    A container for all dependencies used in the application.
+    This implements a simple dependency injection pattern.
+    """
+    
     def __init__(self, config_path: str):
-        # Load configuration from YAML
-        self.config = self.load_config(config_path)
+        """
+        Initialize the dependency container with all required services.
+        
+        :param config_path: Path to the configuration YAML file.
+        """
+        # Load configuration first
+        from music_genre_updater import load_config
+        self.config = load_config(config_path)
         
         # Initialize loggers
         self.console_logger, self.error_logger, self.analytics_logger = get_loggers(self.config)
         
-        # Initialize AppleScript client
-        self.ap_client = AppleScriptClient(self.config, logger=self.console_logger)
+        # Initialize analytics - this was missing!
+        self.analytics = Analytics(
+            self.config,
+            self.console_logger,
+            self.error_logger,
+            self.analytics_logger
+        )
         
-        # Initialize CacheService with TTL from configuration
-        self.cache_service = CacheService(ttl=self.config.get("cache_ttl_seconds", 900))
+        # Initialize the AppleScript client
+        self.ap_client = AppleScriptClient(
+            self.config, 
+            self.console_logger, 
+            self.error_logger
+)
         
-        # Initialize Analytics service
-        self.analytics = Analytics(self.config, self.console_logger, self.error_logger, self.analytics_logger)
+        # Initialize the cache service
+        self.cache_service = CacheService(
+            self.config,
+            self.console_logger,
+            self.error_logger
+        )
+        
+        # Initialize the external API service
+        self.external_api_service = ExternalApiService(
+            self.config,
+            self.console_logger,
+            self.error_logger
+        )
+        
+        # Initialize API client session
+        self.external_api_service.initialize_async = self.external_api_service.initialize
 
     @staticmethod
     def load_config(config_path: str):
