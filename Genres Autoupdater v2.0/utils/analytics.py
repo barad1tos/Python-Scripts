@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 """
 Analytics Module
 
@@ -20,7 +19,7 @@ class Analytics:
     """
     Collects and logs analytics events for function calls.
     """
-
+    
     def __init__(self, config: Dict[str, Any], console_logger, error_logger, analytics_logger):
         """
         Initializes the Analytics class with the configuration and loggers.
@@ -30,6 +29,7 @@ class Analytics:
         :param error_logger: Logger for error messages.
         :param analytics_logger: Logger for analytics messages.
         """
+
         self.events: List[Dict[str, Any]] = []
         self.call_counts: Dict[str, int] = {}
         self.success_counts: Dict[str, int] = {}
@@ -51,16 +51,8 @@ class Analytics:
         duration: float,
         success: bool
     ) -> None:
-        """
-        Write the event to self.events and perform minimal logging.
-
-        :param function_name: Name of the function being called.
-        :param event_type: Type/description of the event.
-        :param start_time: Epoch start time.
-        :param end_time: Epoch end time.
-        :param duration: Duration (seconds).
-        :param success: Whether function succeeded or not.
-        """
+        # Log event details (in English comments)
+        self.console_logger.debug(f"Adding event for {function_name}: success={success}, duration={duration:.3f}s")
         self.events.append({
             "Function": function_name,
             "Event Type": event_type,
@@ -84,18 +76,17 @@ class Analytics:
             self.analytics_logger.warning(msg)
 
     def log_decorator_overhead(self, function_name: str, overhead: float) -> None:
-        """
-        Accumulate overhead time introduced by the decorator.
-        """
+        # Accumulate overhead time introduced by the decorator
         self.decorator_overhead[function_name] = (
             self.decorator_overhead.get(function_name, 0.0) + overhead
         )
 
     def decorator(self, event_type: str) -> Callable:
         """
-        Return a decorator function that measures execution time and logs events.
+        Returns a decorator function that measures execution time and logs events.
 
-        :param event_type: The type of event to log.
+        :param event_type: Type of event to log (e.g., "API call", "Database query").
+        :return: Decorator function.
         """
         def decorator_function(func: Callable) -> Callable:
             if asyncio.iscoroutinefunction(func):
@@ -104,20 +95,19 @@ class Analytics:
                     func_name = func.__name__
                     decorator_start = time.time()
                     function_start = time.time()
-                    function_end = function_start
                     success = False
                     try:
                         result = await func(*args, **kwargs)
                         success = True
                         return result
                     except Exception as e:
-                        function_end = time.time()
                         raise e
                     finally:
+                        # Update function_end in finally to ensure correct timing
+                        function_end = time.time()
                         decorator_end = time.time()
                         function_duration = function_end - function_start
-                        decorator_duration = decorator_end - decorator_start
-                        overhead = decorator_duration - function_duration
+                        overhead = decorator_end - decorator_start - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
                         self.analytics_logger.info("[Analytics] Async function execution completed.", extra={"section_end": True})
@@ -128,24 +118,21 @@ class Analytics:
                     func_name = func.__name__
                     decorator_start = time.time()
                     function_start = time.time()
-                    function_end = function_start
                     success = False
                     try:
                         result = func(*args, **kwargs)
                         success = True
                         return result
                     except Exception as e:
-                        function_end = time.time()
                         raise e
                     finally:
                         function_end = time.time()
                         decorator_end = time.time()
                         function_duration = function_end - function_start
-                        decorator_duration = decorator_end - decorator_start
-                        overhead = decorator_duration - function_duration
+                        overhead = decorator_end - decorator_start - function_duration
                         self.log_decorator_overhead(func_name, overhead)
                         self.log_event(func_name, event_type, function_start, function_end, function_duration, success)
-                        self.analytics_logger.info("SECTION_END", extra={"section_end": True})
+                        self.analytics_logger.info("[Analytics] Function execution completed.", extra={"section_end": True})
                 return sync_wrapper
         return decorator_function
 
@@ -153,8 +140,11 @@ class Analytics:
         """
         Generate an optimized HTML report, grouping short & successful calls
         to reduce file size.
+
+        :return: None
         """
         try:
+            self.console_logger.info(f"Generating HTML report with {len(self.events)} events, {len(self.call_counts)} functions")
             save_html_report(
                 self.events,
                 self.call_counts,

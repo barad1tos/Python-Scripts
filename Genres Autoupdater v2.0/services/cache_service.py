@@ -52,7 +52,7 @@ class CacheService:
 
     async def get_async(self, key_data: Any, compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None) -> Any:
         """Asynchronously fetches a value from the cache or calculates it if necessary"""
-        # Специальный случай для ключа "ALL"
+        # Special case for key "ALL"
         if key_data == "ALL":
             tracks = []
             for cache_key, (value, expiry_time) in self.cache.items():
@@ -60,7 +60,7 @@ class CacheService:
                     tracks.append(value)
             return tracks
             
-        # Стандартная логика для других ключей
+        # Standard logic for other keys
         key = self._hash_key(key_data)
         if key in self.cache:
             value, expiry_time = self.cache[key]
@@ -71,7 +71,7 @@ class CacheService:
                 self.console_logger.debug(f"Cache expired for {key_data}")
                 del self.cache[key]
                 
-        # Если значения нет в кэше или оно устарело, вычисляем его
+        # If the value is not in the cache or is out of date, calculate it
         if compute_func is not None:
             self.console_logger.debug(f"Computing value for {key_data}")
             value = await compute_func()

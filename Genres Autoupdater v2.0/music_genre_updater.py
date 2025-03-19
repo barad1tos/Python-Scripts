@@ -855,13 +855,6 @@ async def main_async(args: argparse.Namespace) -> None:
         global DEPS
         # Initialize DependencyContainer – reinitialize on every run to avoid stale cache or globals.
         DEPS = DependencyContainer(CONFIG_PATH)
-        
-        # For convenience, bind local variables from DEPS
-        global CONFIG, console_logger, error_logger
-        CONFIG = DEPS.config
-        console_logger = DEPS.console_logger
-        error_logger = DEPS.error_logger
-
         # Command-specific logic
         if args.command == "clean_artist":
             artist = args.artist
@@ -980,7 +973,7 @@ async def main_async(args: argparse.Namespace) -> None:
                     )
                     save_changes_report(
                         changes_y, 
-                        os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "reports/year_changes_report.csv")), 
+                        os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "csv/year_changes_report.csv")), 
                         console_logger, 
                         error_logger
                     )
@@ -1112,7 +1105,7 @@ async def main_async(args: argparse.Namespace) -> None:
                         )
                         save_changes_report(
                             changes_y, 
-                            os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "reports/year_changes_report.csv")), 
+                            os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "csv/year_changes_report.csv")), 
                             console_logger, 
                             error_logger
                         )
@@ -1140,6 +1133,17 @@ async def main_async(args: argparse.Namespace) -> None:
         except Exception as e:
             console_logger.error(f"Error while awaiting cancelled tasks: {e}", exc_info=True)
         raise
+
+    except Exception as e:
+        error_logger.error(f"Error during execution: {e}", exc_info=True)
+    finally:
+        # Closing resources
+        if DEPS and hasattr(DEPS, 'external_api_service'):
+            await DEPS.external_api_service.close()
+            
+        # Generation of analytics reports
+        if DEPS and hasattr(DEPS, 'analytics'):
+            DEPS.analytics.generate_reports()   
 
 def parse_arguments() -> argparse.Namespace:
     """
@@ -1200,9 +1204,8 @@ def main() -> None:
         error_logger.error(f"An unexpected error occurred: {exc}", exc_info=True)
         sys.exit(1)
     finally:
-        # Only generate reports if DEPS was initialized successfully
-        if DEPS is not None and hasattr(DEPS, 'analytics'):
-            DEPS.analytics.generate_reports()
+        # Викликаємо generate_reports() з глобального analytics
+        analytics.generate_reports()
     end_all = time.time()
     console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 

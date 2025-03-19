@@ -25,7 +25,7 @@ class DependencyContainer:
     
     def __init__(self, config_path: str):
         """
-        Initialize the dependency container with all required services.
+        Initializes the DependencyContainer with the configuration file path.
         
         :param config_path: Path to the configuration YAML file.
         """
@@ -43,6 +43,10 @@ class DependencyContainer:
             self.error_logger,
             self.analytics_logger
         )
+
+        # Make the analytics object available for external use
+        global analytics
+        analytics = self.analytics
         
         # Initialize the AppleScript client
         self.ap_client = AppleScriptClient(
