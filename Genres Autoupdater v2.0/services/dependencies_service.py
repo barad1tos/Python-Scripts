@@ -68,7 +68,7 @@ class DependencyContainer:
             self.console_logger,
             self.error_logger
         )
-        
+
         # Initialize API client session
         self.external_api_service.initialize_async = self.external_api_service.initialize
 

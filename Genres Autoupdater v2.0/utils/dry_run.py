@@ -3,16 +3,15 @@
 """
 Dry Run Module
 
-Simulates upcoming changes (cleaning and genre updates)
-without applying them, outputting each type of changes
-into a separate CSV report.
-
-The CSV files are overwritten each time.
+This module provides a dry run simulation for cleaning and genre updates.
+It fetches tracks directly using AppleScript, simulates cleaning and genre updates,
+and saves the changes to CSV files.
 """
 
 import asyncio
 import csv
 import os
+import subprocess
 import sys
 
 from datetime import datetime
@@ -26,7 +25,8 @@ parent_dir = os.path.join(current_dir, "..")
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from music_genre_updater import clean_names, determine_dominant_genre_for_artist, fetch_tracks_async
+from music_genre_updater import CONFIG_PATH, clean_names, determine_dominant_genre_for_artist
+from services.dependencies_service import DependencyContainer
 from utils.logger import get_full_log_path, get_loggers
 
 # Load the configuration
@@ -35,12 +35,96 @@ CONFIG_PATH = os.path.join(SCRIPT_DIR, "..", "my-config.yaml")
 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
     CONFIG = yaml.safe_load(f)
 
+# Initialize the dependency container
+DEPS = DependencyContainer(CONFIG_PATH)
+
 # Loggers (optional, but can be used)
 console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
 
 # Steps to CSV for dry-run (for cleaning and genre)
 DRY_RUN_CLEANING_CSV = get_full_log_path(CONFIG, "dry_run_cleaning_file", "csv/dry_run_cleaning.csv")
 DRY_RUN_GENRE_CSV = get_full_log_path(CONFIG, "dry_run_genre_file", "csv/dry_run_genre_update.csv")
+
+
+async def fetch_tracks_direct(artist: str = None) -> List[Dict[str, str]]:
+    """
+    Directly fetch tracks using AppleScript, bypassing the dependency container.
+    
+    This is a simplified version used only in dry_run.py.
+    """
+    console_logger.info(f"Direct fetch of tracks for {'all artists' if artist is None else artist}")
+    
+    script_path = os.path.join(CONFIG["apple_scripts_dir"], "fetch_tracks.applescript")
+    
+    if not os.path.exists(script_path):
+        console_logger.error(f"AppleScript file not found: {script_path}")
+        return []
+    
+    cmd = ["osascript", script_path]
+    if artist:
+        cmd.append(artist)
+    
+    try:
+        console_logger.info(f"Executing: {' '.join(cmd)}")
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        
+        # Wait for completion with long timeout
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900)
+        
+        if stderr:
+            error_str = stderr.decode('utf-8').strip()
+            console_logger.warning(f"AppleScript stderr: {error_str}")
+        
+        if process.returncode != 0:
+            console_logger.error(f"AppleScript failed with exit code {process.returncode}")
+            return []
+        
+        raw_data = stdout.decode('utf-8').strip()
+        
+        if not raw_data:
+            console_logger.error("Empty response from AppleScript")
+            return []
+        
+        # Parse the results manually
+        tracks = []
+        for line in raw_data.split("\n"):
+            if not line.strip():
+                continue
+                
+            fields = line.split("~|~")
+            if len(fields) >= 7:
+                track = {
+                    "id": fields[0].strip(),
+                    "name": fields[1].strip(),
+                    "artist": fields[2].strip(),
+                    "album": fields[3].strip(),
+                    "genre": fields[4].strip(),
+                    "dateAdded": fields[5].strip(),
+                    "trackStatus": fields[6].strip(),
+                }
+                # Add old_year and new_year if they exist
+                if len(fields) > 7:
+                    track["old_year"] = fields[7].strip()
+                if len(fields) > 8:
+                    track["new_year"] = fields[8].strip()
+                else:
+                    track["new_year"] = ""
+                
+                tracks.append(track)
+        
+        console_logger.info(f"Successfully parsed {len(tracks)} tracks")
+        return tracks
+        
+    except asyncio.TimeoutError:
+        console_logger.error("AppleScript execution timed out after 15 minutes")
+        return []
+    except Exception as e:
+        console_logger.error(f"Error fetching tracks: {e}")
+        return []
 
 
 async def simulate_cleaning() -> List[Dict[str, str]]:
@@ -52,7 +136,16 @@ async def simulate_cleaning() -> List[Dict[str, str]]:
         List[Dict[str, str]]: List of dictionaries describing the 'cleaning' changes.
     """
     simulated_changes = []
-    tracks = await fetch_tracks_async()
+    
+    # Use direct fetch instead of fetch_tracks_async
+    tracks = await fetch_tracks_direct()
+    
+    if not tracks:
+        console_logger.error("Failed to fetch tracks for dry run simulation!")
+        return []
+        
+    console_logger.info(f"Simulating cleaning for {len(tracks)} tracks")
+    
     for track in tracks:
         # Skip tracks with prerelease status
         if track.get("trackStatus", "").lower() in ("prerelease", "no longer available"):
@@ -83,9 +176,16 @@ async def simulate_genre_update() -> List[Dict[str, str]]:
         List[Dict[str, str]]: List of dictionaries describing the 'genre_update' changes.
     """
     simulated_changes = []
-    tracks = await fetch_tracks_async()
+    
+    # Use direct fetch instead of fetch_tracks_async
+    tracks = await fetch_tracks_direct()
+    
+    if not tracks:
+        console_logger.error("Failed to fetch tracks for genre update simulation!")
+        return []
+    
     # Skip tracks with unusable status
-    tracks = (t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available"))
+    tracks = [t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
     
     # Group tracks by artist
     artists: Dict[str, List[Dict[str, str]]] = {}

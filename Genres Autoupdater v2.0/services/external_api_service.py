@@ -1,3 +1,30 @@
+#!/usr/bin/env python3
+
+"""
+External API Service Module
+
+This module provides an abstraction for interacting with external APIs to retrieve album years.
+It centralizes the logic for handling rate limits, applying a preferred API, and error handling.
+
+Example:
+    >>> import asyncio
+    >>> import logging
+    >>> from external_api_service import ExternalApiService
+    >>> config = {
+    ...     "year_retrieval": {
+    ...         "discogs_token": "your_discogs_token",
+    ...         "preferred_api": "discogs"
+    ...     }
+    ... }
+    >>> console_logger = logging.getLogger("console_logger")
+    >>> error_logger = logging.getLogger("error_logger")
+    >>> service = ExternalApiService(config, console_logger, error_logger)
+    >>> async def test():
+    ...     year = await service.get_album_year("Some Artist", "Some Album")
+    ...     print(year)
+    >>> asyncio.run(test())
+"""
+
 import asyncio
 import logging
 import re
@@ -9,6 +36,13 @@ from typing import Any, Dict, Optional
 import aiohttp
 
 class ExternalApiService:
+    """
+    A service to interact with external APIs to retrieve album years.
+
+    :param config: Configuration dictionary loaded from my-config.yaml.
+    :param console_logger: Logger for console output.
+    :param error_logger: Logger for error output.
+    """
     def __init__(self, config: Dict[str, Any], console_logger: logging.Logger, error_logger: logging.Logger):
         self.config = config
         self.console_logger = console_logger
@@ -21,10 +55,15 @@ class ExternalApiService:
         # Preferred API (discogs or musicbrainz)
         self.preferred_api = config.get('year_retrieval', {}).get('preferred_api', 'musicbrainz')
         
-    async def initialize(self):
-        if not self.session or self.session.closed:
+    async def initialize(self, force=False):
+        """Initialize the aiohttp session"""
+        if force or not self.session or self.session.closed:
+            # Close the current session if it exists and is being forced to refresh
+            if force and self.session and not self.session.closed:
+                await self.session.close()
+            
             self.session = aiohttp.ClientSession()
-            self.console_logger.info("External API session initialized")
+            self.console_logger.info("External API session initialized" + (" (forced)" if force else ""))
             
     async def close(self):
         """Close the aiohttp session"""
@@ -124,12 +163,19 @@ class ExternalApiService:
                 data = await response.json()
                 results = data.get('results', [])
                 
-                if results:
-                    # Get the first result's year
-                    year = results[0].get('year')
-                    if year:
-                        self.console_logger.info(f"Found year {year} for '{artist} - {album}' on Discogs")
-                        return str(year)
+            if results:
+                earliest_year = None
+                for item in results:
+                    y = item.get("year")
+                    if y:
+                        try:
+                            y_int = int(y)
+                            if earliest_year is None or y_int < earliest_year:
+                                earliest_year = y_int
+                        except ValueError:
+                            pass
+                if earliest_year is not None:
+                    return str(earliest_year)
                         
             self.console_logger.info(f"No year found for '{artist} - {album}' on Discogs")
             return None
@@ -154,15 +200,21 @@ class ExternalApiService:
                     return None
                     
                 data = await response.json()
-                releases = data.get('releases', [])
+                releases = data.get("releases", [])
                 if releases:
-                    # Get the first release's date
-                    release_date = releases[0].get('date', '')
-                    if release_date:
-                        # Extract the year from the date (YYYY-MM-DD format)
-                        year = release_date.split('-')[0]
-                        self.console_logger.info(f"Found year {year} for '{artist} - {album}' on MusicBrainz")
-                        return year
+                    earliest_year = None
+                    for release in releases:
+                        release_date = release.get("date", "")
+                        if release_date:
+                            year_part = release_date.split("-")[0]
+                            try:
+                                y_int = int(year_part)
+                                if earliest_year is None or y_int < earliest_year:
+                                    earliest_year = y_int
+                            except ValueError:
+                                pass
+                    if earliest_year is not None:
+                        return str(earliest_year)
                         
             self.console_logger.info(f"No year found for '{artist} - {album}' on MusicBrainz")
             return None

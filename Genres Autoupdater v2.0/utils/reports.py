@@ -30,13 +30,12 @@ def _save_csv(
 
     Checks if the target directory for the CSV file exists, and creates it if not.
 
-    Args:
-        data (List[Dict[str, str]]): List of dictionaries representing the data.
-        fieldnames (List[str]): List of field names (CSV header).
-        file_path (str): Full path to the CSV file.
-        console_logger (logging.Logger): Logger for informational messages.
-        error_logger (logging.Logger): Logger for error messages.
-        data_type (str): A descriptive name for the data type (used in logging).
+    :param data: List of dictionaries to save to the CSV file.
+    :param fieldnames: List of field names for the CSV file.
+    :param file_path: Path to the CSV file.
+    :param console_logger: Logger for console output.
+    :param error_logger: Logger for error output.
+    :param data_type: Type of data being saved (e.g., "tracks", "changes report").
     """
     csv_dir = os.path.dirname(file_path)
     if csv_dir and not os.path.exists(csv_dir):
@@ -64,18 +63,13 @@ def save_to_csv(
 ) -> None:
     """
     Save the list of track dictionaries to a CSV file.
-
-    Args:
-        tracks (List[Dict[str, str]]): List of track dictionaries.
-        file_path (str): Path to the CSV file. (No timestamp substitution is applied.)
-        console_logger (Optional[logging.Logger]): Logger for informational messages.
-        error_logger (Optional[logging.Logger]): Logger for error messages.
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
         error_logger = logging.getLogger("error_logger")
-    fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus"]
+    # Updated fieldnames include the new columns
+    fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
     _save_csv(tracks, fieldnames, file_path, console_logger, error_logger, "tracks")
 
 def save_changes_report(
@@ -85,19 +79,17 @@ def save_changes_report(
     error_logger: Optional[logging.Logger] = None
 ) -> None:
     """
-    Save the changes report to a CSV file.
+    Save the list of change dictionaries to a CSV file.
 
-    Args:
-        changes (List[Dict[str, str]]): List of dictionaries representing changes.
-        file_path (str): Path to the CSV file. (No timestamp substitution.)
-        console_logger (Optional[logging.Logger]): Logger for informational messages.
-        error_logger (Optional[logging.Logger]): Logger for error messages.
+    :param changes: List of dictionaries with change data.
+    :param file_path: Path to the CSV file.
+    :param console_logger: Logger for console output.
+    :param error_logger: Logger for error output.
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
         error_logger = logging.getLogger("error_logger")
-    # Updated fieldnames to support additional year_updated and new_year keys
     fieldnames = ["artist", "album", "track_name", "old_genre", "new_genre", "new_track_name", "year_updated", "new_year"]
     changes_sorted = sorted(changes, key=lambda x: x.get("artist", "Unknown"))
     _save_csv(changes_sorted, fieldnames, file_path, console_logger, error_logger, "changes report")
@@ -114,35 +106,89 @@ def save_html_report(
 ) -> None:
     """
     Generate an HTML report from the provided analytics data.
-    
-    The HTML report is written to a fixed file (e.g., analytics/reports/analytics.html),
-    so that each run overwrites the previous report.
-    Args:
-        events (List[Dict[str, Any]]): List of event dictionaries.
-        call_counts (Dict[str, int]): Mapping of function names to call counts.
-        success_counts (Dict[str, int]): Mapping of function names to success counts.
-        decorator_overhead (Dict[str, float]): Mapping of function names to decorator overhead.
-        config (Dict[str, Any]): Configuration dictionary.
-        console_logger (Optional[logging.Logger]): Logger for informational messages.
-        error_logger (Optional[logging.Logger]): Logger for error messages.
-        group_successful_short_calls (bool, optional): If True, group successful short calls.
+    The report includes a summary of function call counts, success rates, and decorator overhead,
+    as well as detailed event data and grouped short successful calls.
+
+    :param events: List of event dictionaries.
+    :param call_counts: Dictionary of function call counts.
+    :param success_counts: Dictionary of successful function call counts.
+    :param decorator_overhead: Dictionary of decorator overhead times.
+    :param config: Configuration dictionary.
+    :param console_logger: Logger for console output.
+    :param error_logger: Logger for error output.
+    :param group_successful_short_calls: Whether to group short successful calls in the report.
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
         error_logger = logging.getLogger("error_logger")
-
+        
+    # Additional logging for diagnostics
+    console_logger.info(f"Starting HTML report generation with {len(events)} events, {len(call_counts)} function counts")
+    
     date_str = datetime.now().strftime("%Y-%m-%d")
     logs_base_dir = config.get("logs_base_dir", ".")
     reports_dir = os.path.join(logs_base_dir, "analytics", "reports")
     os.makedirs(reports_dir, exist_ok=True)
     
-    html_template = config["logging"].get("html_report_file", "analytics/reports/analytics.html")
+    # Getting the path for an HTML file
+    html_template = config.get("logging", {}).get("html_report_file", "analytics/reports/analytics.html")
     report_file = os.path.join(logs_base_dir, html_template)
+    console_logger.debug(f"Will save HTML report to: {report_file}")
     
+    # Setting colors and thresholds
     duration_thresholds = config.get("analytics", {}).get("duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10})
     colors = config.get("analytics", {}).get("colors", {"short": "#90EE90", "medium": "#D3D3D3", "long": "#FFB6C1"})
-
+    
+    # Check for data availability
+    if not events and not call_counts:
+        console_logger.warning("No analytics data available for report - creating empty template")
+        # Create an empty template with a message
+        html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Analytics Report for {date_str}</title>
+    <style>
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 0.95em;
+        }}
+        th, td {{
+            border: 1px solid #dddddd;
+            text-align: left;
+            padding: 6px;
+        }}
+        th {{
+            background-color: #f2f2f2;
+        }}
+        .error {{
+            background-color: #ffcccc;
+        }}
+    </style>
+</head>
+<body>
+    <h2>Analytics Report for {date_str}</h2>
+    <p><strong>No analytics data was collected during this run.</strong></p>
+    <p>Possible reasons:</p>
+    <ul>
+        <li>Script executed in dry-run mode without analytics collection</li>
+        <li>No decorated functions were called</li>
+        <li>Decorator failed to log events</li>
+    </ul>
+</body>
+</html>"""
+        try:
+            with open(report_file, "w", encoding="utf-8") as f:
+                f.write(html_content)
+            console_logger.info(f"Empty analytics HTML report saved to {report_file}.")
+            return
+        except Exception as e:
+            error_logger.error(f"Failed to save empty HTML report: {e}")
+            return
+    
+    # Function for determining the color
     def get_color(duration: float) -> str:
         if duration <= duration_thresholds.get("short_max", 2):
             return ""
@@ -152,25 +198,34 @@ def save_html_report(
             return colors.get("long", "#FFB6C1")
         else:
             return colors.get("long", "#FFB6C1")
-
+    
+    # Data preparation
     grouped_short_success = {}
     big_or_fail_events = []
     short_max = duration_thresholds.get("short_max", 2)
+    
+    # Grouping short successful calls
     if group_successful_short_calls:
         for ev in events:
-            duration = ev["Duration (s)"]
-            success = ev["Success"]
-            if (not success) or (duration > short_max):
-                big_or_fail_events.append(ev)
-            else:
-                key = (ev["Function"], ev["Event Type"])
-                if key not in grouped_short_success:
-                    grouped_short_success[key] = {"count": 0, "total_duration": 0.0}
-                grouped_short_success[key]["count"] += 1
-                grouped_short_success[key]["total_duration"] += duration
+            try:
+                duration = ev["Duration (s)"]
+                success = ev["Success"]
+                
+                if (not success) or (duration > short_max):
+                    big_or_fail_events.append(ev)
+                else:
+                    key = (ev["Function"], ev["Event Type"])
+                    if key not in grouped_short_success:
+                        grouped_short_success[key] = {"count": 0, "total_duration": 0.0}
+                    grouped_short_success[key]["count"] += 1
+                    grouped_short_success[key]["total_duration"] += duration
+            except KeyError as e:
+                error_logger.error(f"Missing key in event data: {e}, event: {ev}")
+                big_or_fail_events.append(ev)  # Add an event if it has no data
     else:
         big_or_fail_events = events
-
+    
+    # Beginning of HTML creation
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -206,11 +261,13 @@ def save_html_report(
             <th>Avg Duration (s)</th>
             <th>Total Duration (s)</th>
         </tr>"""
-    if group_successful_short_calls:
+    
+    # Adding groups of successful calls
+    if group_successful_short_calls and grouped_short_success:
         for (fun, evt), val in grouped_short_success.items():
             cnt = val["count"]
             total_dur = val["total_duration"]
-            avg_dur = round(total_dur / cnt, 4)
+            avg_dur = round(total_dur / cnt, 4) if cnt > 0 else 0
             html_content += f"""
         <tr>
             <td>{fun}</td>
@@ -221,7 +278,9 @@ def save_html_report(
         </tr>"""
     else:
         html_content += """
-        <tr><td colspan="5">No grouping enabled.</td></tr>"""
+        <tr><td colspan="5">No short successful calls found or grouping disabled.</td></tr>"""
+    
+    # Adding detailed calls
     html_content += """
     </table>
     <h3>Detailed Calls (Errors or Long Calls)</h3>
@@ -234,20 +293,31 @@ def save_html_report(
             <th>Duration (s)</th>
             <th>Success</th>
         </tr>"""
-    for ev in big_or_fail_events:
-        duration = ev["Duration (s)"]
-        color = get_color(duration)
-        success = "Yes" if ev["Success"] else "No"
-        row_class = "error" if not ev["Success"] else ""
-        html_content += f"""
+    
+    if big_or_fail_events:
+        for ev in big_or_fail_events:
+            try:
+                duration = ev["Duration (s)"]
+                color = get_color(duration)
+                success = "Yes" if ev["Success"] else "No"
+                row_class = "error" if not ev["Success"] else ""
+                
+                html_content += f"""
         <tr class="{row_class}">
-            <td>{ev['Function']}</td>
-            <td>{ev['Event Type']}</td>
-            <td>{ev['Start Time']}</td>
-            <td>{ev['End Time']}</td>
+            <td>{ev.get('Function', 'Unknown')}</td>
+            <td>{ev.get('Event Type', 'Unknown')}</td>
+            <td>{ev.get('Start Time', 'Unknown')}</td>
+            <td>{ev.get('End Time', 'Unknown')}</td>
             <td{f' style="background-color: {color};"' if color else ''}>{duration}</td>
             <td>{success}</td>
         </tr>"""
+            except KeyError as e:
+                error_logger.error(f"Error formatting event: {e}, event data: {ev}")
+    else:
+        html_content += """
+        <tr><td colspan="6">No detailed calls to display.</td></tr>"""
+    
+    # Adding totals
     html_content += """
     </table>
     <h3>Summary</h3>
@@ -259,11 +329,14 @@ def save_html_report(
             <th>Success Rate (%)</th>
             <th>Total Decorator Overhead (s)</th>
         </tr>"""
-    for function, count in call_counts.items():
-        succ = success_counts.get(function, 0)
-        success_rate = (succ / count * 100) if count else 0
-        overhead = decorator_overhead.get(function, 0)
-        html_content += f"""
+    
+    if call_counts:
+        for function, count in call_counts.items():
+            succ = success_counts.get(function, 0)
+            success_rate = (succ / count * 100) if count else 0
+            overhead = decorator_overhead.get(function, 0)
+            
+            html_content += f"""
         <tr>
             <td>{function}</td>
             <td>{count}</td>
@@ -271,10 +344,16 @@ def save_html_report(
             <td>{success_rate:.2f}</td>
             <td>{round(overhead, 4)}</td>
         </tr>"""
+    else:
+        html_content += """
+        <tr><td colspan="5">No function calls recorded.</td></tr>"""
+    
     html_content += """
     </table>
 </body>
 </html>"""
+    
+    # Saving the report
     try:
         with open(report_file, "w", encoding="utf-8") as f:
             f.write(html_content)
@@ -284,16 +363,10 @@ def save_html_report(
 
 def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
     """
-    Load track data from the CSV file into a dictionary.
+    Load the track list from the CSV file into a dictionary. The track ID is used as the key.
     
-    Args:
-        csv_path (str): Path to the CSV file.
-        
-    Returns:
-        Dict[str, Dict[str, str]]: A dictionary mapping track IDs to track data.
-        
-    Example:
-        >>> track_map = load_track_list("csv/track_list.csv")
+    :param csv_path: Path to the CSV file.
+    :return: Dictionary of track dictionaries.
     """
     track_map = {}
     if not os.path.exists(csv_path):
@@ -313,6 +386,8 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
                         "genre": row.get("genre", "").strip(),
                         "dateAdded": row.get("dateAdded", "").strip(),
                         "trackStatus": row.get("trackStatus", "").strip(),
+                        "old_year": row.get("old_year", "").strip(),
+                        "new_year": row.get("new_year", "").strip(),
                     }
     except Exception as e:
         logger.error(f"Could not read track_list.csv: {e}")
@@ -327,60 +402,101 @@ async def sync_track_list_with_current(
     partial_sync: bool = False
 ) -> None:
     """
-    Synchronize the current list of tracks with the data in the CSV file.
+    Synchronizes the current track list with the data in a CSV file.
+    
+    This function ensures that album years are stored correctly between runs.
+    For each album (key: "artist|album"), if a record exists with a non-empty new_year,
+    the album is considered processed and its tracks are skipped.
+    
+    :param all_tracks: List of track dictionaries to sync.
+    :param csv_path: Path to the CSV file.
+    :param cache_service: CacheService instance for album year caching.
+    :param console_logger: Logger for console output.
+    :param error_logger: Logger for error output.
+    :param partial_sync: Whether to perform a partial sync (only update new_year if missing).
     """
     console_logger.info(f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}")
-    cached_tracks = None
-    
-    # Correct use of cache_service
-    if cache_service:
-        try:
-            # Call get_async with the correct key
-            cached_tracks = await cache_service.get_async("ALL")
-        except AttributeError:
-            error_logger.warning("Cache service doesn't have get_async method, skipping cache check")
-        except Exception as e:
-            error_logger.error(f"Error accessing cache: {e}")
-    
+    # Loading an existing database
     csv_map = load_track_list(csv_path)
     console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
-    
-    # Check cache if available
-    if cached_tracks is not None:
-        if len(cached_tracks) != len(all_tracks):
-            console_logger.warning("Cached tracks count does not match fetched tracks count. Proceeding with sync update.")
-        else:
-            console_logger.info("Cached verification passed successfully: track counts match.")
+
+    # Identification of albums that are already a year old
+    processed_albums = {}
+    for track in csv_map.values():
+        artist = track.get("artist", "").strip()
+        album = track.get("album", "").strip()
+        key = f"{artist}|{album}"
+        new_year = track.get("new_year", "").strip()
+        if new_year:
+            processed_albums[key] = new_year
             
+            # Additionally save to CSV cache if the value is missing there
+            try:
+                cached_year = await cache_service.get_album_year_from_cache(artist, album)
+                if not cached_year and new_year:
+                    await cache_service.store_album_year_in_cache(artist, album, new_year)
+                    console_logger.debug(f"Added missing year {new_year} to cache for '{artist} - {album}'")
+            except Exception as e:
+                error_logger.error(f"Error syncing year to cache for {artist} - {album}: {e}")
+
+    # Update or add tracks
     added_or_updated_count = 0
     current_map = {}
+    
+    # Preparing new data
     for tr in all_tracks:
         tid = tr.get("id", "").strip()
         if not tid:
             continue
+            
+        # Make sure that the old_year and new_year fields exist
+        tr.setdefault("old_year", "")
+        tr.setdefault("new_year", "")
+        
+        # Check if the album has already been processed (has a year)
+        artist = tr.get("artist", "").strip()
+        album = tr.get("album", "").strip()
+        album_key = f"{artist}|{album}"
+        
+        # If the album already has a year in the database and this is a partial synchronization,
+        # take the year from the database to preserve data integrity
+        if partial_sync and album_key in processed_albums:
+            tr["new_year"] = processed_albums[album_key]
+            
+        # Add a track to the current data set
         current_map[tid] = {
             "id": tid,
             "name": tr.get("name", "").strip(),
-            "artist": tr.get("artist", "").strip(),
-            "album": tr.get("album", "").strip(),
+            "artist": artist,
+            "album": album,
             "genre": tr.get("genre", "").strip(),
             "dateAdded": tr.get("dateAdded", "").strip(),
             "trackStatus": tr.get("trackStatus", "").strip(),
+            "old_year": tr.get("old_year", "").strip(),
+            "new_year": tr.get("new_year", "").strip(),
         }
+    
+    # Update or add data to CSV-map
     for tid, new_data in current_map.items():
         old_data = csv_map.get(tid)
         if not old_data:
+            # Add a new track
             csv_map[tid] = new_data
             added_or_updated_count += 1
         else:
+            # Update an existing track
             changed = False
-            for field in ["name", "artist", "album", "genre", "dateAdded", "trackStatus"]:
+            for field in ["name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]:
                 if old_data.get(field) != new_data[field]:
                     old_data[field] = new_data[field]
                     changed = True
             if changed:
                 added_or_updated_count += 1
+                
     console_logger.info(f"Added/Updated {added_or_updated_count} tracks in CSV.")
+    
+    # Generate the final list and write to CSV
     final_list = list(csv_map.values())
     console_logger.info(f"Final CSV track count after sync: {len(final_list)}")
-    _save_csv(final_list, ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus"], csv_path, console_logger, error_logger, "tracks")
+    fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+    _save_csv(final_list, fieldnames, csv_path, console_logger, error_logger, "tracks")
