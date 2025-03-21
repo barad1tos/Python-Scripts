@@ -46,6 +46,7 @@ Example usage:
     python3 music_genre_updater.py update_years
     python3 music_genre_updater.py verify_database
 """
+
 import argparse
 import asyncio
 import logging
@@ -124,32 +125,39 @@ analytics = Analytics(CONFIG, console_logger, error_logger, analytics_logger)
 
 def get_decorator(event_type: str):
     """
-    Creates a decorator that tracks function execution for the given event type.
-    This version safely handles cases when analytics is not yet initialized.
-
-    :param event_type: The type of event to track in analytics
-    :return: A decorator function that wraps the target function for analytics tracking
+    A smart decorator factory that applies analytics tracking only when available.
+    
+    This decorator dynamically finds the current analytics instance at runtime and
+    caches the decorated function for performance. Key features:
+    
+    - Lazily initializes: Only applies the real decorator when the function is called, not when it's defined
+    - Graceful fallback: If no analytics instance is available, executes the original function without tracking
+    - Caching: Saves the decorated function after first use to avoid re-decorating
+    - Flexible source: Tries to find analytics from DEPS container first, then global scope
+    
+    :param event_type: The type of event to track in analytics (e.g., "AppleScript Execution")
+    :return: A decorator function that will apply analytics tracking when available
     """
-    def dummy_decorator(func):
-        """
-        Fallback decorator that does nothing when analytics is not available.
-        Simply returns the original function without modification.
-        """
-        return func
-        
-    # Безпечний доступ до глобальних змінних
-    global analytics, DEPS
-    
-    # Спочатку перевіряємо, чи маємо дійсний об'єкт DEPS з analytics
-    if DEPS and hasattr(DEPS, 'analytics') and DEPS.analytics:
-        return DEPS.analytics.decorator(event_type)
-    
-    # Потім перевіряємо глобальну змінну analytics
-    if 'analytics' in globals() and analytics:
-        return analytics.decorator(event_type)
-    
-    # Якщо аналітика не доступна, повертаємо функцію без змін
-    return dummy_decorator
+    from functools import wraps
+    def decorator(func):
+        decorated_func = None  # cached decorated function
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            nonlocal decorated_func
+            current_analytics = None
+            global DEPS, analytics
+            if DEPS and hasattr(DEPS, 'analytics') and DEPS.analytics:
+                current_analytics = DEPS.analytics
+            elif 'analytics' in globals() and analytics:
+                current_analytics = analytics
+            if current_analytics is None:
+                return func(*args, **kwargs)
+            if decorated_func is None:
+                # Decorate the original function using the current analytics instance
+                decorated_func = current_analytics.decorator(event_type)(func)
+            return decorated_func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 @get_decorator("AppleScript Execution")
 async def run_applescript_async(script_name: str, args: Optional[List[str]] = None) -> Optional[str]:
@@ -269,7 +277,7 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
 @get_decorator("Determine Dominant Genre")
 def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
     """
-    Determine the dominant genre for an artist based on the earliest album and track.
+    Determine the dominant genre for an artist based on the earliest genre of their track.
     
     The logic of genre definition:
     1. Find the earliest track for each album
@@ -336,12 +344,6 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
     Remove parentheses and their content if they contain any of the specified keywords.
     Handles nested parentheses correctly using a stack-based algorithm that processes
     brackets from inner to outer, ensuring proper handling of complex cases.
-    
-    Algorithm:
-    1. Finds all pairs of brackets (using the stack to track opening brackets)
-    2. For each pair, checks whether the text inside contains keywords
-    3. Removes brackets with keywords (from the end to the beginning to preserve indexes)
-    4. Repeats the process until all keyword brackets are found and removed
     
     :param name: The name to clean (e.g. "Track Name (2019 Remaster) [Deluxe Edition]")
     :param keywords: A list of keywords to check for (e.g. ["remaster", "deluxe"]) 
@@ -419,9 +421,7 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
         # Validation of track IDs and year before processing
         filtered_track_ids = []
         for track_id in track_ids:
-            # Check that ID is a number
             try:
-                # Verify that ID is a number, not the year or other value
                 if track_id and track_id.isdigit() and not track_id == year:
                     filtered_track_ids.append(track_id)
                 else:
@@ -435,25 +435,21 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
             
         console_logger.info(f"Updating year to {year} for {len(filtered_track_ids)} tracks (filtered from {len(track_ids)} initial tracks)")
         
-        # Track successful updates
         successful_updates = 0
         failed_updates = 0
         all_success = True
-        batch_size = min(20, CONFIG.get("batch_size", 20))  # No more than 20 at a time
+        batch_size = min(20, CONFIG.get("batch_size", 20))
         
-        # Process tracks in batches
         for i in range(0, len(filtered_track_ids), batch_size):
             batch = filtered_track_ids[i:i+batch_size]
             tasks = []
             
             for track_id in batch:
-                # Add update task for each track
                 console_logger.info(f"Adding update task for track ID {track_id} to year {year}")
                 tasks.append(run_applescript_async("update_property.applescript", [track_id, "year", year]))
                 
             results = await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Analyze results
             for idx, result in enumerate(results):
                 track_id = batch[idx] if idx < len(batch) else "unknown"
                 if isinstance(result, Exception):
@@ -465,7 +461,6 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
                     failed_updates += 1
                     all_success = False
                 elif "Success" not in result:
-                    # Check for "Track not found" or other errors
                     if "not found" in result:
                         console_logger.warning(f"Track {track_id} not found, removing from processing")
                     else:
@@ -476,13 +471,11 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
                     successful_updates += 1
                     console_logger.info(f"Successfully updated year for track {track_id} to {year}")
                     
-            # Small pause between batches to avoid overloading Music.app
             if i + batch_size < len(filtered_track_ids):
                 await asyncio.sleep(0.5)
         
-        # Log update results        
         console_logger.info(f"Year update results: {successful_updates} successful, {failed_updates} failed")
-        return successful_updates > 0  # Return True if at least one update was successful
+        return successful_updates > 0
     except Exception as e:
         error_logger.error(f"Error in update_album_tracks_bulk_async: {e}", exc_info=True)
         return False
@@ -507,14 +500,10 @@ async def process_album_years(tracks: List[Dict[str, str]], force: bool = False)
     
     console_logger.info(f"Starting album year updates (force={force})")
     try:
-        # Initialization of external API service
         await DEPS.external_api_service.initialize()
-        
-        # The main update of years
         updated_y, changes_y = await update_album_years_async(tracks, force=force)
         
         if updated_y:
-            # Synchronization of updated data with CSV
             await sync_track_list_with_current(
                 updated_y,
                 os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]),
@@ -523,15 +512,12 @@ async def process_album_years(tracks: List[Dict[str, str]], force: bool = False)
                 error_logger,
                 partial_sync=True
             )
-            
-            # Save a change report
             save_changes_report(
                 changes_y, 
-                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "reports/year_changes_report.csv")), 
+                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "csv/year_changes_report.csv")), 
                 console_logger, 
                 error_logger
             )
-            
             console_logger.info(f"Updated {len(updated_y)} tracks with album years.")
         else:
             console_logger.info("No tracks needed album year updates.")
@@ -541,7 +527,6 @@ async def process_album_years(tracks: List[Dict[str, str]], force: bool = False)
         error_logger.error(f"Error in process_album_years: {e}", exc_info=True)
         return [], []
     finally:
-        # Always close the service to avoid leakage of resources
         await DEPS.external_api_service.close()
 
 @get_decorator("Clean Names")
@@ -591,7 +576,6 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
     :return: A tuple of updated tracks and changes log
     """
     try:
-        # Setting up logic
         year_changes_log_file = os.path.join(
             CONFIG["logs_base_dir"],
             CONFIG["logging"].get("year_changes_log_file", "main/year_changes.log")
@@ -605,8 +589,8 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
             year_logger.addHandler(fh)
         
         console_logger.info("Starting album year update process")
+        year_logger.info(f"Starting year update for {len(tracks)} tracks")
         
-        # Grouping tracks by albums
         albums = {}
         for track in tracks:
             artist = track.get("artist", "Unknown")
@@ -619,85 +603,64 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
         console_logger.info(f"Processing {len(albums)} unique albums")
         year_logger.info(f"Starting year update for {len(albums)} albums")
         
-        # Lists to track changes
         updated_tracks = []
         changes_log = []
         
         async def process_album(album_data):
-            """
-            Processes the album data to update the year for all its tracks.
-
-            :param album_data: The album data dictionary
-            :return: True if an API call was made, False otherwise
-            """
             nonlocal updated_tracks, changes_log
             artist = album_data["artist"]
             album = album_data["album"]
             album_tracks = album_data["tracks"]
             
             if not album_tracks:
-                return False  # No API call if no tracks
+                return False
             
-            # First check if we have the year in cache (unless force=True)
             year = None if force else await DEPS.cache_service.get_album_year_from_cache(artist, album)
             
-            # If we don't have it in cache or force=True, make an API call
             api_call_made = False
             
             if not year:
                 year_logger.info(f"Fetching year for '{artist} - {album}' from external API")
                 year = await DEPS.external_api_service.get_album_year(artist, album)
-                api_call_made = True  # Mark that we made an API call
+                api_call_made = True
                 
                 if year:
-                    # Store in cache only if successfully got a year
                     await DEPS.cache_service.store_album_year_in_cache(artist, album, year)
                     year_logger.info(f"Stored year {year} for '{artist} - {album}' in cache")
                 else:
                     year_logger.warning(f"No year found for '{artist} - {album}'")
-                    return True  # Return true since we made an API call
+                    return True
             else:
                 year_logger.info(f"Using cached year {year} for '{artist} - {album}'")
                 
-            # No need to continue if we don't have a year
             if not year:
                 return api_call_made
                 
-            # Updating a year for all the tracks of the album
             track_ids = [track.get("id", "") for track in album_tracks]
             track_ids = [tid for tid in track_ids if tid]
             
             if track_ids:
-                # Check if we need to update the year for each track
                 tracks_to_update = []
                 
                 for track in album_tracks:
                     current_year = track.get("new_year", "").strip()
-                    # Check if we need to update the year
-                    # 1. If force=True, update all tracks
-                    # 2. If the current year is empty or different from the new year
                     if force or not current_year or current_year != year:
                         tracks_to_update.append(track)
                 
-                # Display detailed information
                 if not tracks_to_update:
                     year_logger.info(f"No tracks need update for '{artist} - {album}' (year: {year}, force={force})")
-                    # Explain the reason for no updates
                     if not force:
                         year_logger.info(f"All {len(album_tracks)} tracks already have year {year}")
                     return api_call_made
                 
-                # Logging for diagnostics
                 year_logger.info(
                     f"Updating {len(tracks_to_update)} of {len(album_tracks)} tracks for '{artist} - {album}' "
                     f"to year {year} (force={force})"
                 )
                 
-                # Preparing track IDs for update
                 track_ids_to_update = [t.get("id", "") for t in tracks_to_update]
                 track_ids_to_update = [tid for tid in track_ids_to_update if tid]
                 
-                # Displaying detailed information for diagnostics
                 year_logger.info(f"Track IDs to update: {track_ids_to_update}")
                 
                 success = await update_album_tracks_bulk_async(track_ids_to_update, year)
@@ -705,7 +668,6 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
                     for track in tracks_to_update:
                         track_id = track.get("id", "")
                         if track_id:
-                            # Save the old value of the year before updating
                             track["old_year"] = track.get("old_year", "") or track.get("new_year", "")
                             track["new_year"] = year
                             updated_tracks.append(track)
@@ -721,9 +683,8 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
                 else:
                     year_logger.error(f"Failed to update year for '{artist} - {album}'")
             
-            return api_call_made  # Return whether we made an API call
+            return api_call_made
             
-        # Processing albums based on API limits
         batch_size = CONFIG.get("year_retrieval", {}).get("batch_size", 10)
         delay_between_batches = CONFIG.get("year_retrieval", {}).get("delay_between_batches", 60)
         album_items = list(albums.items())
@@ -735,11 +696,9 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
             for _, album_data in batch:
                 batch_tasks.append(process_album(album_data))
                 
-            # Gather results to see if any API calls were made
             api_calls_made = await asyncio.gather(*batch_tasks)
             console_logger.info(f"Processed batch {i//batch_size + 1}/{(len(album_items) + batch_size - 1)//batch_size}")
             
-            # Only wait between batches if API calls were made
             if i + batch_size < len(album_items) and any(api_calls_made):
                 console_logger.info(f"API calls were made in this batch. Waiting {delay_between_batches} seconds before next batch")
                 await asyncio.sleep(delay_between_batches)
@@ -791,10 +750,6 @@ def update_last_incremental_run() -> None:
     """
     Update the timestamp of the last incremental run in a file.
     
-    This file is used to track the interval between incremental script runs. 
-    The can_run_incremental() function checks the time of the last run and
-    determines whether the required interval has passed for the next run.
-    
     :return: None
     """
     last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
@@ -804,49 +759,27 @@ def update_last_incremental_run() -> None:
 @get_decorator("Database Verification")
 async def verify_and_clean_track_database(force: bool = False) -> int:
     """
-    This async function checks tracks stored in the CSV database against the Music application
-    to ensure they still exist. Tracks that can no longer be found are removed from the database.
+    Checks tracks stored in the CSV database against Music.app to ensure they still exist.
     
-    Features:
-    - Respects test_artists setting from config for limited testing
-    - By default, verification is performed once per day, unless forced
-    - Efficiently processes tracks in configurable batches
-    - Returns the number of tracks removed from the database
-    
-    The function:
-        1. Loads the track database from CSV
-        2. Checks for a previous verification on the same day (unless forced)
-        3. Filters tracks by test_artists if specified
-        4. Verifies each track's existence in Music.app using AppleScript
-        5. Removes invalid tracks from the database
-        6. Updates the verification timestamp
-
-    :param force: If True, forces a recheck of all tracks regardless of last check date
-    :return: The number of tracks removed from the database
+    :param force: If True, forces a recheck of all tracks.
+    :return: The number of tracks removed from the database.
     """
     try:
-        # Additional logging at the beginning of the function
         console_logger.info("Starting database verification process")
-        
-        # Path to CSV track database
         csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
         
-        # Check if the database exists
         if not os.path.exists(csv_path):
             console_logger.info(f"Track database not found at {csv_path}")
             return 0
             
-        # Load track list from CSV
         csv_tracks = load_track_list(csv_path)
         
         if not csv_tracks:
             console_logger.info("No tracks in database to verify")
             return 0
             
-        # File Marker to track last check
         last_verify_file = os.path.join(CONFIG["logs_base_dir"], "last_db_verify.log")
         
-        # Check whether you need to perform check
         if not force and os.path.exists(last_verify_file):
             try:
                 with open(last_verify_file, "r", encoding="utf-8") as f:
@@ -856,14 +789,11 @@ async def verify_and_clean_track_database(force: bool = False) -> int:
                     console_logger.info(f"Database was already verified today ({last_date}). Use force=True to recheck.")
                     return 0
             except Exception:
-                # If there is a problem with reading or format - perform check
                 pass
         
-        # NEW: Filter tracks by test_artists if specified
         test_artists = CONFIG.get("test_artists", [])
         if test_artists:
             console_logger.info(f"Limiting verification to specified test_artists: {test_artists}")
-            # Filter tracks to include only those by the specified artists
             csv_tracks = {
                 track_id: track for track_id, track in csv_tracks.items()
                 if track.get("artist", "") in test_artists
@@ -872,19 +802,13 @@ async def verify_and_clean_track_database(force: bool = False) -> int:
             
         if not csv_tracks:
             console_logger.info("No tracks to verify after filtering by test_artists")
-            
-            # Still update the verification timestamp since we "technically" verified
             with open(last_verify_file, "w", encoding="utf-8") as f:
                 f.write(datetime.now().strftime("%Y-%m-%d"))
-                
             return 0
             
         console_logger.info(f"Verifying {len(csv_tracks)} tracks in database")
-        
-        # ID tracks to check
         track_ids = list(csv_tracks.keys())
         
-        # Function to verify track existence via AppleScript
         async def verify_track_exists(track_id: str) -> bool:
             script = f'''
             tell application "Music"
@@ -902,55 +826,38 @@ async def verify_and_clean_track_database(force: bool = False) -> int:
             except Exception:
                 return False
         
-        # Get batch size from config or default to 10
         batch_size = CONFIG.get("verify_database", {}).get("batch_size", 10)
         invalid_track_ids = []
         
-        # Display progress
         console_logger.info(f"Checking tracks in batches of {batch_size}...")
         
-        # Process in small batches to avoid overload
         for i in range(0, len(track_ids), batch_size):
             batch = track_ids[i:i+batch_size]
-            
-            # Perform verification in parallel
             tasks = [verify_track_exists(track_id) for track_id in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Analyze results
             for idx, result in enumerate(results):
                 track_id = batch[idx] if idx < len(batch) else None
                 if track_id and (result is False or isinstance(result, Exception)):
                     invalid_track_ids.append(track_id)
-            
-            # Log progress
             console_logger.info(f"Verified batch {i//batch_size + 1}/{(len(track_ids) + batch_size - 1)//batch_size}")
-            
-            # Small pause between batches
             if i + batch_size < len(track_ids):
                 await asyncio.sleep(0.2)
         
-        # Removing invalid tracks from base
         if invalid_track_ids:
             console_logger.info(f"Found {len(invalid_track_ids)} tracks that no longer exist in Music.app")
-            
-            # Removal of tracks from CSV-map
             for track_id in invalid_track_ids:
                 if track_id in csv_tracks:
-                    # Log tracking of removed tracks
                     track_info = csv_tracks[track_id]
                     console_logger.info(f"Removing track {track_id}: {track_info.get('artist', '')} - {track_info.get('name', '')}")
                     del csv_tracks[track_id]
-            
-            # Saving updated database
             final_list = list(csv_tracks.values())
-            save_to_csv(final_list, csv_path, console_logger, error_logger)
-            
+            console_logger.info(f"Final CSV track count after sync: {len(final_list)}")
+            fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+            save_to_csv(final_list, fieldnames, csv_path, console_logger, error_logger, "tracks")
             console_logger.info(f"Removed {len(invalid_track_ids)} invalid tracks from database")
         else:
             console_logger.info("All tracks in database exist in Music.app")
-        
-        # Updating the last verification marker file
+            
         with open(last_verify_file, "w", encoding="utf-8") as f:
             f.write(datetime.now().strftime("%Y-%m-%d"))
             
@@ -1030,17 +937,6 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     """
     Updates the genres for tracks based on the earliest genre of each artist.
     
-    The process:
-    1. Loads existing track data from CSV for reference
-    2. For incremental updates, filters to only tracks added since last run
-    3. Groups tracks by artist using group_tracks_by_artist()
-    4. For each artist, determines the "dominant" genre from their earliest track
-    5. Asynchronously updates any tracks whose genre doesn't match the artist's dominant genre
-    6. Tracks changes for reporting purposes
-    
-    The function processes tasks in batches to avoid overwhelming the event loop,
-    and uses helper functions to handle track updates efficiently.
-    
     :param tracks: A list of dictionaries containing track information
     :param last_run_time: The timestamp of the last incremental update (datetime.min for full runs)
     :return: A tuple containing (updated_tracks, changes_log)
@@ -1048,7 +944,6 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
     try:
         csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
         load_track_list(csv_path)
-        # Filter tracks if last_run_time is set (not full run)
         if last_run_time and last_run_time != datetime.min:
             console_logger.info(f"Filtering tracks added after {last_run_time}")
             tracks = [
@@ -1081,7 +976,6 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
                 else:
                     error_logger.error(f"Failed to update genre for track {track_id}")
 
-        # Helper: process tasks in batches to avoid overwhelming the event loop.
         async def process_tasks_in_batches(tasks: List[asyncio.Task], batch_size: int = 1000) -> None:
             for i in range(0, len(tasks), batch_size):
                 batch = tasks[i:i + batch_size]
@@ -1116,31 +1010,18 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
     """
     Fetches tracks asynchronously from Music.app via AppleScript and manages caching.
 
-    This function:
-        - Checks if Music.app is running before attempting any operations
-        - Uses a cache key based on the artist name or "ALL" for all tracks
-        - Retrieves cached data if available and force_refresh is False
-        - Invalidates the cache entry when force_refresh is True
-        - Executes the fetch_tracks.applescript with appropriate timeout
-        - Parses the raw data returned by AppleScript using parse_tracks()
-        - Caches successful results for future use
-        - Includes comprehensive error handling and logging
-
     :param artist: Optional artist name to filter tracks (None fetches all tracks)
     :param force_refresh: True to force a fetch from Music.app, False to use cached data when available
     :return: A list of track dictionaries, or empty list if fetch fails
     """
     try:
-        # Generate a cache key based on the artist
         cache_key = artist if artist else "ALL"
         console_logger.info(f"Fetching tracks with cache_key='{cache_key}', force_refresh={force_refresh}")
         
-        # Checking if Music.app is running
         if not is_music_app_running():
             console_logger.error("Music app is not running! Please start Music.app before running this script.")
             return []
             
-        # Attempt to use cache if no forced update is required
         if not force_refresh and DEPS and DEPS.cache_service:
             cached_tracks = await DEPS.cache_service.get_async(cache_key)
             if cached_tracks:
@@ -1151,17 +1032,13 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
         elif force_refresh:
             console_logger.info(f"Force refresh requested, ignoring cache for {cache_key}")
             if DEPS and DEPS.cache_service:
-                # With force_refresh, clear the cache for this key
                 DEPS.cache_service.invalidate(cache_key)
         
-        # AppleScript for data retrieval
         script_name = "fetch_tracks.applescript"
         script_args = [artist] if artist else []
         
-        # Set a timeout from the configuration
-        timeout = CONFIG.get("applescript_timeout_seconds", 900)  # 15 minutes by default
+        timeout = CONFIG.get("applescript_timeout_seconds", 900)
         
-        # Use ap_client with sufficient timeout
         if DEPS and DEPS.ap_client:
             console_logger.info(f"Executing AppleScript via client: {script_name} with args: {script_args}")
             raw_data = await DEPS.ap_client.run_script(script_name, script_args, timeout=timeout)
@@ -1169,7 +1046,6 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
             error_logger.error("AppleScriptClient is not initialized!")
             return []
         
-        # Logging the result
         if raw_data:
             lines_count = raw_data.count('\n') + 1
             console_logger.info(f"AppleScript returned data: {len(raw_data)} bytes, approximately {lines_count} lines")
@@ -1177,11 +1053,9 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
             error_logger.error(f"Empty response from AppleScript {script_name}. Possible script error.")
             return []
         
-        # Track analysis
         tracks = parse_tracks(raw_data)
         console_logger.info(f"Successfully parsed {len(tracks)} tracks from Music.app")
         
-        # Save to cache, if possible
         if tracks and DEPS and DEPS.cache_service:
             await DEPS.cache_service.set_async(cache_key, tracks)
             console_logger.info(f"Cached {len(tracks)} tracks with key '{cache_key}'")
@@ -1192,31 +1066,26 @@ async def fetch_tracks_async(artist: Optional[str] = None, force_refresh: bool =
         return []
 
 async def main_async(args: argparse.Namespace) -> None:
+    start_all = time.time()
     try:
-        # Add detailed argument logging
         console_logger.info(f"Starting script with arguments: {vars(args)}")
         
         global DEPS
         DEPS = DependencyContainer(CONFIG_PATH)
         
-        # Now check the command and the force flag correctly
         if hasattr(args, 'command') and args.command == "verify_database":
             console_logger.info("Executing verify_database command")
-            # For the verify_database subcommand, use force from the subcommand arguments
             await verify_and_clean_track_database(force=args.force)
             return
         
-        # Test calls
         console_logger.info("Тестовий виклик AppleScript перед основним кодом")
         test_result = await DEPS.ap_client.run_script("test.applescript")
         console_logger.info(f"Тестовий результат: {test_result}")
         
-        # Test with fetch_tracks
         console_logger.info("Тестовий виклик fetch_tracks перед основним кодом")
         fetch_result = await DEPS.ap_client.run_script("fetch_tracks.applescript", ["Spiritbox"])
         console_logger.info(f"Результат fetch_tracks довжина: {len(fetch_result) if fetch_result else 0}")
         
-        # During a forced start, we check and clear the database of non-existent tracks
         if args.force:
             console_logger.info("Force flag detected, verifying track database...")
             removed_count = await verify_and_clean_track_database(force=True)
@@ -1288,7 +1157,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 console_logger.warning(f"No tracks found{f' for artist: {artist}' if artist else ''}.")
                 return
             
-            # Оновлення років
             updated_y, changes_y = await process_album_years(tracks, force=force_run)
             
             if updated_y:
@@ -1367,7 +1235,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 else:
                     console_logger.info(f"No cleaning needed for track '{orig_name}'")
             
-            # Batch processing tasks to avoid overloading the event loop with too many concurrent tasks
             tasks = [asyncio.create_task(clean_track(t)) for t in all_tracks]
             await asyncio.gather(*tasks)
             if updated_tracks:
@@ -1383,7 +1250,6 @@ async def main_async(args: argparse.Namespace) -> None:
                 save_changes_report(changes_g, os.path.join(CONFIG["logs_base_dir"], "genre_changes.csv"), console_logger, error_logger)
                 console_logger.info(f"Updated genres for {len(updated_g)} tracks")
             
-            # Update album years once
             await process_album_years(all_tracks, force=force_run)
             update_last_incremental_run()
     except KeyboardInterrupt:
@@ -1401,63 +1267,38 @@ async def main_async(args: argparse.Namespace) -> None:
         except Exception as e:
             console_logger.error(f"Error while awaiting cancelled tasks: {e}", exc_info=True)
         raise
-
     except Exception as e:
         error_logger.error(f"Error during execution: {e}", exc_info=True)
     finally:
-        # Closing resources
-        if DEPS and hasattr(DEPS, 'external_api_service'):
+        if DEPS is not None and hasattr(DEPS, 'external_api_service'):
             await DEPS.external_api_service.close()
-            
-        # Generation of analytics reports
         if DEPS and hasattr(DEPS, 'analytics'):
             DEPS.analytics.generate_reports()   
+    end_all = time.time()
+    console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 
 def parse_arguments() -> argparse.Namespace:
     """
-    Parse command-line arguments using argparse. The script supports two main commands:
-    - clean_artist: Clean track/album names for a given artist
-    - update_years: Update album years from external APIs
-    - verify_database: Verify and clean the track database
-    - dry-run: Run the script in dry-run mode (simulate changes)
-    - force: Force run the script regardless of the last run time
-
-    - No arguments: Run the script in incremental mode
+    Parse command-line arguments using argparse. The script supports subcommands for different modes.
     """
-    # Create the main parser and subparsers for different commands
     parser = argparse.ArgumentParser(description="Music Genre Updater Script")
-    
-    # Global arguments
     parser.add_argument("--force", action="store_true", help="Force run the incremental update")
     parser.add_argument("--dry-run", action="store_true", help="Simulate changes without applying them")
-    
-    # Subcommands (optional)
     subparsers = parser.add_subparsers(dest="command")
-    
-    # The clean_artist command
     clean_artist_parser = subparsers.add_parser("clean_artist", help="Clean track/album names for a given artist")
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name")
     clean_artist_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
-    
-    # The update_years command
     update_years_parser = subparsers.add_parser("update_years", help="Update album years from external APIs")
     update_years_parser.add_argument("--artist", help="Artist name (optional)")
     update_years_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
-    
-    # verify_database command
     verify_db_parser = subparsers.add_parser("verify_database", help="Verify and clean the track database")
     verify_db_parser.add_argument("--force", action="store_true", help="Force database check even if recently performed")
-    
-    # First, parse the arguments
     args = parser.parse_args()
-    
     return args
 
 def handle_dry_run() -> None:
     """
-    Handle the dry-run mode by running the script without applying
-    any changes to the Music library. This mode is useful for testing
-    the script logic without modifying the library.
+    Handle the dry-run mode by running the script without applying any changes.
     """
     try:
         from utils import dry_run
@@ -1470,37 +1311,25 @@ def handle_dry_run() -> None:
 
 def main() -> None:
     """
-    Main function to run the script. Parses command-line arguments,
-    initializes the script, and runs the main_async function
-    using asyncio. Handles exceptions and script interruptions
-    gracefully, logging errors and analytics
+    Main function to run the script.
     """
     start_all = time.time()
     args = parse_arguments()
     
-    # Dry-run mode processing
     if args.dry_run:
         handle_dry_run()
         sys.exit(0)
     
-    # **NEW**: Direct call to verify_database command, bypassing main_async
     if hasattr(args, 'command') and args.command == "verify_database":
         print(f"Executing verify_database command with force={args.force}")
-        
-        # Ініціалізація залежностей напряму
         from services.dependencies_service import DependencyContainer
         global DEPS
         DEPS = DependencyContainer(CONFIG_PATH)
-        
-        # Starting the check
         csv_path = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"])
         print(f"Checking database at: {csv_path}")
-        
         if not os.path.exists(csv_path):
             print(f"Error: CSV file not found at {csv_path}")
             sys.exit(1)
-            
-        # Running an asynchronous function in a synchronous context
         try:
             loop = asyncio.get_event_loop()
             removed = loop.run_until_complete(verify_and_clean_track_database(force=args.force))
@@ -1508,16 +1337,12 @@ def main() -> None:
         except Exception as e:
             print(f"Error during verification: {e}")
             sys.exit(1)
-            
-        # Generating reports before exit
         if DEPS and hasattr(DEPS, 'analytics'):
             DEPS.analytics.generate_reports()
-            
         end_all = time.time()
         print(f"Total executing time: {end_all - start_all:.2f} seconds")
         sys.exit(0)
     
-    # Standard execution for other commands
     try:
         asyncio.run(main_async(args))
     except KeyboardInterrupt:

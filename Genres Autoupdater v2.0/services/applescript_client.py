@@ -26,6 +26,7 @@ import asyncio
 import logging
 import os
 import subprocess
+import time
 
 from typing import List, Optional, Union
 
@@ -71,7 +72,7 @@ class AppleScriptClient:
             
         script_path = os.path.join(self.apple_scripts_dir, script_name)
         if not os.path.exists(script_path):
-            self.error_logger.error(f"AppleScript not found: {script_path}")
+            self.error_logger.error(f"Script not found: {script_name}")
             return None
         
         # Build command list
@@ -79,7 +80,10 @@ class AppleScriptClient:
         if arguments:
             cmd.extend(arguments)
         
-        self.console_logger.info(f"Executing AppleScript: {' '.join(cmd)}")
+        # Format arguments for logging
+        args_str = f"args: {', '.join(f'{a}' for a in arguments)}" if arguments else "no args"
+        self.console_logger.info(f"▷ {script_name} ({args_str}) [t:{timeout}s]")
+        
         async with self.semaphore:
             try:
                 # First, create a process
@@ -89,39 +93,43 @@ class AppleScriptClient:
                     stderr=asyncio.subprocess.PIPE
                 )
                 
-                # Then we wait for the result with Taimut
-                self.console_logger.info(f"Running script with timeout {timeout}s: {script_name}")
+                # Then we wait for the result with Timeout
                 try:
+                    start_time = time.time()
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    elapsed = time.time() - start_time
+                    
+                    if stderr:
+                        stderr_text = stderr.decode().strip()
+                        self.console_logger.warning(f"◁ {script_name} stderr: {stderr_text[:80]}")
+                    
+                    if proc.returncode != 0:
+                        self.error_logger.error(f"◁ {script_name} failed: {stderr.decode().strip()}")
+                        return None
+                    
+                    result = stdout.decode().strip()
+                    result_preview = result[:50] + "..." if len(result) > 50 else result
+                    self.console_logger.info(f"◁ {script_name} ({len(result)}B, {elapsed:.1f}s) {result_preview}")
+                    return result
+                    
                 except asyncio.TimeoutError:
-                    self.error_logger.error(f"Timeout ({timeout}s) exceeded while executing {script_name}")
+                    self.error_logger.error(f"⊗ {script_name} timeout: {timeout}s exceeded")
                     proc.kill()
                     await proc.wait()
                     return None
                 except asyncio.CancelledError:
-                    self.error_logger.info(f"AppleScript '{script_name}' execution cancelled. Killing subprocess.")
+                    self.console_logger.info(f"⊗ {script_name} cancelled")
                     proc.kill()
                     await proc.wait()
                     raise
                 except Exception as e:
-                    self.error_logger.error(f"Error during subprocess communication for '{script_name}': {e}", exc_info=True)
+                    self.error_logger.error(f"⊗ {script_name} error: {e}")
                     proc.kill()
                     await proc.wait()
                     return None
             except Exception as e:
-                self.error_logger.error(f"Error creating subprocess for '{script_name}': {e}", exc_info=True)
+                self.error_logger.error(f"⊗ {script_name} subprocess error: {e}")
                 return None
-
-            if stderr:
-                self.console_logger.warning(f"stderr from {script_name}: {stderr.decode().strip()}")
-            
-            if proc.returncode != 0:
-                self.error_logger.error(f"AppleScript failed: {stderr.decode().strip()}")
-                return None
-            
-            result = stdout.decode().strip()
-            self.console_logger.debug(f"AppleScript result length: {len(result)} bytes")
-            return result
     
     async def run_script_code(self, script_code: str, arguments: Union[List[str], None] = None, timeout: Optional[float] = None) -> Optional[str]:
         """
@@ -141,9 +149,12 @@ class AppleScriptClient:
         if arguments:
             cmd.extend(arguments)
         
-        self.console_logger.info(f"Executing AppleScript code: {script_code[:50]}...")
+        code_preview = script_code[:30] + "..." if len(script_code) > 30 else script_code
+        self.console_logger.info(f"▷ inline-script ({len(script_code)}B) [t:{timeout}s]")
+        
         async with self.semaphore:
             try:
+                start_time = time.time()
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
@@ -153,29 +164,36 @@ class AppleScriptClient:
                 # Wait with timeout
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    elapsed = time.time() - start_time
+                    
+                    if stderr:
+                        stderr_text = stderr.decode().strip()
+                        self.console_logger.warning(f"◁ inline-script stderr: {stderr_text[:80]}")
+                        
+                    if proc.returncode != 0:
+                        self.error_logger.error(f"◁ inline-script failed: {stderr.decode().strip()}")
+                        return None
+
+                    result = stdout.decode().strip()
+                    result_preview = result[:50] + "..." if len(result) > 50 else result
+                    self.console_logger.info(f"◁ inline-script ({len(result)}B, {elapsed:.1f}s) {result_preview}")
+                    return result
+                    
                 except asyncio.TimeoutError:
-                    self.error_logger.error(f"Timeout ({timeout}s) exceeded while executing script code")
+                    self.error_logger.error(f"⊗ inline-script timeout: {timeout}s exceeded")
                     proc.kill()
                     await proc.wait()
                     return None
                 except asyncio.CancelledError:
-                    self.error_logger.info("AppleScript code execution cancelled. Killing subprocess.")
+                    self.console_logger.info(f"⊗ inline-script cancelled")
                     proc.kill()
                     await proc.wait()
                     raise
                 except Exception as e:
-                    self.error_logger.error(f"Error during subprocess communication: {e}", exc_info=True)
+                    self.error_logger.error(f"⊗ inline-script error: {e}")
                     proc.kill()
                     await proc.wait()
                     return None
             except Exception as e:
-                self.error_logger.error(f"Error creating subprocess for script code: {e}", exc_info=True)
+                self.error_logger.error(f"⊗ inline-script subprocess error: {e}")
                 return None
-
-            if proc.returncode != 0:
-                self.error_logger.error(f"AppleScript failed: {stderr.decode().strip()}")
-                return None
-
-            result = stdout.decode().strip()
-            self.console_logger.debug(f"AppleScript result length: {len(result)} bytes")
-            return result
