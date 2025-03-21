@@ -233,11 +233,13 @@ class CacheService:
 
     async def store_album_year_in_cache(self, artist: str, album: str, year: str) -> None:
         """
-        Save the album year in the CSV cache for a given artist and album.
+        Store or update an album year in the CSV cache.
+        If the artist-album entry doesn't exist, it will be added.
+        If it already exists, it will be updated with the new year.
 
         :param artist: The artist name.
         :param album: The album name.
-        :param year: The year of the album as a string.
+        :param year: The album release year.
         :return: None
         """
         await self.initialize_album_cache_csv()
@@ -246,9 +248,9 @@ class CacheService:
         b_lower = album.strip().lower()
         cache_map = self._read_album_csv()
         key = f"{a_lower}|||{b_lower}"
-        cache_map[key] = year.strip()  # Save as a string
+        cache_map[key] = year.strip()
 
-        await self._write_album_csv(cache_map)
+        self._write_album_csv(cache_map)
         self.console_logger.debug(f"Album year stored in CSV cache for '{artist} - {album}': {year}")
 
     def invalidate_album_cache(self, artist: str, album: str) -> None:
@@ -274,8 +276,7 @@ class CacheService:
     def invalidate_all_albums(self) -> None:
         """
         Invalidate the entire album-year cache.
-
-        :return: None
+        If the album-year CSV cache exists, it will be removed.
         """
         if os.path.exists(self.album_cache_csv):
             try:
