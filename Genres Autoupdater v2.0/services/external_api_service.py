@@ -4,20 +4,32 @@ External API Service Module
 
 This module provides an abstraction for interacting with external APIs (MusicBrainz and Discogs)
 to retrieve original album release years. It centralizes rate limiting, error handling, and scoring
-algorithms to determine the most accurate original release year.
+algorithms to determine the most accurate original release year for music albums.
+
+Features:
+- Artist activity period determination (start/end years) for better release validation
+- Multi-API release data retrieval with automatic rate limiting
+- Sophisticated scoring algorithm that considers artist context, release format, and more
+- Year clustering to identify the most probable original release date
+- Caching to reduce redundant API calls
 
 Example:
     >>> import asyncio, logging, yaml
-    >>> from external_api_service import ExternalApiService
+    >>> from services.external_api_service import ExternalApiService
     >>> # Assume config is loaded from a YAML file:
-    >>> with open("my-config.yaml", "r", encoding="utf-8") as f:
+    >>> with open("config.yaml", "r", encoding="utf-8") as f:
     ...     config = yaml.safe_load(f)
     >>> console_logger = logging.getLogger("console_logger")
     >>> error_logger = logging.getLogger("error_logger")
     >>> service = ExternalApiService(config, console_logger, error_logger)
-    >>> asyncio.run(service.initialize())
-    >>> year = asyncio.run(service.get_album_year("Agalloch", "The White"))
-    >>> print("Determined album year:", year)
+    >>> async def main():
+    ...     await service.initialize()
+    ...     try:
+    ...         year = await service.get_album_year("Agalloch", "The White EP")
+    ...         print(f"Original release year: {year}")
+    ...     finally:
+    ...         await service.close()
+    >>> asyncio.run(main())
 """
 
 import asyncio

@@ -3,14 +3,17 @@
 """
 Reports Module
 
-Provides functions for generating CSV and HTML reports, as well as track list synchronization.
-Enhanced with unified reporting features, better file organization, and improved output formats.
+Provides functions for CSV/HTML report generation and track data management
+for music library operations. Handles both file and console output formats.
 
 Main features:
-- Consolidated change reports (merging genre, year, naming changes)
-- Unified dry run reporting
-- Integration of album cache into track list
-- Console-friendly output formatting for force mode
+- Track list management and synchronization with persistent storage
+- Album cache extraction and integration with track data
+- Consolidated change reports (genre, year, metadata changes)
+- Analytics reporting with HTML visualization
+- Console-friendly formatted output for force mode
+- Unified dry run reporting for simulated operations
+- CSV import/export with data integrity preservation
 """
 
 import csv
@@ -22,29 +25,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from services.cache_service import CacheService
-
-def ensure_directory(path: str) -> None:
-    """
-    Ensure that the given directory path exists, creating it if necessary.
-    """
-    if not os.path.exists(path):
-        os.makedirs(path, exist_ok=True)
-
-def get_full_log_path(config: dict, key: str, default: str) -> str:
-    """
-    Returns the full log path by joining the base logs directory with the relative path.
-
-    Args:
-        config (dict): Configuration dictionary.
-        key (str): The logging key (e.g. 'main_log_file').
-        default (str): Default relative path if not found in config.
-
-    Returns:
-        str: The absolute path to the log file.
-    """
-    logs_base_dir = config.get("logs_base_dir", ".")
-    relative_path = config.get("logging", {}).get(key, default)
-    return os.path.join(logs_base_dir, relative_path)
+from utils.logger import ensure_directory, get_full_log_path
 
 def _save_csv(
     data: List[Dict[str, str]],
@@ -66,11 +47,7 @@ def _save_csv(
     :param error_logger: Logger for error output.
     :param data_type: Type of data being saved (e.g., "tracks", "changes report").
     """
-    csv_dir = os.path.dirname(file_path)
-    if csv_dir and not os.path.exists(csv_dir):
-        console_logger.info(f"Creating CSV directory: {csv_dir}")
-        os.makedirs(csv_dir, exist_ok=True)
-
+    ensure_directory(os.path.dirname(file_path))
     console_logger.info(f"Saving {data_type} to CSV: {file_path}")
     try:
         with open(file_path, mode="w", newline="", encoding="utf-8") as csvfile:

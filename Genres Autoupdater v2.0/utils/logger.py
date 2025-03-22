@@ -3,14 +3,16 @@
 """
 Enhanced Logger Module
 
-Provides optimized logging with run tracking, max runs limitation, and 
-better file organization. Features:
+Provides a comprehensive logging system with detailed tracking and visual formatting. Features:
 
-1. Run separation - clear visual separation between script runs
-2. Max runs limitation - keep only N most recent runs in log files
-3. Compact formatting - shorter, more readable log messages
-4. Visual indicators - emojis and symbols for status and performance
-5. Path shortening - converts absolute paths to readable aliases
+1. Run tracking - headers/footers and duration tracking for script executions
+2. Log rotation - keeps only the most recent N runs in log files
+3. Color coding - visual distinction between log levels using ANSI colors
+4. Path aliases - converts absolute paths to readable aliases ($MUSIC, $LOGS, etc.)
+5. Multiple loggers - specialized loggers for console output, file logs, and analytics
+6. Visual indicators - emojis and separators for improved readability
+7. Compact formatting - abbreviated log levels and shortened timestamps
+8. HTML report generation - support for both incremental and full analytics reports
 """
 
 import logging
@@ -278,6 +280,7 @@ class RunTrackingHandler(logging.FileHandler):
         self.run_handler = run_handler
         self.logger_name = logger_name
         self.header_written = False
+        self._closed = False
         
         # Write run header
         if self.run_handler and os.path.exists(filename):
@@ -287,7 +290,7 @@ class RunTrackingHandler(logging.FileHandler):
     
     def close(self):
         """Write run footer when handler is closed"""
-        if self.run_handler and not self.closed:
+        if self.run_handler and not self._closed:
             with open(self.baseFilename, 'a', encoding='utf-8') as f:
                 f.write(self.run_handler.format_run_footer(self.logger_name))
             
@@ -295,7 +298,13 @@ class RunTrackingHandler(logging.FileHandler):
             if hasattr(self.run_handler, 'max_runs') and self.run_handler.max_runs > 0:
                 self.run_handler.trim_log_to_max_runs(self.baseFilename)
                 
+        self._closed = True
         super().close()
+
+    # Add property for compatibility with closed checks
+    @property
+    def closed(self):
+        return self._closed
 
 def get_loggers(config: dict) -> Tuple[logging.Logger, logging.Logger, logging.Logger]:
     """

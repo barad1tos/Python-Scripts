@@ -2,13 +2,23 @@
 """
 Analytics Module
 
-Provides a lightweight performance and error tracking system for Python functions.
-Uses decorators to automatically measure execution time and success rates.
+Provides a comprehensive performance tracking and analysis system for Python applications.
+Uses decorators to automatically measure execution time, success rates, and execution patterns.
+
+Features:
+    - Function performance tracking (sync and async)
+    - Success/failure monitoring
+    - Performance categorization (fast/medium/slow)
+    - HTML report generation
+    - Memory management for long-running applications
+    - Statistical aggregation and filtering
 
 Usage:
     1. Create an instance of the Analytics class
     2. Decorate functions with @analytics.track("Event Type")
-    3. Access reports via analytics.generate_reports() or analytics.get_stats()
+    3. Access statistics via analytics.get_stats()
+    4. Generate HTML reports with analytics.generate_reports()
+    5. Get summaries with analytics.log_summary()
 
 Example:
     ```python
@@ -21,13 +31,20 @@ Example:
         # Your code here
         return response
     
-    # Later, generate a report
+    # Get statistics for specific functions
+    stats = analytics.get_stats(["fetch_data", "process_data"])
+    print(f"Success rate: {stats['success_rate']:.1f}%")
+    
+    # Generate HTML reports
     analytics.generate_reports()
     
-    # Or get a summary
-    stats = analytics.get_stats()
-    print(f"Success rate: {stats['success_rate']:.1f}%")
+    # Print summary to logs
+    analytics.log_summary()
     ```
+
+Memory Management:
+    The Analytics class includes safeguards against unbounded memory growth,
+    making it suitable for long-running applications and services.
 """
 
 import asyncio
@@ -453,9 +470,12 @@ class Analytics:
                 f"🐢 {dc['slow']/total*100:.0f}%"
             )
     
-    def generate_reports(self) -> None:
+    def generate_reports(self, force_mode: bool = False) -> None:
         """
         Generate HTML reports from collected analytics data.
+        
+        Args:
+            force_mode: Whether the script is running in force mode (affects report path)
         """
         try:
             event_count = len(self.events)
@@ -483,10 +503,13 @@ class Analytics:
                 self.config,
                 self.console_logger,
                 self.error_logger,
-                group_successful_short_calls=True
+                group_successful_short_calls=True,
+                force_mode=force_mode
             )
             
-            self.analytics_logger.info("📊 HTML report generated successfully")
+            # Log which report was generated
+            report_type = "full" if force_mode else "incremental"
+            self.analytics_logger.info(f"📊 HTML {report_type} report generated successfully")
             
             # Suggest garbage collection after large report generation
             if event_count > 5000:

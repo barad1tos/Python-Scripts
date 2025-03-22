@@ -4,16 +4,17 @@
 Cache Service Module
 
 This module provides two caching mechanisms:
-    1. An in-memory (dict) cache for generic track data with TTL support (via get_async, set_async, etc.)
+    1. An in-memory (dict) cache for generic data with TTL support (via get_async, set_async, etc.)
     2. A persistent CSV-based cache for album years that persists data across application runs.
 
 Features:
-    - In-memory cache: supports TTL, async operations, and automatic value computation
+    - In-memory cache: supports TTL, async operations, key hashing, and automatic value computation
+    - Special handling for key="ALL" to return all valid cached track objects
     - CSV cache: stores album year information persistently with artist/album lookup
     - Both caches support invalidation (individual entries or complete cache)
 
 Usage:
-    - For track-level caching: get_async/set_async with optional TTL
+    - For general data caching: get_async/set_async with optional TTL
     - For album-year caching: get_album_year_from_cache/store_album_year_in_cache
 """
 import asyncio

@@ -5,16 +5,16 @@ Dry Run Module
 
 This module provides a dry run simulation for cleaning and genre updates.
 It fetches tracks directly using AppleScript, simulates cleaning and genre updates,
-and saves the changes to CSV files.
+and saves the changes to CSV files. It also generates a unified report combining
+both cleaning and genre update changes for comprehensive review before actual
+implementation.
 """
 
 import asyncio
 import csv
 import os
-import subprocess
 import sys
 
-from datetime import datetime
 from typing import Dict, List
 
 import yaml
@@ -279,16 +279,29 @@ async def main():
     Main function for dry run simulation:
     1) simulate cleaning changes,
     2) simulate genre update changes,
-    3) save them into two separate CSV files.
+    3) save them into a combined CSV file.
     """
     cleaning_changes, genre_changes = await asyncio.gather(
         simulate_cleaning(), simulate_genre_update()
     )
 
-    save_cleaning_csv(cleaning_changes, DRY_RUN_CLEANING_CSV)
-    save_genre_csv(genre_changes, DRY_RUN_GENRE_CSV)
+    # We use a new feature for a combined report
+    from utils.logger import get_full_log_path  # Import from the correct module
+    from utils.reports import save_unified_dry_run
 
-    console_logger.info("Dry run simulation completed.")
+    # We get the path for the combined report from the configuration
+    dry_run_report_file = get_full_log_path(CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv")
+    
+    # We save the combined report
+    save_unified_dry_run(
+        cleaning_changes, 
+        genre_changes, 
+        dry_run_report_file, 
+        console_logger, 
+        error_logger
+    )
+
+    console_logger.info(f"Dry run simulation completed with {len(cleaning_changes)} cleaning changes and {len(genre_changes)} genre changes.")
 
 
 if __name__ == "__main__":

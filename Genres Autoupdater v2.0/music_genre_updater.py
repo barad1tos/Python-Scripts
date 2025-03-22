@@ -13,6 +13,7 @@ Key Features:
     - Album year retrieval: Fetches and updates year information from external music databases 
     - Database verification: Checks and removes tracks that no longer exist in Music.app
     - Incremental processing: Efficiently updates only tracks added since the last run
+    - Analytics tracking: Monitors performance and operations of various components
 
 Commands:
     - Default (no arguments): Run incremental update of genres and clean names
@@ -28,7 +29,7 @@ The script uses a dependency container to manage services:
     - AppleScriptClient: For interactions with Music.app
     - CacheService: For storing retrieved data between runs
     - ExternalAPIService: For querying album years from music databases
-    - Analytics: For tracking performance and operations
+    - Analytics: For tracking performance and operation metrics
 
 Configuration (my-config.yaml) includes:
     - music_library_path: Path to the Music library
@@ -38,6 +39,7 @@ Configuration (my-config.yaml) includes:
     - cleaning: Rules for cleaning track and album names
     - incremental_interval_minutes: Time between incremental runs
     - batch_size: Number of tracks to process in parallel
+    - exceptions: Special handling rules for specific artists/albums
 
 Example usage:
     python3 music_genre_updater.py
@@ -65,7 +67,7 @@ import yaml
 from services.dependencies_service import DependencyContainer
 from utils.analytics import Analytics
 from utils.logger import get_full_log_path, get_loggers
-from utils.reports import load_track_list, save_changes_report, save_to_csv, sync_track_list_with_current
+from utils.reports import load_track_list, save_changes_report, save_to_csv, save_unified_changes_report, sync_track_list_with_current
 
 # Global variable for dependency container (set in main_async)
 DEPS = None
@@ -514,9 +516,10 @@ async def process_album_years(tracks: List[Dict[str, str]], force: bool = False)
             )
             save_changes_report(
                 changes_y, 
-                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"].get("year_changes_report_file", "csv/year_changes_report.csv")), 
+                os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]),
                 console_logger, 
-                error_logger
+                error_logger,
+                force_mode=force
             )
             console_logger.info(f"Updated {len(updated_y)} tracks with album years.")
         else:
@@ -1084,7 +1087,7 @@ async def main_async(args: argparse.Namespace) -> None:
         
         console_logger.info("Тестовий виклик fetch_tracks перед основним кодом")
         fetch_result = await DEPS.ap_client.run_script("fetch_tracks.applescript", ["Spiritbox"])
-        console_logger.info(f"Результат fetch_tracks довжина: {len(fetch_result) if fetch_result else 0}")
+        console_logger.info(f"Result fetch_tracks length: {len(fetch_result) if fetch_result else 0}")
         
         if args.force:
             console_logger.info("Force flag detected, verifying track database...")
@@ -1239,8 +1242,8 @@ async def main_async(args: argparse.Namespace) -> None:
             await asyncio.gather(*tasks)
             if updated_tracks:
                 save_to_csv(updated_tracks, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["csv_output_file"]), console_logger, error_logger)
-                save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger)
-                console_logger.info(f"Processed and updated {len(updated_tracks)} tracks (global cleaning).")
+                save_changes_report(changes_log, os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["changes_report_file"]), console_logger, error_logger, force_mode=args.force)
+                console_logger.info(f"Processed and updated {len(updated_tracks)} tracks.")
             else:
                 console_logger.info("No track names or album names needed cleaning in this run.")
             
@@ -1352,7 +1355,7 @@ def main() -> None:
         sys.exit(1)
     finally:
         if DEPS is not None and hasattr(DEPS, 'analytics'):
-            DEPS.analytics.generate_reports()
+            DEPS.analytics.generate_reports(force_mode=args.force)
     end_all = time.time()
     console_logger.info(f"Total executing time: {end_all - start_all:.2f} seconds")
 
