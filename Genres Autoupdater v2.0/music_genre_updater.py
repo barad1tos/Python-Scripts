@@ -111,6 +111,11 @@ CONFIG = get_config()
 console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
 analytics_log_file = get_full_log_path(CONFIG, "analytics_log_file", "analytics/analytics.log")
 
+if CONFIG.get("python_settings", {}).get("prevent_bytecode", False):
+    import sys
+    sys.dont_write_bytecode = True
+    console_logger.debug("Python bytecode generation disabled (__pycache__ will not be created)")
+
 def check_paths(paths: List[str], logger: logging.Logger) -> None:
     """
     Check if the specified paths exist and are readable.
@@ -686,6 +691,7 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
                                 "album": album,
                                 "track_name": track.get("name", "Unknown"),
                                 "year_updated": "true",
+                                "old_year": track.get("old_year", ""),
                                 "new_year": year
                             })
                     year_logger.info(f"Successfully updated {len(track_ids_to_update)} tracks for '{artist} - {album}' to year {year}")

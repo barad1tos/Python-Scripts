@@ -27,6 +27,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from services.cache_service import CacheService
 from utils.logger import ensure_directory, get_full_log_path
 
+# ANSI color codes for console output
+RED = "\033[31m"
+YELLOW = "\033[33m"
+GREEN = "\033[32m"
+RESET = "\033[0m"
+
 
 def _save_csv(
     data: List[Dict[str, str]],
@@ -155,7 +161,13 @@ def save_unified_changes_report(
                     album = change.get("album", "")[:38] + ".." if len(change.get("album", "")) > 40 else change.get("album", "")
                     old_year = change.get("old_year", "")
                     new_year = change.get("new_year", "")
-                    console_logger.info(f"{artist:<30} {album:<40} {old_year} → {new_year}")
+
+                    if old_year and new_year and old_year != new_year:
+                        year_display = f"{YELLOW}{old_year} → {new_year}{RESET}"
+                    else:
+                        year_display = f"{old_year} → {new_year}"
+                        
+                    console_logger.info(f"{artist:<30} {album:<40} {year_display}")
             
             elif change_type == "name":
                 console_logger.info(f"{'Artist':<30} {'Track/Album':<40} {'Old → New'}")
