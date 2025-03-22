@@ -4,16 +4,21 @@
 Reports Module
 
 Provides functions for CSV/HTML report generation and track data management
-for music library operations. Handles both file and console output formats.
+for music library operations. Handles both file operations and formatted console output.
 
 Main features:
-- Track list management and synchronization with persistent storage
-- Album cache extraction and integration with track data
-- Consolidated change reports (genre, year, metadata changes)
-- Analytics reporting with HTML visualization
-- Console-friendly formatted output for force mode
-- Unified dry run reporting for simulated operations
-- CSV import/export with data integrity preservation
+- Track list saving, loading, and synchronization with persistent storage
+- Album year caching and integration with track metadata
+- Consolidated change reports for genres, years, and metadata modifications
+- Detailed analytics reporting with HTML visualization and performance metrics
+- Console-friendly formatted output for interactive mode
+- Unified reporting for simulated operations and dry runs
+- CSV data integrity preservation during imports/exports
+- Support for incremental and full synchronization modes
+
+Functions include utilities for saving various report types, loading track data
+with caching support, extracting album metadata, synchronizing data between runs,
+and generating detailed HTML performance analytics.
 """
 
 import csv

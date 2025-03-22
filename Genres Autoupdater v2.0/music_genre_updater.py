@@ -9,11 +9,11 @@ minimize AppleScript calls.
 
 Key Features:
     - Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases
-    - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter
+    - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles
     - Album year retrieval: Fetches and updates year information from external music databases 
     - Database verification: Checks and removes tracks that no longer exist in Music.app
     - Incremental processing: Efficiently updates only tracks added since the last run
-    - Analytics tracking: Monitors performance and operations of various components
+    - Analytics tracking: Monitors performance and operations with detailed logging
 
 Commands:
     - Default (no arguments): Run incremental update of genres and clean names
@@ -24,6 +24,7 @@ Commands:
 Options:
     - --force: Override incremental interval checks and force processing
     - --dry-run: Simulate changes without modifying the Music library
+    - --artist: Specify target artist (with clean_artist or update_years commands)
 
 The script uses a dependency container to manage services:
     - AppleScriptClient: For interactions with Music.app
@@ -36,17 +37,18 @@ Configuration (my-config.yaml) includes:
     - apple_scripts_dir: Directory containing AppleScripts
     - logs_base_dir: Base directory for logs and reports
     - year_retrieval: Settings for album year updates (API limits, batch sizes)
-    - cleaning: Rules for cleaning track and album names
+    - cleaning: Rules for cleaning track and album names (remaster_keywords, album_suffixes_to_remove)
     - incremental_interval_minutes: Time between incremental runs
     - batch_size: Number of tracks to process in parallel
     - exceptions: Special handling rules for specific artists/albums
+    - test_artists: Optional list of artists to limit processing for testing
 
 Example usage:
     python3 music_genre_updater.py
     python3 music_genre_updater.py --force
     python3 music_genre_updater.py clean_artist --artist "Metallica"
     python3 music_genre_updater.py update_years
-    python3 music_genre_updater.py verify_database
+    python3 music_genre_updater.py verify_database --force
 """
 
 import argparse
