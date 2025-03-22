@@ -48,13 +48,13 @@ Memory Management:
 """
 
 import asyncio
+import gc
 import time
 
 from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
-import gc
 
 class Analytics:
     """

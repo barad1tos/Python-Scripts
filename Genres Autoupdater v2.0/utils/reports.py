@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 from services.cache_service import CacheService
 from utils.logger import ensure_directory, get_full_log_path
 
+
 def _save_csv(
     data: List[Dict[str, str]],
     fieldnames: List[str],

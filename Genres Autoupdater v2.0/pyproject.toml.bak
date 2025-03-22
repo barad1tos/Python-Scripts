@@ -1,0 +1,27 @@
+[tool.black]
+line-length = 150
+
+[tool.isort]
+profile = "black"
+line_length = 150
+force_grid_wrap = 0
+multi_line_output = 3
+lines_after_imports = 1
+lines_between_types = 1
+from_first = false
+order_by_type = true
+use_parentheses = true
+force_single_line = false
+combine_as_imports = true
+include_trailing_comma = true
+ensure_newline_before_comments = true
+skip_glob = ["*/__init__.py"]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+known_third_party = ["yaml"]
+known_stdlib = ["argparse", "array", "asyncio", "base64", "binascii", "bz2", "collections", 
+"concurrent", "contextlib", "copy", "csv", "datetime", "enum", "functools", "gzip", 
+"hashlib", "hmac", "html", "http", "http.client", "http.server", "io", "itertools", 
+"json", "logging", "lzma", "math", "mock", "multiprocessing", "operator", "os", "pathlib", 
+"pickle", "pprint", "queue", "random", "re", "requests", "shutil", "socket", "socketserver", 
+"sqlite3", "ssl", "string", "struct", "subprocess", "sys", "tarfile", "tempfile", 
+"threading", "time", "typing", "unittest", "urllib", "xml", "zipfile", "zlib"]

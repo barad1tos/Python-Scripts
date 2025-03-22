@@ -17,6 +17,7 @@ from services.external_api_service import ExternalApiService
 from utils.analytics import Analytics
 from utils.logger import get_loggers
 
+
 class DependencyContainer:
     """
     A container for all dependencies used in the application.

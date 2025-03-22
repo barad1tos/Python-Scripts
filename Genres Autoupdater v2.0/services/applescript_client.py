@@ -30,6 +30,7 @@ import time
 
 from typing import List, Optional, Union
 
+
 class AppleScriptClient:
     """
     A client to run AppleScript commands asynchronously using the osascript command.

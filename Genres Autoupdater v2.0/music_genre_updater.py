@@ -67,7 +67,13 @@ import yaml
 from services.dependencies_service import DependencyContainer
 from utils.analytics import Analytics
 from utils.logger import get_full_log_path, get_loggers
-from utils.reports import load_track_list, save_changes_report, save_to_csv, save_unified_changes_report, sync_track_list_with_current
+from utils.reports import (
+    load_track_list,
+    save_changes_report,
+    save_to_csv,
+    save_unified_changes_report,
+    sync_track_list_with_current,
+)
 
 # Global variable for dependency container (set in main_async)
 DEPS = None

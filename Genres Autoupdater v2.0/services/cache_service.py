@@ -25,6 +25,7 @@ import time
 
 from typing import Any, Callable, Dict, Optional, Tuple
 
+
 class CacheService:
     def __init__(self, config: dict, console_logger, error_logger):
         """

@@ -43,6 +43,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 
+
 class ExternalApiService:
     """
     ExternalApiService interacts with MusicBrainz and Discogs APIs to retrieve and score
