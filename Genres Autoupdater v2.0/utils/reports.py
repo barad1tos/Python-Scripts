@@ -142,6 +142,13 @@ def save_unified_changes_report(
                 changes_by_type[change_type] = []
             changes_by_type[change_type].append(change)
         
+        # For year changes, filter to only show where old_year != new_year
+        if "year" in changes_by_type:
+            changes_by_type["year"] = [
+                change for change in changes_by_type["year"] 
+                if change.get("old_year", "") != change.get("new_year", "")
+            ]
+        
         # Print each change type with its own header
         for change_type, type_changes in changes_by_type.items():
             console_logger.info(f"\n🔄 {change_type.upper()} Changes ({len(type_changes)}):")
@@ -159,20 +166,18 @@ def save_unified_changes_report(
                     console_logger.info(f"{artist:<30} {album:<30} {track:<30} {old_genre} → {new_genre}")
             
             elif change_type == "year":
-                console_logger.info(f"{'Artist':<30} {'Album':<40} {'Old → New'}")
-                console_logger.info("-" * 80)
-                for change in type_changes:
-                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
-                    album = change.get("album", "")[:38] + ".." if len(change.get("album", "")) > 40 else change.get("album", "")
-                    old_year = change.get("old_year", "")
-                    new_year = change.get("new_year", "")
-
-                    if old_year and new_year and old_year != new_year:
+                if type_changes:
+                    console_logger.info(f"{'Artist':<30} {'Album':<40} {'Old → New'}")
+                    console_logger.info("-" * 80)
+                    for change in type_changes:
+                        artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
+                        album = change.get("album", "")[:38] + ".." if len(change.get("album", "")) > 40 else change.get("album", "")
+                        old_year = change.get("old_year", "")
+                        new_year = change.get("new_year", "")
                         year_display = f"{YELLOW}{old_year} → {new_year}{RESET}"
-                    else:
-                        year_display = f"{old_year} → {new_year}"
-                        
-                    console_logger.info(f"{artist:<30} {album:<40} {year_display}")
+                        console_logger.info(f"{artist:<30} {album:<40} {year_display}")
+                else:
+                    console_logger.info("No albums with actual year changes found.")
             
             elif change_type == "name":
                 console_logger.info(f"{'Artist':<30} {'Track/Album':<40} {'Old → New'}")
