@@ -5,7 +5,7 @@ Cache Service Module
 
 This module provides two caching mechanisms:
     1. An in-memory (dict) cache for generic data with TTL support (via get_async, set_async, etc.)
-    2. A persistent CSV-based cache for album years that persists data across application runs.
+    2. A persistent CSV-based cache for album release years that persists data across application runs.
 
 Features:
     - In-memory cache: supports TTL, async operations, key hashing, and automatic value computation
@@ -53,7 +53,7 @@ class CacheService:
     def _is_expired(self, expiry_time: float) -> bool:
         """
         Check if the cache entry has expired based on the expiry time.
-        
+
         :param expiry_time: The expiry time in seconds since epoch.
         :return: True if the entry has expired, False otherwise.
         """
@@ -91,11 +91,7 @@ class CacheService:
         """
         self.set(key_data, value, ttl)
 
-    async def get_async(
-        self,
-        key_data: Any,
-        compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None
-    ) -> Any:
+    async def get_async(self, key_data: Any, compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None) -> Any:
         """
         Asynchronously fetch a value from the in-memory cache or compute it if needed.
         - If `key_data == "ALL"`, returns a list of *valid* cached track objects.
@@ -107,7 +103,7 @@ class CacheService:
         if key_data == "ALL":
             tracks = []
             now_ts = time.time()
-            for (_, (val, expiry)) in self.cache.items():
+            for _, (val, expiry) in self.cache.items():
                 # Filter out only non-expired track objects
                 if now_ts < expiry and isinstance(val, dict) and "id" in val:
                     tracks.append(val)
@@ -206,11 +202,8 @@ class CacheService:
                     # key = a|||b
                     # year = str
                     a, b = key.split("|||", 1)
-                    writer.writerow({
-                        "artist": a,
-                        "album": b,
-                        "year": year
-                    })
+                    writer.writerow({"artist": a, "album": b, "year": year})
+
         except Exception as e:
             self.error_logger.error(f"Failed to write album cache CSV: {e}", exc_info=True)
 

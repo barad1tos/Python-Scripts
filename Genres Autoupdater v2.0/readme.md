@@ -67,11 +67,11 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
       - [Exception Handling](#exception-handling)
       - [Analytics Configuration](#analytics-configuration)
   - [AppleScript Implementation Details](#applescript-implementation-details)
-    - [fetch\_tracks.applescript](#fetch_tracksapplescript)
-      - [fetch\_tracks Key Operations](#fetch_tracks-key-operations)
+    - [fetch_tracks.applescript](#fetch_tracksapplescript)
+      - [fetch_tracks Key Operations](#fetch_tracks-key-operations)
       - [Example Output](#example-output)
-    - [update\_property.applescript](#update_propertyapplescript)
-      - [update\_property Key Operations](#update_property-key-operations)
+    - [update_property.applescript](#update_propertyapplescript)
+      - [update_property Key Operations](#update_property-key-operations)
       - [Example Usage from Python](#example-usage-from-python)
   - [Advanced Features](#advanced-features)
     - [Sophisticated Genre Determination Algorithm](#sophisticated-genre-determination-algorithm)
@@ -83,10 +83,10 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
     - [Analytics Reporting](#analytics-reporting)
     - [Console Reporting](#console-reporting)
   - [Auxiliary Scripts](#auxiliary-scripts)
-    - [full\_sync.py](#full_syncpy)
+    - [full_sync.py](#full_syncpy)
       - [Full Sync Functions](#full-sync-functions)
       - [Full Sync Operation](#full-sync-operation)
-    - [dry\_run.py](#dry_runpy)
+    - [dry_run.py](#dry_runpy)
       - [Dry Run Functions](#dry-run-functions)
       - [Dry Run Operation](#dry-run-operation)
   - [Contributing](#contributing)
@@ -183,25 +183,25 @@ nano ~/Library/LaunchAgents/com.user.MusicGenreUpdater.plist
   <dict>
     <key>Label</key>
     <string>com.user.MusicGenreUpdater</string>
-    
+
     <key>ProgramArguments</key>
     <array>
       <string>/usr/bin/python3</string>
       <string>/path/to/your/music_genre_updater.py</string>
     </array>
-    
+
     <key>StartInterval</key>
     <integer>3600</integer> <!-- Runs every hour -->
-    
+
     <key>WorkingDirectory</key>
     <string>/path/to/your/project/directory</string>
-    
+
     <key>StandardOutPath</key>
     <string>/path/to/your/logs/music_genre_updater_stdout.log</string>
-    
+
     <key>StandardErrorPath</key>
     <string>/path/to/your/logs/music_genre_updater_stderr.log</string>
-    
+
     <key>EnvironmentVariables</key>
     <dict>
       <key>PATH</key>
@@ -309,12 +309,14 @@ This section documents the key functions within the codebase, their purposes, an
 #### Main Functions
 
 - **`main()`** (music_genre_updater.py)
+
   - **Purpose**: Entry point to the application
   - **Operation**: Parses command-line arguments, sets up the environment, and delegates to `main_async()`
   - **Logging**: Logs script start with arguments and overall execution time
   - **Example Log**: `14:05:22 I Starting script with arguments: {'force': True, 'command': None}`
 
 - **`main_async(args)`** (music_genre_updater.py)
+
   - **Purpose**: Asynchronous core logic coordinator
   - **Operation**: Based on arguments, routes to appropriate execution path (incremental update, clean_artist, update_years, verify_database)
   - **Logging**: Detailed progress logs and performance metrics
@@ -328,6 +330,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### AppleScript Integration
 
 - **`run_applescript_async(script_name, args)`** (music_genre_updater.py)
+
   - **Purpose**: Execute AppleScript files with arguments
   - **Operation**: Invokes the AppleScriptClient service to run named scripts
   - **Analytics**: Tracked with the "AppleScript Execution" event type
@@ -335,6 +338,7 @@ This section documents the key functions within the codebase, their purposes, an
   - **Example Log**: `14:05:25 I Running AppleScript: fetch_tracks.applescript with args: 'Metallica'`
 
 - **`fetch_tracks_async(artist, force_refresh)`** (music_genre_updater.py)
+
   - **Purpose**: Retrieve track data from Music.app
   - **Operation**: Checks cache first, falls back to AppleScript if needed
   - **Analytics**: Tracked with the "Fetch Tracks Async" event type
@@ -351,6 +355,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### Metadata Cleaning Configuration
 
 - **`clean_names(artist, track_name, album_name)`** (music_genre_updater.py)
+
   - **Purpose**: Remove marketing tags and clutter from names
   - **Operation**: Uses configurable pattern matching to clean metadata
   - **Analytics**: Tracked with the "Clean Names" event type
@@ -366,6 +371,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### Genre Management
 
 - **`update_genres_by_artist_async(tracks, last_run_time)`** (music_genre_updater.py)
+
   - **Purpose**: Core genre update functionality
   - **Operation**: Groups tracks by artist, determines dominant genre, updates all tracks
   - **Analytics**: Tracked with the "Update Genres by Artist" event type
@@ -373,12 +379,14 @@ This section documents the key functions within the codebase, their purposes, an
   - **Example Log**: `14:05:35 I Artist: Metallica, Dominant Genre: Thrash Metal (from 98 tracks)`
 
 - **`group_tracks_by_artist(tracks)`** (music_genre_updater.py)
+
   - **Purpose**: Organize tracks by artist for efficient processing
   - **Operation**: Creates a dictionary mapping artists to their tracks
   - **Analytics**: Tracked with the "Group Tracks by Artist" event type
   - **Logging**: Not directly logged
 
 - **`determine_dominant_genre_for_artist(artist_tracks)`** (music_genre_updater.py)
+
   - **Purpose**: Identify the representative genre for an artist
   - **Operation**: Uses earliest added track from earliest album as reference
   - **Analytics**: Tracked with the "Determine Dominant Genre" event type
@@ -398,6 +406,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### Album Year Retrieval
 
 - **`process_album_years(tracks, force)`** (music_genre_updater.py)
+
   - **Purpose**: Coordinator for album year update process
   - **Operation**: Initializes API service, calls update function, handles results
   - **Analytics**: Not directly tracked
@@ -405,6 +414,7 @@ This section documents the key functions within the codebase, their purposes, an
   - **Example Log**: `14:05:45 I Starting album year updates (force=False)`
 
 - **`update_album_years_async(tracks, force)`** (music_genre_updater.py)
+
   - **Purpose**: Core album year update functionality
   - **Operation**: Groups tracks by album, queries APIs, updates tracks with years
   - **Analytics**: Tracked with the "Update Album Years" event type
@@ -421,6 +431,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### Database Management
 
 - **`verify_and_clean_track_database(force)`** (music_genre_updater.py)
+
   - **Purpose**: Validate CSV database against Music.app
   - **Operation**: Checks if tracks still exist, removes invalid entries
   - **Analytics**: Tracked with the "Database Verification" event type
@@ -436,6 +447,7 @@ This section documents the key functions within the codebase, their purposes, an
 #### Utility Functions
 
 - **`is_music_app_running()`** (music_genre_updater.py)
+
   - **Purpose**: Check if Apple Music is active
   - **Operation**: Uses AppleScript to query running processes
   - **Analytics**: Tracked with the "Check Music App Running" event type
@@ -443,6 +455,7 @@ This section documents the key functions within the codebase, their purposes, an
   - **Error Log**: `14:06:10 E Music app is not running! Please start Music.app before running this script.`
 
 - **`can_run_incremental(force_run)`** (music_genre_updater.py)
+
   - **Purpose**: Determine if incremental update is due
   - **Operation**: Checks last run time against configured interval
   - **Analytics**: Tracked with the "Can Run Incremental" event type
@@ -465,17 +478,14 @@ The `AppleScriptClient` class (services/applescript_client.py) provides the inte
 - **Key Methods**:
   - **`run_script(script_name, arguments, timeout)`**: Executes a named AppleScript file
   - **`run_script_code(script_code, arguments, timeout)`**: Executes raw AppleScript code
-  
 - **Important Features**:
   - **Concurrency Control**: Uses a semaphore to limit parallel AppleScript executions
   - **Timeout Management**: Cancels scripts that run too long
   - **Robust Error Handling**: Captures and processes AppleScript errors
-  
 - **Logging**:
   - Script execution with arguments and timeout
   - Execution time and result size
   - Error conditions with specific error messages
-  
 - **Example Log**:
 
   ```md
@@ -490,23 +500,19 @@ The `CacheService` class (services/cache_service.py) provides multi-tiered cachi
 - **Caching Levels**:
   - **In-Memory Cache**: Fast key-value store with TTL support
   - **Album Year CSV Cache**: Persistent storage for album years
-  
 - **Key Methods**:
   - **`get_async(key_data, compute_func)`**: Fetch from cache or compute if missing
   - **`set_async(key_data, value, ttl)`**: Store value in cache with optional TTL
   - **`get_album_year_from_cache(artist, album)`**: Get album year from CSV
   - **`store_album_year_in_cache(artist, album, year)`**: Save album year to CSV
-  
 - **Important Features**:
   - **Key Hashing**: Converts complex keys to hashable strings
   - **TTL Support**: Automatic expiration of stale cache entries
   - **Memory Management**: Prevents unbounded growth for long-running instances
-  
 - **Logging**:
   - Cache hits/misses
   - Album year storage and retrieval
   - Cache invalidation events
-  
 - **Example Log**:
 
   ```md
@@ -521,22 +527,18 @@ The `ExternalApiService` class (services/external_api_service.py) handles commun
 - **Supported APIs**:
   - **MusicBrainz**: Primary source for album metadata
   - **Discogs**: Secondary source with complementary data
-  
 - **Key Methods**:
   - **`get_album_year(artist, album)`**: Determine the original release year
   - **`get_artist_activity_period(artist)`**: Identify artist's active years
   - **`_score_original_release(release, artist, album)`**: Score potential release matches
-  
 - **Important Features**:
   - **Rate Limiting**: Respects API rate limits to prevent throttling
   - **Scoring Algorithm**: Sophisticated release scoring based on multiple factors
   - **Artist Context**: Uses artist career timeline to validate years
-  
 - **Logging**:
   - API requests and responses
   - Scoring details for potential matches
   - Selected year with justification
-  
 - **Example Log**:
 
   ```md
@@ -559,7 +561,6 @@ The `DependencyContainer` class (services/dependencies_service.py) implements de
   - **`external_api_service`**: ExternalApiService instance
   - **`analytics`**: Analytics instance
   - **`config`**: Configuration dictionary
-  
 - **Initialization**:
   - Loads configuration from YAML
   - Creates loggers
@@ -574,12 +575,14 @@ The logging system provides detailed visibility into the operation of the tool.
 The application uses three specialized loggers:
 
 1. **Console Logger (`console_logger`)**
+
    - **Purpose**: Real-time feedback during execution
    - **Format**: Compact time, colored level, message
    - **Default Level**: INFO
    - **Output**: Standard output (terminal)
 
 2. **Error Logger (`error_logger`)**
+
    - **Purpose**: Detailed error tracking and diagnostics
    - **Format**: Timestamp, level, message, optional stack trace
    - **Default Level**: INFO (captures INFO and above)
@@ -628,7 +631,7 @@ When the script runs, you'll see log entries that follow these patterns:
 2. **AppleScript Execution**:
 
    ```md
-   14:07:10 I Running AppleScript: fetch_tracks.applescript with args: 
+   14:07:10 I Running AppleScript: fetch_tracks.applescript with args:
    14:07:15 I AppleScript fetch_tracks.applescript executed successfully, got 24567 bytes
    ```
 
@@ -643,7 +646,7 @@ When the script runs, you'll see log entries that follow these patterns:
 
    ```md
    14:07:30 I ✅ Updated genre for track 12345 to Thrash Metal
-   14:07:32 I ✅ Cleaning track ID 12346 - 'Master of Puppets (Remastered)' 
+   14:07:32 I ✅ Cleaning track ID 12346 - 'Master of Puppets (Remastered)'
    14:07:33 I Original track name: 'Master of Puppets (Remastered)' -> 'Master of Puppets'
    ```
 
@@ -712,7 +715,6 @@ The framework generates comprehensive HTML reports:
 - **Report Types**:
   - **Incremental**: Shows events from the current run
   - **Full**: Shows events across multiple runs
-  
 - **Report Sections**:
   - **Summary**: Overall statistics and success rates
   - **Short Calls**: Grouped successful short-duration calls
@@ -738,16 +740,19 @@ This section details the data flow for each major operation mode.
 The standard incremental update follows this process:
 
 1. **Initialization**:
+
    - Parse command-line arguments
    - Load configuration
    - Check if incremental interval has passed (`can_run_incremental()`)
    - Initialize dependency container and services
 
 2. **Data Retrieval**:
+
    - Fetch tracks from Music.app (`fetch_tracks_async()`)
    - Parse raw data into track dictionaries (`parse_tracks()`)
 
 3. **Track Processing**:
+
    - For newly added tracks (since last run):
      - Clean track and album names (`clean_track()`)
      - Group tracks by artist (`group_tracks_by_artist()`)
@@ -755,6 +760,7 @@ The standard incremental update follows this process:
      - Update track genres with dominant genre (`update_track_async()`)
 
 4. **CSV Database Update**:
+
    - Save changes to CSV database (`save_to_csv()`)
    - Generate changes report for traceability (`save_changes_report()`)
    - Update the album years in the database if necessary (`process_album_years()`)
@@ -769,21 +775,25 @@ The standard incremental update follows this process:
 When running in `clean_artist` mode:
 
 1. **Initialization**:
+
    - Parse command-line arguments, extracting target artist
    - Load configuration and initialize services
    - Verify Music.app is running (`is_music_app_running()`)
 
 2. **Artist-Specific Retrieval**:
+
    - Fetch only tracks by the specified artist (`fetch_tracks_async(artist=artist)`)
    - Parse track data into dictionaries (`parse_tracks()`)
 
 3. **Targeted Processing**:
+
    - For each track by the artist:
      - Clean track and album names (`clean_names()`)
      - Update track if changes are needed (`update_track_async()`)
      - Track changes for reporting (`changes_log.append()`)
 
 4. **Optional Year Update**:
+
    - If enabled, process album years for the artist (`process_album_years()`)
 
 5. **Reporting**:
@@ -796,15 +806,18 @@ When running in `clean_artist` mode:
 When running in `update_years` mode:
 
 1. **Initialization**:
+
    - Parse arguments, checking for artist filter and force flag
    - Initialize ExternalApiService
    - Verify existence of cache directories
 
 2. **Data Preparation**:
+
    - Fetch required tracks (`fetch_tracks_async()`)
    - Group tracks by album (`albums = {}`)
 
 3. **Album Processing Loop**:
+
    - For each album (processed in batches):
      - Check cache first (`get_album_year_from_cache()`)
      - If not in cache or force=True, query APIs:
@@ -815,6 +828,7 @@ When running in `update_years` mode:
      - Store year in cache (`store_album_year_in_cache()`)
 
 4. **Track Updates**:
+
    - For each album with a determined year:
      - Update all tracks with that year (`update_album_tracks_bulk_async()`)
      - Track changes for reporting
@@ -829,21 +843,25 @@ When running in `update_years` mode:
 When running in `verify_database` mode:
 
 1. **Initialization**:
+
    - Parse command-line arguments, checking for force flag
    - Load existing database from CSV (`load_track_list()`)
    - Check if verification is due (based on last verify date)
 
 2. **Track Filtering**:
+
    - Apply test_artists filter if configured
    - Log number of tracks to verify
 
 3. **Verification Process**:
+
    - Process tracks in batches to reduce load
    - For each track ID:
      - Verify existence in Music.app (`verify_track_exists()`)
      - Add to invalid list if not found
 
 4. **Database Cleanup**:
+
    - Remove invalid tracks from database
    - Save updated database to CSV (`save_to_csv()`)
    - Record verification date to prevent unnecessary rechecks
@@ -857,10 +875,12 @@ When running in `verify_database` mode:
 When running in `--dry-run` mode:
 
 1. **Initialization**:
+
    - Import dry_run module
    - Log dry run mode
 
 2. **Simulation Functions**:
+
    - Simulate cleaning (`simulate_cleaning()`):
      - Fetch tracks directly from Music.app
      - Apply cleaning rules without actual updates
@@ -871,6 +891,7 @@ When running in `--dry-run` mode:
      - Record potential changes
 
 3. **Report Generation**:
+
    - Save cleaning simulation to CSV (`save_cleaning_csv()`)
    - Save genre simulation to CSV (`save_genre_csv()`)
    - Generate unified report (`save_unified_dry_run()`)
@@ -902,13 +923,13 @@ logs_base_dir: /path/to/logs
 
 ```yaml
 # Performance settings
-apple_script_concurrency: 2      # Number of concurrent AppleScript calls
-cache_ttl_seconds: 1800          # Cache lifetime (30 min)
+apple_script_concurrency: 2 # Number of concurrent AppleScript calls
+cache_ttl_seconds: 1800 # Cache lifetime (30 min)
 applescript_timeout_seconds: 900 # AppleScript execution timeout (15 min)
 incremental_interval_minutes: 15 # Interval between incremental runs
-batch_size: 20                   # Number of tracks to process in parallel
-max_retries: 3                   # Retry attempts for failed operations
-retry_delay_seconds: 1           # Delay between retries
+batch_size: 20 # Number of tracks to process in parallel
+max_retries: 3 # Retry attempts for failed operations
+retry_delay_seconds: 1 # Delay between retries
 ```
 
 - **apple_script_concurrency**: Limits concurrent AppleScript executions to prevent system overload
@@ -923,7 +944,7 @@ retry_delay_seconds: 1           # Delay between retries
 
 ```yaml
 # Optional: limit to specific artists for testing
-test_artists: []                 # Example: ["Metallica", "Spiritbox"]
+test_artists: [] # Example: ["Metallica", "Spiritbox"]
 ```
 
 - **test_artists**: When populated, limits operations to specified artists (for testing)
@@ -933,7 +954,7 @@ test_artists: []                 # Example: ["Metallica", "Spiritbox"]
 ```yaml
 # Logging configuration
 logging:
-  max_runs: 3                    # Keep logs for N most recent runs
+  max_runs: 3 # Keep logs for N most recent runs
   main_log_file: main/main.log
   csv_output_file: csv/track_list.csv
   changes_report_file: csv/changes_report.csv
@@ -1008,8 +1029,8 @@ cleaning:
     - Expanded
     - Deluxe Edition
   album_suffixes_to_remove:
-    - ' - EP'
-    - ' - Single'
+    - " - EP"
+    - " - Single"
 ```
 
 - **remaster_keywords**: Terms to identify and remove from parenthetical expressions
@@ -1033,9 +1054,9 @@ exceptions:
 # Analytics configuration
 analytics:
   colors:
-    short: '#90EE90'  # Light green for fast operations
-    medium: '#D3D3D3' # Light gray for medium operations
-    long: '#FFB6C1'   # Light pink for slow operations
+    short: "#90EE90" # Light green for fast operations
+    medium: "#D3D3D3" # Light gray for medium operations
+    long: "#FFB6C1" # Light pink for slow operations
   duration_thresholds:
     short_max: 2
     medium_max: 5
@@ -1060,11 +1081,13 @@ This script retrieves track data from the Music library.
 1. **Parameter Handling**:
    - Accepts optional artist parameter to filter tracks
 2. **Music.app Communication**:
+
    - Uses `tell application "Music"` block to interact with Music.app
    - Queries library playlist 1 (main library)
    - Fetches multiple properties in a batch query for efficiency
 
 3. **Data Formatting**:
+
    - Extracts track properties into separate lists
    - Formats dates consistently (YYYY-MM-DD HH:MM:SS)
    - Escapes special characters to preserve delimiters
@@ -1088,14 +1111,17 @@ This script modifies track properties in the Music library.
 #### update_property Key Operations
 
 1. **Parameter Handling**:
+
    - Requires three parameters: track ID, property name, property value
    - Validates input parameters
 
 2. **Track Lookup**:
+
    - Finds the track by ID in the main library
    - Verifies track exists before attempting updates
 
 3. **Property Update**:
+
    - Uses a conditional structure to update the appropriate property
    - Supports name, album, genre, and year properties
    - Performs type conversion for numeric fields (e.g., year)
@@ -1108,7 +1134,7 @@ This script modifies track properties in the Music library.
 
 ```python
 result = await run_applescript_async(
-    "update_property.applescript", 
+    "update_property.applescript",
     ["1234", "genre", "Thrash Metal"]
 )
 ```
@@ -1120,18 +1146,22 @@ result = await run_applescript_async(
 The genre determination algorithm implements this specific logic:
 
 1. **Per-Artist Grouping**:
+
    - Groups all tracks by artist name
    - Processes each artist independently
 
 2. **Album-First Processing**:
+
    - For each artist, identifies distinct albums
    - Determines the earliest track for each album (by dateAdded)
 
 3. **Earliest Album Identification**:
+
    - Identifies the earliest album by the artist in your library
    - This represents your first exposure to the artist
 
 4. **Earliest Track Selection**:
+
    - From the earliest album, selects the earliest track
    - The genre of this track becomes the "dominant genre"
 
@@ -1146,14 +1176,17 @@ The rationale behind this approach is that the genre of the first track you adde
 The album year scoring system combines multiple factors to identify original release years:
 
 1. **Multi-API Querying**:
+
    - Queries both MusicBrainz and Discogs APIs
    - Combines and normalizes results
 
 2. **Artist Context**:
+
    - Determines artist's active period (start year, end year if applicable)
    - Uses this context to validate potential release years
 
 3. **Sophisticated Scoring Algorithm**:
+
    - Base score for each potential release year
    - Bonuses for:
      - Exact title matches
@@ -1167,6 +1200,7 @@ The album year scoring system combines multiple factors to identify original rel
      - Future dates (impossible for original releases)
 
 4. **Year Clustering**:
+
    - Groups releases by year
    - Aggregates scores for each year
    - Identifies years with similar high scores
@@ -1181,20 +1215,24 @@ The album year scoring system combines multiple factors to identify original rel
 The incremental processing system optimizes performance by:
 
 1. **Last Run Tracking**:
+
    - Records timestamp of each successful run
    - Stores in persistent file (last_incremental_run_file)
 
 2. **Interval Enforcement**:
+
    - Checks current time against last run plus interval
    - Skips execution if interval hasn't passed
    - Shows remaining time until next eligible run
 
 3. **Change Detection**:
+
    - For genre updates, processes only tracks added since last run
    - Filters by dateAdded timestamp
    - Skips unchanged tracks
 
 4. **Force Override**:
+
    - Provides `--force` flag to bypass interval check
    - Allows manual triggering of out-of-schedule runs
 
@@ -1208,21 +1246,25 @@ The incremental processing system optimizes performance by:
 The error recovery system provides resilience against transient issues:
 
 1. **Exception Handling**:
+
    - Comprehensive try/except blocks throughout codebase
    - Detailed error logging with context and stack traces
    - Graceful degradation on failures
 
 2. **Retry Mechanism**:
+
    - Configurable retry attempts (max_retries)
    - Progressive backoff with configurable delay (retry_delay_seconds)
    - Specific retry logic for network-dependent operations
 
 3. **Partial Success Handling**:
+
    - Tracks successful and failed operations separately
    - Continues processing despite individual failures
    - Reports success/failure statistics
 
 4. **Database Consistency**:
+
    - Synchronizes database even after partial failures
    - Records changes that were successfully applied
    - Allows subsequent runs to pick up where previous run failed
@@ -1239,12 +1281,14 @@ The error recovery system provides resilience against transient issues:
 The system generates multiple CSV reports:
 
 1. **Track Database (track_list.csv)**:
+
    - Complete record of all processed tracks
    - Fields: id, name, artist, album, genre, dateAdded, trackStatus, old_year, new_year
    - Updated incrementally with new or changed tracks
    - Primary persistence mechanism
 
 2. **Changes Report (changes_report.csv)**:
+
    - Record of modifications made to the Music library
    - Fields vary by change_type (genre, year, name)
    - Includes before/after values for changed fields
@@ -1261,6 +1305,7 @@ The system generates multiple CSV reports:
 The analytics system produces detailed performance reports:
 
 1. **HTML Report**:
+
    - Interactive, color-coded performance visualization
    - Sections for summary, grouped calls, and detailed events
    - Success rate statistics and call counts
@@ -1277,11 +1322,13 @@ The analytics system produces detailed performance reports:
 The system provides real-time feedback via console:
 
 1. **Progress Indicators**:
+
    - Shows current operation and progress
    - Reports batch completion (e.g., "Processed batch 3/5")
    - Displays metrics for important operations
 
 2. **Change Notifications**:
+
    - Reports track updates with before/after values
    - Shows emoji indicators for success/failure
    - Visualizes performance with speed indicators (⚡/⏱️/🐢)
@@ -1319,10 +1366,12 @@ This script simulates changes without applying them to Music.app.
 #### Dry Run Functions
 
 1. **`simulate_cleaning()`**:
+
    - Simulates name cleaning operations
    - Records potential changes
 
 2. **`simulate_genre_update()`**:
+
    - Determines dominant genres by artist
    - Records potential genre changes
 

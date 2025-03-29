@@ -3,8 +3,10 @@
 """
 Dependency Container Module
 
-This module defines a DependencyContainer class that encapsulates key dependencies
-such as configuration, AppleScriptClient, CacheService, and any other services.
+This module defines a DependencyContainer class that encapsulates all key dependencies
+including configuration, loggers, analytics, AppleScriptClient, CacheService,
+ExternalApiService, and PendingVerificationService. It implements a simple
+dependency injection pattern for the application.
 """
 
 import os
@@ -23,51 +25,42 @@ class DependencyContainer:
     A container for all dependencies used in the application.
     This implements a simple dependency injection pattern.
     """
-    
+
     def __init__(self, config_path: str):
         """
         Initializes the DependencyContainer with the configuration file path.
-        
+
         :param config_path: Path to the configuration YAML file.
         """
         # Load configuration first
         from music_genre_updater import load_config
+
         self.config = load_config(config_path)
-        
+
         # Initialize loggers
         self.console_logger, self.error_logger, self.analytics_logger = get_loggers(self.config)
-        
+
         # Initialize analytics - this was missing!
-        self.analytics = Analytics(
-            self.config,
-            self.console_logger,
-            self.error_logger,
-            self.analytics_logger
-        )
+        self.analytics = Analytics(self.config, self.console_logger, self.error_logger, self.analytics_logger)
 
         # Make the analytics object available for external use
         global analytics
         analytics = self.analytics
-        
+
         # Initialize the AppleScript client
-        self.ap_client = AppleScriptClient(
-            self.config, 
-            self.console_logger, 
-            self.error_logger
-)
-        
+        self.ap_client = AppleScriptClient(self.config, self.console_logger, self.error_logger)
+
         # Initialize the cache service
-        self.cache_service = CacheService(
-            self.config,
-            self.console_logger,
-            self.error_logger
-        )
-        
+        self.cache_service = CacheService(self.config, self.console_logger, self.error_logger)
+
         # Initialize the external API service
-        self.external_api_service = ExternalApiService(
-            self.config,
-            self.console_logger,
-            self.error_logger
+        self.external_api_service = ExternalApiService(self.config, self.console_logger, self.error_logger)
+
+        # Initialize the pending verification service
+        from services.pending_verification import PendingVerificationService
+
+        self.pending_verification_service = PendingVerificationService(
+            self.config, self.console_logger, self.error_logger
         )
 
         # Initialize API client session
