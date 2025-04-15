@@ -10,6 +10,7 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
 - [Music Genre Updater](#music-genre-updater)
   - [Table of Contents](#table-of-contents)
   - [Description](#description)
+  - [Key April 2025 Updates](#key-april-2025-updates)
   - [Features](#features)
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
@@ -67,11 +68,11 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
       - [Exception Handling](#exception-handling)
       - [Analytics Configuration](#analytics-configuration)
   - [AppleScript Implementation Details](#applescript-implementation-details)
-    - [fetch_tracks.applescript](#fetch_tracksapplescript)
-      - [fetch_tracks Key Operations](#fetch_tracks-key-operations)
+    - [fetch\_tracks.applescript](#fetch_tracksapplescript)
+      - [fetch\_tracks Key Operations](#fetch_tracks-key-operations)
       - [Example Output](#example-output)
-    - [update_property.applescript](#update_propertyapplescript)
-      - [update_property Key Operations](#update_property-key-operations)
+    - [update\_property.applescript](#update_propertyapplescript)
+      - [update\_property Key Operations](#update_property-key-operations)
       - [Example Usage from Python](#example-usage-from-python)
   - [Advanced Features](#advanced-features)
     - [Sophisticated Genre Determination Algorithm](#sophisticated-genre-determination-algorithm)
@@ -83,10 +84,10 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
     - [Analytics Reporting](#analytics-reporting)
     - [Console Reporting](#console-reporting)
   - [Auxiliary Scripts](#auxiliary-scripts)
-    - [full_sync.py](#full_syncpy)
+    - [full\_sync.py](#full_syncpy)
       - [Full Sync Functions](#full-sync-functions)
       - [Full Sync Operation](#full-sync-operation)
-    - [dry_run.py](#dry_runpy)
+    - [dry\_run.py](#dry_runpy)
       - [Dry Run Functions](#dry-run-functions)
       - [Dry Run Operation](#dry-run-operation)
   - [Contributing](#contributing)
@@ -101,6 +102,17 @@ Music Genre Updater intelligently manages your Apple Music library through advan
 
 The tool is designed to work asynchronously with large music libraries, using sophisticated caching mechanisms to minimize API calls and AppleScript interactions. It features a complete analytics framework that tracks performance and provides detailed reports.
 
+## Key April 2025 Updates
+
+- **Track Database CSV** now includes `old_year` and `new_year` columns for every track, enabling robust year synchronization and change tracking.
+- **Album Year Update Logic**: The script now skips albums that already have a definitive year in the database, minimizing redundant API calls and updates. Only albums with missing or outdated years are processed.
+- **Year Caching**: Album years are cached both in-memory and in a persistent CSV (`cache_albums.csv`). This ensures that once a year is determined, it is reused for all relevant tracks and future runs.
+- **Change Reporting**: All changes (genre, year, name, etc.) are logged in a unified changes report CSV, with clear `change_type`, `old_*`, and `new_*` fields, and timestamped for auditability.
+- **Analytics & HTML Reports**: The analytics system tracks all major operations and generates a detailed HTML report after each run, including grouped statistics, per-function timing, and error/success rates.
+- **AppleScript Integration**: Improved error handling, argument passing, and diagnostics for all AppleScript operations. Bulk updates and property changes are now more robust.
+- **Dry Run & Full Sync**: Both dry run and full sync scripts use the new CSV structure and reporting, allowing safe preview and one-time full database refreshes.
+- **Async Architecture**: All major operations (track fetching, AppleScript, API calls, cache) are fully asynchronous for maximum performance and reliability.
+
 ## Features
 
 - **Comprehensive Genre Management**: Determines and applies the dominant genre for each artist based on their earliest releases
@@ -114,6 +126,13 @@ The tool is designed to work asynchronously with large music libraries, using so
 - **Dry Run Simulation**: Tests changes without applying them to your music library
 - **Detailed Logging**: Comprehensive logs for monitoring and debugging
 - **Configurable Exception Handling**: Allows specific artists or albums to be excluded from processing
+- **Year Synchronization**: Tracks and albums are now synchronized with `old_year` and `new_year` fields, ensuring accurate year updates and preventing redundant processing.
+- **Unified Change Reporting**: All changes (genre, year, name, etc.) are consolidated in a single CSV report, with clear change types and before/after values.
+- **Album Year Caching**: Album years are cached in both memory and a persistent CSV, minimizing API calls and ensuring consistency across runs.
+- **Skip Processed Albums**: The script automatically skips albums that already have a definitive year, reducing unnecessary updates and API usage.
+- **Robust Analytics**: HTML analytics reports now include grouped statistics, per-function timing, and error/success rates for all major operations.
+- **Improved AppleScript Handling**: Enhanced error handling, diagnostics, and argument passing for all AppleScript operations, including bulk property updates.
+- **Dry Run & Full Sync Support**: Both dry run and full sync scripts are updated to use the new CSV structure and reporting system.
 
 ## Prerequisites
 
@@ -439,10 +458,10 @@ This section documents the key functions within the codebase, their purposes, an
   - **Example Log**: `14:06:00 I Found 3 tracks that no longer exist in Music.app`
 
 - **`sync_track_list_with_current(all_tracks, csv_path, cache_service, logger, error_logger, partial_sync)`** (reports.py)
-  - **Purpose**: Merge current tracks with CSV database
-  - **Operation**: Updates existing entries, adds new ones, preserves album years
-  - **Logging**: Reports sync statistics
-  - **Example Log**: `14:06:05 I Added/Updated 52 tracks in CSV.`
+  - **Purpose**: Merge current tracks with CSV database, including `old_year` and `new_year` fields for robust year tracking.
+  - **Operation**: Updates existing entries, adds new ones, preserves album years, and ensures that already-processed albums are skipped in future runs.
+  - **Logging**: Reports sync statistics, including how many tracks were added/updated and how many albums were skipped due to existing year data.
+  - **Example Log**: `14:06:05 I Added/Updated 52 tracks in CSV. Skipped 10 albums with existing year.`
 
 #### Utility Functions
 
@@ -1290,15 +1309,9 @@ The system generates multiple CSV reports:
 2. **Changes Report (changes_report.csv)**:
 
    - Record of modifications made to the Music library
-   - Fields vary by change_type (genre, year, name)
+   - Fields: change_type, artist, album, track_name, old_genre, new_genre, old_year, new_year, old_track_name, new_track_name, old_album_name, new_album_name, timestamp
    - Includes before/after values for changed fields
    - Timestamped entries for audit trail
-
-3. **Dry Run Reports**:
-   - Simulate changes without applying them
-   - Separate cleaning and genre simulations
-   - Combined report showing all potential changes
-   - Same format as actual changes for side-by-side comparison
 
 ### Analytics Reporting
 
@@ -1471,3 +1484,15 @@ A: Delete the CSV files in your logs directory, particularly `track_list.csv` an
 **Q: Does the script modify my music files?**
 
 A: No, it only updates metadata in the Apple Music database. The actual music files remain untouched.
+
+**Q: How does the script avoid reprocessing albums that already have a year?**
+
+A: The script checks the `new_year` field for each album in the CSV database. If a definitive year is already present, the album is skipped during year update operations. This prevents redundant API calls and unnecessary updates.
+
+**Q: How are album years cached and reused?**
+
+A: Album years are cached both in-memory and in a persistent CSV (`cache_albums.csv`). When a year is determined for an album, it is stored in the cache and reused for all relevant tracks and future runs, unless a force update is requested.
+
+**Q: What is the difference between `old_year` and `new_year` in the CSV?**
+
+A: `old_year` represents the year previously stored in the library or fetched from Music.app, while `new_year` is the year determined by the script (from APIs or cache). This allows for clear tracking of changes and prevents accidental overwrites.

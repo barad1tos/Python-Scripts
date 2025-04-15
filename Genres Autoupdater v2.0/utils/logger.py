@@ -1,30 +1,35 @@
 #!/usr/bin/env python3
-
+# utils/logger.py
 """
-Enhanced Logger Module
+Enhanced Logger Module using QueueHandler for non-blocking file IO.
 
 Provides a comprehensive logging system with detailed tracking and visual formatting. Features:
 
-1. Run tracking - headers/footers and duration tracking for script executions
-2. Log rotation - keeps only the most recent N runs in log files
-3. Color coding - visual distinction between log levels using ANSI colors
-4. Path aliases - converts absolute paths to readable aliases ($MUSIC, $LOGS, etc.)
-5. Multiple loggers - specialized loggers for console output, main logs (including errors), and analytics
-6. Visual indicators - emojis and separators for improved readability
-7. Compact formatting - abbreviated log levels and shortened timestamps
-8. HTML report support - configurable paths for incremental and full analytics reports
+1.  **Run Tracking:** Adds headers/footers with timestamps and duration for script executions (`RunHandler`).
+2.  **Log Rotation by Runs:** Keeps only the most recent N runs in log files (`RunHandler.trim_log_to_max_runs`).
+3.  **Color Coding:** Uses ANSI colors for visual distinction between log levels in console output (`CompactFormatter`).
+4.  **Path Aliases:** Shortens file paths in log messages to readable aliases like `$SCRIPTS`, `$LOGS`, `$MUSIC_LIB`, `~` (`shorten_path`).
+5.  **Multiple Loggers:** Configures distinct loggers for console output, main application/error logging, and analytics (`get_loggers`).
+6.  **Non-Blocking File Logging:** Employs `QueueHandler` and `QueueListener` to prevent file I/O from blocking the main application thread.
+7.  **Visual Indicators:** Uses emojis (🚀, 🏁) and separators for improved readability in log files and console.
+8.  **Compact Formatting:** Provides a `CompactFormatter` with abbreviated log levels and short timestamps for console.
+9.  **HTML Report Path:** Includes a helper function (`get_html_report_path`) to determine paths for analytics reports.
+10. **Configuration Driven:** Relies on a configuration dictionary for paths, log levels, and other settings.
 """
 
 import logging
 import os
+import queue
 import re
 import sys
 import time
 
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener
+
+# --------------------------------------
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple
 
 # ANSI escape codes for colors
 RESET = "\033[0m"
@@ -39,7 +44,6 @@ BOLD = "\033[1m"
 
 # Level abbreviations and colors
 LEVEL_COLORS = {'DEBUG': GRAY, 'INFO': GREEN, 'WARNING': YELLOW, 'ERROR': RED, 'CRITICAL': MAGENTA + BOLD}
-
 LEVEL_ABBREV = {'DEBUG': 'D', 'INFO': 'I', 'WARNING': 'W', 'ERROR': 'E', 'CRITICAL': 'C'}
 
 
@@ -50,143 +54,176 @@ class RunHandler:
     """
 
     def __init__(self, max_runs: int = 3):
+        """
+        Initializes the RunHandler.
+
+        Args:
+            max_runs (int): The maximum number of runs to keep in the log file.
+        """
         self.max_runs = max_runs
         self.current_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.run_start_time = time.time()
+        self.run_start_time = time.monotonic()  # Use monotonic for duration
 
     def format_run_header(self, logger_name: str) -> str:
         """Creates a formatted header for a new run"""
-        return (
-            f"\n\n{'='*80}\n"
-            f"🚀 NEW RUN: {logger_name} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"{'='*80}\n\n"
-        )
+        # Use UTC time for logs potentially? Or keep local time? Keep local for now.
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        header = f"\n\n{'='*80}\n"
+        header += f"🚀 NEW RUN: {logger_name} - {now_str}\n"
+        header += f"{'='*80}\n\n"
+        return header
 
     def format_run_footer(self, logger_name: str) -> str:
         """Creates a formatted footer for the end of a run"""
-        elapsed = time.time() - self.run_start_time
-        return f"\n\n{'='*80}\n" f"🏁 END RUN: {logger_name} - Total time: {elapsed:.2f}s\n" f"{'='*80}\n\n"
+        elapsed = time.monotonic() - self.run_start_time
+        footer = f"\n\n{'='*80}\n"
+        footer += f"🏁 END RUN: {logger_name} - Total time: {elapsed:.2f}s\n"
+        footer += f"{'='*80}\n\n"
+        return footer
 
     def trim_log_to_max_runs(self, log_file: str) -> None:
         """
-        Trims a log file to contain only the most recent N runs.
+        Trims a log file to contain only the most recent N runs, identified by run headers.
 
         Args:
-            log_file: Path to the log file
+            log_file (str): Path to the log file.
         """
         if not os.path.exists(log_file) or self.max_runs <= 0:
             return
 
         try:
             with open(log_file, 'r', encoding='utf-8') as f:
-                content = f.read()
+                # Read lines efficiently, especially for potentially large files
+                lines = f.readlines()
 
-            # Find run separators
-            run_headers = re.findall(r'\n\n={80}\n🚀 NEW RUN:', content)
+            # Find indices of run headers
+            header_indices = [
+                i
+                for i, line in enumerate(lines)
+                if re.match(r'^={80}$', line.strip()) and i + 1 < len(lines) and re.match(r'^🚀 NEW RUN:', lines[i + 1].strip())
+            ]
 
-            if len(run_headers) <= self.max_runs:
+            if len(header_indices) <= self.max_runs:
                 return  # No trimming needed
 
-            # Find the position of the N-th most recent run
-            start_pos = 0
-            for i in range(len(run_headers) - self.max_runs):
-                match = re.search(r'\n\n={80}\n🚀 NEW RUN:', content[start_pos:])
-                if match:
-                    start_pos += match.start() + 1
-                else:
-                    break
+            # Keep only the last 'max_runs' sections
+            start_line_index = header_indices[-self.max_runs]  # Index of the oldest header to keep
 
-            # Keep only the most recent runs
             with open(log_file, 'w', encoding='utf-8') as f:
-                f.write(content[start_pos:])
+                f.writelines(lines[start_line_index:])
+            # print(f"Trimmed log file {log_file}, kept last {self.max_runs} runs.") # Optional debug print
 
         except Exception as e:
-            print(f"Error trimming log file {log_file}: {e}")
+            # Use print for errors during logging setup/teardown as logger might not be available
+            print(f"Error trimming log file {log_file}: {e}", file=sys.stderr)
 
 
 def ensure_directory(path: str) -> None:
     """
     Ensure that the given directory path exists, creating it if necessary.
+    Handles potential race conditions during creation.
     """
-    if not os.path.exists(path):
-        os.makedirs(path, exist_ok=True)
+    try:
+        if path and not os.path.exists(path):  # Check if path is not empty
+            os.makedirs(path, exist_ok=True)
+    except OSError as e:
+        # Handle potential errors during directory creation
+        print(f"Error creating directory {path}: {e}", file=sys.stderr)
+    except Exception as e:  # Catch other potential errors like permission issues
+        print(f"Unexpected error ensuring directory {path}: {e}", file=sys.stderr)
 
 
 def get_full_log_path(config: dict, key: str, default: str) -> str:
     """
     Returns the full log path by joining the base logs directory with the relative path.
+    Ensures the base directory exists.
 
     Args:
         config (dict): Configuration dictionary.
-        key (str): The logging key (e.g. 'main_log_file').
-        default (str): Default relative path if not found in config.
+        key (str): The logging key within the 'logging' section (e.g., 'main_log_file').
+        default (str): Default relative path if the key is not found in config.
 
     Returns:
-        str: The absolute path to the log file.
+        str: The absolute path to the log file or directory. Returns default if config is invalid.
     """
+    if not isinstance(config, dict):
+        return default  # Safety check
+
     logs_base_dir = config.get("logs_base_dir", ".")
-    relative_path = config.get("logging", {}).get(key, default)
+    # Ensure the base directory exists when path is calculated
+    ensure_directory(logs_base_dir)
+
+    logging_config = config.get("logging", {})
+    if not isinstance(logging_config, dict):
+        return os.path.join(logs_base_dir, default)  # Safety
+
+    relative_path = logging_config.get(key, default)
     return os.path.join(logs_base_dir, relative_path)
 
 
 def shorten_path(path: str, config: dict = None) -> str:
     """
-    Shorten a path to make it more readable in logs.
+    Shorten a file path for more readable log output.
 
-    Replaces known base directories with shorter aliases.
-    For AppleScripts, extracts just the script name.
+    Replaces known base directories (from config or common locations) with aliases.
+    Extracts script names for AppleScript calls.
 
     Args:
-        path (str): The path to shorten
-        config (dict, optional): Configuration to extract base paths
+        path (str): The file path string to shorten.
+        config (dict, optional): Configuration dictionary to get base paths.
 
     Returns:
-        str: Shortened, more readable path
+        str: Shortened path string.
     """
-    if not path:
-        return path
+    if not path or not isinstance(path, str):
+        return str(path)  # Return original if None or not a string
 
-    # Extract just the script name for AppleScript calls
+    # Handle AppleScript calls specifically
     if 'osascript' in path and '.applescript' in path:
         script_match = re.search(r'([^/\\]+\.applescript)', path)
         if script_match:
             return f"script:{script_match.group(1)}"
 
-    # Try to use paths from config
-    if config:
-        apple_scripts_dir = config.get("apple_scripts_dir", "")
-        music_library_path = config.get("music_library_path", "")
-        logs_base_dir = config.get("logs_base_dir", "")
+    # Use config for path replacements if available
+    if config and isinstance(config, dict):
+        # Use os.path.normpath for consistent separator handling
+        norm_path = os.path.normpath(path)
+        # Use get_full_log_path helper to ensure consistency if possible, or direct config access
+        scripts_dir = os.path.normpath(config.get("apple_scripts_dir", ""))
+        music_lib = os.path.normpath(config.get("music_library_path", ""))
+        logs_dir = os.path.normpath(config.get("logs_base_dir", ""))
 
-        if apple_scripts_dir and path.startswith(apple_scripts_dir):
-            return path.replace(apple_scripts_dir, "$SCRIPTS")
+        if scripts_dir and norm_path.startswith(scripts_dir + os.sep):
+            # Use basename to just get the script file name
+            return f"$SCRIPTS{os.sep}{os.path.basename(norm_path)}"
+            # return norm_path.replace(scripts_dir, "$SCRIPTS", 1) # Old way
+        if logs_dir and norm_path.startswith(logs_dir + os.sep):
+            return norm_path.replace(logs_dir, "$LOGS", 1)
+        # Music library path might be a file, check startswith carefully
+        if music_lib and norm_path.startswith(music_lib):
+            return "$MUSIC_LIB"  # Just replace the whole thing for brevity
 
-        if music_library_path and path.startswith(music_library_path):
-            return path.replace(music_library_path, "$MUSIC")
+    # Fallback to common directory replacements
+    try:
+        home = str(Path.home())
+        norm_home = os.path.normpath(home)
+        if norm_path.startswith(norm_home + os.sep):
+            return norm_path.replace(norm_home, "~", 1)
+    except Exception:
+        pass  # Ignore errors getting home directory
 
-        if logs_base_dir and path.startswith(logs_base_dir):
-            return path.replace(logs_base_dir, "$LOGS")
+    # If it's an absolute path not matched above, return just the filename
+    if os.path.isabs(norm_path):
+        return os.path.basename(norm_path)
 
-    # Try common directories if config not provided
-    home = str(Path.home())
-    if path.startswith(home):
-        return path.replace(home, "~")
-
-    # If no matches, just return filename for absolute paths
-    if os.path.isabs(path):
-        return os.path.basename(path)
-
+    # Otherwise, return the path as is (likely relative)
     return path
 
 
 class CompactFormatter(logging.Formatter):
     """
-    Formatter that creates compact, readable log entries.
-    - Abbreviates log levels
-    - Uses short timestamps
-    - Shortens paths
-    - Applies colors
-    - Supports run tracking
+    Custom log formatter for compact, readable, colored output.
+    Features: Level abbreviation, short timestamps, path shortening, color coding.
     """
 
     def __init__(self, fmt=None, datefmt='%H:%M:%S', style='%', include_separator=False, config=None, run_handler=None):
@@ -194,178 +231,265 @@ class CompactFormatter(logging.Formatter):
         Initialize the CompactFormatter.
 
         Args:
-            fmt (str): The format string.
-            datefmt (str): The date format string.
-            style (str): The style of the format string.
-            include_separator (bool): Whether to include a dividing line after log messages.
-            config (dict): Configuration dictionary for path shortening.
-            run_handler (RunHandler): Handler for tracking script runs.
+            fmt (str, optional): Log record format string. Defaults to None.
+            datefmt (str, optional): strftime format for timestamps. Defaults to '%H:%M:%S'.
+            style (str, optional): Format string style ('%', '{', '$'). Defaults to '%'.
+            include_separator (bool, optional): Whether to add a visual separator line. Defaults to False.
+            config (dict, optional): Application config for path shortening. Defaults to None.
+            run_handler (RunHandler, optional): RunHandler instance (unused directly here). Defaults to None.
         """
+        # Provide a default format string if None is given
+        if fmt is None:
+            fmt = "%(asctime)s %(levelname)s %(message)s"
         super().__init__(fmt, datefmt, style)
         self.include_separator = include_separator
-        self.separator_line = f"\n{BLUE}{'-'*50}{RESET}"
-        self.config = config
-        self.run_handler = run_handler
+        self.separator_line = f"\n{BLUE}{'-'*60}{RESET}"  # Slightly shorter separator
+        self.config = config or {}  # Ensure config is at least an empty dict
+        # run_handler is not used directly in format() but kept for consistency
 
-    def format(self, record):
-        # Store original values to restore them later
-        original_msg = record.msg
+    def format(self, record: logging.LogRecord) -> str:
+        """
+        Formats the LogRecord into a compact, colored string.
+        Includes path shortening applied *after* standard formatting.
+        """
+        # Store original level name for color lookup
         original_levelname = record.levelname
-        original_pathname = getattr(record, 'pathname', '')
-        original_filename = getattr(record, 'filename', '')
+        # Abbreviate level name for display
+        record.levelname = LEVEL_ABBREV.get(original_levelname, original_levelname[:1])  # Fallback to first letter
 
-        # Apply modifications
+        # Apply color based on original level
+        level_color = LEVEL_COLORS.get(original_levelname, '')
+        # Add color codes to the abbreviated level name
+        record.levelname = f"{level_color}{record.levelname}{RESET}"
+
+        # --- Perform Standard Formatting FIRST ---
+        # Let the parent class handle the core formatting using original msg and args
         try:
-            # Shorten paths in the message if it's a string
-            if isinstance(record.msg, str):
-                record.msg = re.sub(
-                    r'((?:/[^/]+)+/[^/\s:]+\.(?:applescript|py|yaml|csv))',
-                    lambda m: shorten_path(m.group(1), self.config),
-                    record.msg,
-                )
-
-            # Apply level abbreviation with color
-            level_color = LEVEL_COLORS.get(record.levelname, '')
-            record.levelname = f"{level_color}{LEVEL_ABBREV.get(record.levelname, record.levelname)}{RESET}"
-
-            # Format the record
-            result = super().format(record)
-
-            # Add separator if requested
-            if getattr(record, "section_end", False) and self.include_separator:
-                result = f"{result}{self.separator_line}"
-
-            return result
-        finally:
-            # Restore original values
-            record.msg = original_msg
+            # This ensures getMessage() is called correctly before path shortening
+            formatted = super().format(record)
+        except Exception as format_error:
+            # If the *initial* formatting fails (e.g., bad log call like logger.info("%s", val1, val2)),
+            # log the error and return a basic representation.
+            print(f"CRITICAL LOGGING ERROR during initial format: {format_error}", file=sys.stderr)
+            print(f"Original Log Record: msg='{record.msg}', args={record.args}", file=sys.stderr)
+            # Restore original level name before returning basic info
             record.levelname = original_levelname
-            if original_pathname:
-                record.pathname = original_pathname
-            if original_filename:
-                record.filename = original_filename
+            return f"FORMATTING ERROR: {record.getMessage()}"  # Return basic formatted message if possible
+
+        # --- Path Shortening on the *Formatted* String ---
+        try:
+            # Use regex to find potential paths in the already formatted string
+            # Adjusted pattern to be less greedy and potentially safer
+            path_pattern = r'((?:[A-Za-z]:|\$|\.|~)?(?:[\\/][\w\.\-\s~]+)+|(?:\.\/)[\w\.\-\s~]+)'
+            # Apply shorten_path to matched potential paths within the formatted string
+            # Check if formatted is actually a string before applying re.sub
+            if isinstance(formatted, str):
+                formatted = re.sub(path_pattern, lambda match: shorten_path(match.group(0), self.config), formatted)
+        except Exception as shorten_error:
+            # Log error during path shortening, but keep the original formatted message
+            print(f"Error during log path shortening: {shorten_error}", file=sys.stderr)
+            # Optionally log this error using a basic logger configuration if available
+
+        # Restore original levelname on the record object after formatting is done
+        # This is important if the record object is reused or inspected elsewhere
+        record.levelname = original_levelname
+
+        # Add separator line if requested
+        if getattr(record, "section_end", False) and self.include_separator:
+            formatted += self.separator_line
+
+        return formatted
 
 
 class RunTrackingHandler(logging.FileHandler):
     """
-    A file handler that adds run separation headers and footers
-    and can limit the log to a maximum number of runs.
+    A file handler that adds run separation headers/footers and trims the log
+    to a maximum number of runs based on headers.
     """
 
     def __init__(self, filename, mode='a', encoding='utf-8', delay=False, run_handler=None, logger_name="Logger"):
+        """
+        Initialize the handler.
+
+        Args:
+            filename (str): The log file path.
+            mode (str): File open mode. Defaults to 'a'.
+            encoding (str, optional): File encoding. Defaults to 'utf-8'.
+            delay (bool): If True, file opening is deferred until the first emit(). Defaults to False.
+            run_handler (RunHandler, optional): Instance for run tracking logic. Defaults to None.
+            logger_name (str): Name used in header/footer. Defaults to "Logger".
+        """
+        # Ensure directory exists before initializing FileHandler
+        ensure_directory(os.path.dirname(filename))
         super().__init__(filename, mode, encoding, delay)
         self.run_handler = run_handler
         self.logger_name = logger_name
-        self.header_written = False
-        self._closed = False
+        self._header_written = False  # Track if header for the *current* run has been written
 
-        # Write run header
-        if self.run_handler and os.path.exists(filename):
-            with open(filename, 'a', encoding='utf-8') as f:
-                f.write(self.run_handler.format_run_header(self.logger_name))
-            self.header_written = True
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        Emit a record. Writes the run header before the first record of a new run.
+        """
+        if self.run_handler and not self._header_written:
+            try:
+                # Write header if it hasn't been written for this instance/run
+                header = self.run_handler.format_run_header(self.logger_name)
+                self.stream.write(header)
+                self._header_written = True
+            except Exception:
+                self.handleError(record)  # Use standard error handling
 
-    def close(self):
-        """Write run footer when handler is closed"""
-        if self.run_handler and not self._closed:
-            with open(self.baseFilename, 'a', encoding='utf-8') as f:
-                f.write(self.run_handler.format_run_footer(self.logger_name))
+        # Emit the actual record using the parent class method
+        super().emit(record)
 
-            # Trim log file to max runs if needed
-            if hasattr(self.run_handler, 'max_runs') and self.run_handler.max_runs > 0:
-                self.run_handler.trim_log_to_max_runs(self.baseFilename)
+    def close(self) -> None:
+        """
+        Closes the stream, writes run footer, and trims the log file.
+        """
+        # Check if already closed to prevent recursion or multiple writes
+        if self.stream is None or getattr(self, "_closed", False):
+            return
 
-        self._closed = True
-        super().close()
+        try:
+            if self.run_handler:
+                # Write footer before closing
+                footer = self.run_handler.format_run_footer(self.logger_name)
+                if self.stream and hasattr(self.stream, 'write'):
+                    self.stream.write(footer)
+                    self.flush()  # Ensure footer is written
 
-    # Add property for compatibility with closed checks
-    @property
-    def closed(self):
-        return self._closed
+        except Exception:
+            # Handle errors during footer writing
+            # Cannot use handleError as stream might be closing
+            pass  # Silently ignore footer errors on close? Or print to stderr?
+
+        finally:
+            # Close the stream using parent method *before* trimming
+            # Set closed flag early to prevent issues during close()
+            self._closed = True
+            super().close()
+
+            # Trim log file *after* closing the stream
+            if self.run_handler and hasattr(self.run_handler, 'max_runs') and self.run_handler.max_runs > 0:
+                try:
+                    self.run_handler.trim_log_to_max_runs(self.baseFilename)
+                except Exception as trim_e:
+                    print(f"Error trimming log file {self.baseFilename} after close: {trim_e}", file=sys.stderr)
 
 
-def get_loggers(config: dict) -> Tuple[logging.Logger, logging.Logger, logging.Logger]:
+def get_loggers(config: dict) -> Tuple[logging.Logger, logging.Logger, logging.Logger, Optional[QueueListener]]:
     """
-    Creates and returns three loggers with optimized formatting:
-        1) console_logger: Compact format with colors
-        2) error_logger: Detailed format with context (now combined with main_logger)
-        3) analytics_logger: Detailed format with separators
+    Creates and returns loggers using QueueHandler for non-blocking file logging.
 
     Args:
         config (dict): Configuration dictionary.
 
     Returns:
-        Tuple of three loggers (console, error, analytics)
+        Tuple[logging.Logger, logging.Logger, logging.Logger, Optional[QueueListener]]:
+            Tuple containing (console_logger, error_logger, analytics_logger, queue_listener).
+            The queue_listener object needs to be stopped explicitly on application shutdown.
+            Returns None for listener if file logging setup fails.
     """
-    # Ensure base directory and subdirectories exist
-    logs_base_dir = config.get("logs_base_dir", ".")
-    ensure_directory(logs_base_dir)
-    ensure_directory(os.path.join(logs_base_dir, "analytics"))
-    ensure_directory(os.path.join(logs_base_dir, "main"))
+    listener: Optional[QueueListener] = None  # Initialize listener
+    configured_loggers: Dict[str, logging.Logger] = {}  # Track configured loggers
 
-    # Build full paths
-    main_log_file = get_full_log_path(config, "main_log_file", "main/main.log")
-    analytics_log_file = get_full_log_path(config, "analytics_log_file", "analytics/analytics.log")
+    try:
+        # --- Ensure Base Directories Exist ---
+        logs_base_dir = config.get("logs_base_dir", ".")
+        ensure_directory(logs_base_dir)  # Ensure base first
 
-    # Ensure directories for each file exist
-    ensure_directory(os.path.dirname(main_log_file))
-    ensure_directory(os.path.dirname(analytics_log_file))
+        # Determine log file paths using helper
+        logging_config = config.get("logging", {})
+        main_log_file = get_full_log_path(config, "main_log_file", "main/main.log")
+        analytics_log_file = get_full_log_path(config, "analytics_log_file", "analytics/analytics.log")
 
-    # Create run handler for tracking script runs
-    max_runs = config.get("logging", {}).get("max_runs", 3)
-    run_handler = RunHandler(max_runs=max_runs)
+        # Ensure specific log directories exist (get_full_log_path might not create subdirs)
+        ensure_directory(os.path.dirname(main_log_file))
+        ensure_directory(os.path.dirname(analytics_log_file))
 
-    # Create formatters
-    console_formatter = CompactFormatter(
-        "%(asctime)s %(levelname)s %(message)s",
-        datefmt='%H:%M:%S',
-        include_separator=False,
-        config=config,
-        run_handler=run_handler,
-    )
+        # --- Common Setup ---
+        max_runs = logging_config.get("max_runs", 3)
+        run_handler_instance = RunHandler(max_runs=max_runs)  # Single instance for run tracking
 
-    file_formatter = CompactFormatter(
-        "%(asctime)s %(levelname)s %(message)s",
-        datefmt='%Y-%m-%d %H:%M:%S',
-        include_separator=True,
-        config=config,
-        run_handler=run_handler,
-    )
+        # --- Formatters ---
+        console_formatter = CompactFormatter("%(asctime)s %(levelname)s %(message)s", datefmt='%H:%M:%S', config=config)
+        file_formatter = CompactFormatter(
+            "%(asctime)s %(levelname)s %(message)s",
+            datefmt='%Y-%m-%d %H:%M:%S',
+            include_separator=False,
+            config=config,  # Separators added by RunTrackingHandler header/footer
+        )
 
-    # Initialize console_logger
-    console_logger = logging.getLogger("console_logger")
-    if not console_logger.handlers:
-        console_logger.setLevel(logging.INFO)
-        ch = logging.StreamHandler(sys.stdout)
-        ch.setFormatter(console_formatter)
-        console_logger.addHandler(ch)
-        console_logger.propagate = False
+        # --- Console Logger (Direct Handling) ---
+        console_logger = logging.getLogger("console_logger")
+        if not console_logger.handlers:  # Configure only once
+            console_logger.setLevel(logging.INFO)  # Set level (consider reading from config)
+            ch = logging.StreamHandler(sys.stdout)
+            ch.setFormatter(console_formatter)
+            console_logger.addHandler(ch)
+            console_logger.propagate = False  # Prevent duplicate messages in root logger
+        configured_loggers["console"] = console_logger
 
-    # Initialize main logger (now combines error and main loggers)
-    main_logger = logging.getLogger("main_logger")
-    if not main_logger.handlers:
-        main_logger.setLevel(logging.INFO)  # Capture INFO level and above
+        # --- File Logging Setup (Using Queue) ---
+        log_queue = queue.Queue(-1)  # Create the queue
 
-        # Set up run tracking handler
-        fh = RunTrackingHandler(main_log_file, run_handler=run_handler, logger_name="Main Logger")
-        fh.setFormatter(file_formatter)
-        main_logger.addHandler(fh)
-        main_logger.propagate = False
+        # Create the actual file handlers that the listener will use
+        main_fh = RunTrackingHandler(main_log_file, mode='a', encoding='utf-8', run_handler=run_handler_instance, logger_name="Main Logger")
+        main_fh.setFormatter(file_formatter)
+        main_fh.setLevel(logging.INFO)  # Filter level at the handler
 
-    # Initialize analytics_logger
-    analytics_logger = logging.getLogger("analytics_logger")
-    if not analytics_logger.handlers:
-        analytics_logger.setLevel(logging.INFO)
-
-        analytics_fh = RunTrackingHandler(analytics_log_file, run_handler=run_handler, logger_name="Analytics")
+        analytics_fh = RunTrackingHandler(analytics_log_file, mode='a', encoding='utf-8', run_handler=run_handler_instance, logger_name="Analytics")
         analytics_fh.setFormatter(file_formatter)
-        analytics_logger.addHandler(analytics_fh)
-        analytics_logger.propagate = False
+        analytics_fh.setLevel(logging.INFO)  # Filter level at the handler
 
-    # Get error_logger pointing to the same handlers as main_logger
-    error_logger = main_logger
+        # --- Queue Listener (Background Thread) ---
+        # Pass all file handlers to the listener
+        listener = QueueListener(log_queue, main_fh, analytics_fh, respect_handler_level=True)
+        listener.start()
+        print("QueueListener started.", file=sys.stderr)  # Use print for setup logs
 
-    return console_logger, error_logger, analytics_logger
+        # --- Queue Handler (Used by Loggers) ---
+        # This handler puts records into the queue
+        queue_handler = QueueHandler(log_queue)
+
+        # --- Configure Main/Error Logger ---
+        main_logger = logging.getLogger("main_logger")
+        if not main_logger.handlers:  # Configure only once
+            main_logger.addHandler(queue_handler)
+            main_logger.setLevel(logging.INFO)  # Logger level must be <= handler level to pass messages
+            main_logger.propagate = False
+        error_logger = main_logger  # Alias error logger to main logger
+        configured_loggers["main"] = main_logger
+        configured_loggers["error"] = error_logger
+
+        # --- Configure Analytics Logger ---
+        analytics_logger = logging.getLogger("analytics_logger")
+        if not analytics_logger.handlers:  # Configure only once
+            analytics_logger.addHandler(queue_handler)
+            analytics_logger.setLevel(logging.INFO)  # Logger level
+            analytics_logger.propagate = False
+        configured_loggers["analytics"] = analytics_logger
+
+        # Optionally configure root logger to use queue as well (catches other module logs)
+        # Be cautious with this, might log too much if libraries are verbose
+        # root = logging.getLogger()
+        # if not any(isinstance(h, QueueHandler) for h in root.handlers):
+        #    root.addHandler(queue_handler)
+        #    root.setLevel(logging.WARNING) # Set root level higher
+
+        console_logger.debug("Logging setup with QueueListener complete.")
+        return console_logger, error_logger, analytics_logger, listener
+
+    except Exception as e:
+        # Fallback to basic config if custom setup fails
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        # Log the error using the fallback basic config
+        logging.critical(f"Failed to configure custom logging with QueueListener: {e}", exc_info=True)
+        # Return basic loggers and None for listener
+        console_fallback = logging.getLogger("console_fallback")
+        error_fallback = logging.getLogger("error_fallback")
+        analytics_fallback = logging.getLogger("analytics_fallback")
+        return console_fallback, error_fallback, analytics_fallback, None
 
 
 def get_html_report_path(config: dict, force_mode: bool = False) -> str:
@@ -381,12 +505,8 @@ def get_html_report_path(config: dict, force_mode: bool = False) -> str:
     """
     logs_base_dir = config.get("logs_base_dir", ".")
     analytics_dir = os.path.join(logs_base_dir, "analytics")
-
-    # Ensure directory exists
-    ensure_directory(analytics_dir)
+    ensure_directory(analytics_dir)  # Ensure directory exists
 
     # Choose file based on mode
-    if force_mode:
-        return os.path.join(analytics_dir, "analytics_full.html")
-    else:
-        return os.path.join(analytics_dir, "analytics_incremental.html")
+    report_filename = "analytics_full.html" if force_mode else "analytics_incremental.html"
+    return os.path.join(analytics_dir, report_filename)

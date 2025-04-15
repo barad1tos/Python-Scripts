@@ -1,40 +1,66 @@
 #!/usr/bin/env python3
+
 """
-Enhanced ExternalApiService for Music Metadata Retrieval
+External API Service for Music Metadata
 
-This module provides an optimized service for interacting with external APIs (MusicBrainz, Discogs, and Last.fm)
-to retrieve album release years and other metadata with enhanced performance and improved rate limiting.
+This module provides the `ExternalApiService` class, designed to interact with external music metadata APIs
+(MusicBrainz, Discogs, and optionally Last.fm) to retrieve and determine the original release year of albums.
 
-Key features:
-1. Moving window rate limiting for optimal API throughput while respecting API constraints
-2. Concurrent API requests with controlled parallelism
-3. Sophisticated scoring algorithm for determining original album release years
-4. Artist activity period determination for better release validation
-5. Multi-source data aggregation with intelligent conflict resolution
-6. Detailed performance metrics and structured logging
+Key Features:
+- **Multi-API Integration:** Fetches data from MusicBrainz, Discogs, and Last.fm.
+- **Advanced Rate Limiting:** Uses `EnhancedRateLimiter` with a moving window approach to maximize throughput
+    while adhering to API limits.
+- **Concurrency Control:** Manages concurrent API calls effectively.
+- **Sophisticated Scoring:** Employs a detailed scoring algorithm (`_score_original_release`) to evaluate
+    potential releases and determine the most likely original release year, considering factors like release type,
+    status, region, artist activity period, and MusicBrainz Release Group data.
+- **Artist Context:** Utilizes artist activity period and region (fetched from MusicBrainz and cached) to
+    improve scoring accuracy.
+- **Data Aggregation:** Combines results from multiple APIs for a more robust determination.
+- **Normalization & Validation:** Normalizes artist/album names for better matching and validates years.
+- **Error Handling & Retries:** Implements robust error handling and retry logic for API requests.
+- **Caching:** Caches artist activity period and region to reduce redundant API calls.
+- **Statistics & Logging:** Tracks API usage statistics and provides detailed logging for diagnostics.
+- **Prerelease Handling:** Includes logic (`should_update_album_year`) to avoid updating years for albums
+    marked as prerelease in the user's library, potentially marking them for future verification.
 
-The module contains:
-- EnhancedRateLimiter: Provides precise rate limiting using a moving window approach
-- ExternalApiService: Main service class that coordinates API requests and data processing
+Classes:
+- `EnhancedRateLimiter`: A standalone rate limiter class.
+- `ExternalApiService`: The main service class orchestrating API interactions and year determination.
 
-Example:
-    >>> import asyncio, logging
-    >>> from services.external_api_service import ExternalApiService
-    >>>
-    >>> # Setup loggers and load config
-    >>> console_logger = logging.getLogger("console")
-    >>> error_logger = logging.getLogger("error")
-    >>> service = ExternalApiService(config, console_logger, error_logger)
-    >>>
-    >>> async def get_year():
-    ...     await service.initialize()
-    ...     try:
-    ...         year, is_definitive = await service.get_album_year("Agalloch", "The White EP", "2008")
-    ...         print(f"Original release year: {year}, Definitive: {is_definitive}")
-    ...     finally:
-    ...         await service.close()
-    >>>
-    >>> asyncio.run(get_year())
+Example Usage:
+        >>> import asyncio
+        >>> import logging
+        >>> from services.external_api_service import ExternalApiService
+        >>>
+        >>> # Assume config is loaded and loggers are configured
+        >>> # config = load_my_config()
+        >>> # console_logger = logging.getLogger('console')
+        >>> # error_logger = logging.getLogger('error')
+        >>> # service = ExternalApiService(config, console_logger, error_logger)
+        >>>
+        >>> async def main():
+        ...     # await service.initialize() # Initialize the HTTP session
+        ...     # try:
+        ...     #     # Example: Get year for a well-known album
+        ...     #     artist = "Example Artist"
+        ...     #     album = "Example Album"
+        ...     #     current_year = "1999" # Optional: provide current library year
+        ...     #     # pending_service = PendingVerificationService(...) # Optional
+        ...     #
+        ...     #     year, is_definitive = await service.get_album_year(
+        ...     #         artist, album, current_year #, pending_service
+        ...     #     )
+        ...     #
+        ...     #     if year:
+        ...     #         print(f"Determined year for '{artist} - {album}': {year} (Definitive: {is_definitive})")
+        ...     #     else:
+        ...     #         print(f"Could not determine year for '{artist} - {album}'.")
+        ...     #
+        ...     # finally:
+        ...     #     await service.close() # Close the session and log stats
+        >>>
+        >>> # asyncio.run(main())
 """
 
 import asyncio
@@ -44,11 +70,11 @@ import re
 import time
 import urllib.parse
 
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+from collections import defaultdict
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import aiohttp
-import requests
 
 
 class EnhancedRateLimiter:
@@ -63,6 +89,8 @@ class EnhancedRateLimiter:
         request_timestamps (List[float]): Timestamps of recent requests
         semaphore (asyncio.Semaphore): Controls concurrent access
         logger (logging.Logger): Logger for rate limiting events
+        total_requests (int): Counter for total requests made through this limiter.
+        total_wait_time (float): Cumulative wait time due to rate limiting.
     """
 
     def __init__(
@@ -76,94 +104,133 @@ class EnhancedRateLimiter:
         Initialize the rate limiter.
 
         Args:
-            requests_per_window: Maximum requests allowed in the time window
-            window_size: Time window in seconds
-            max_concurrent: Maximum concurrent requests
-            logger: Logger for rate limiting events
+            requests_per_window (int): Maximum requests allowed in the time window. Must be > 0.
+            window_size (float): Time window in seconds. Must be > 0.
+            max_concurrent (int): Maximum concurrent requests allowed. Must be > 0.
+            logger (Optional[logging.Logger]): Logger for rate limiting events. Defaults to module logger.
+
+        Raises:
+            ValueError: If parameters are not positive numbers/integers.
 
         Example:
             >>> limiter = EnhancedRateLimiter(60, 60.0, 5)  # 60 requests/minute, max 5 concurrent
         """
+        if not isinstance(requests_per_window, int) or requests_per_window <= 0:
+            raise ValueError("requests_per_window must be a positive integer")
+        if not isinstance(window_size, (int, float)) or window_size <= 0:
+            raise ValueError("window_size must be a positive number")
+        if not isinstance(max_concurrent, int) or max_concurrent <= 0:
+            raise ValueError("max_concurrent must be a positive integer")
+
         self.requests_per_window = requests_per_window
-        self.window_size = window_size
-        self.request_timestamps = []
+        self.window_size = float(window_size)
+        # Using list as deque for simplicity, but collections.deque might be more performant for large windows
+        self.request_timestamps: List[float] = []
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.logger = logger or logging.getLogger(__name__)
-        self.total_requests = 0
-        self.total_wait_time = 0
+        self.total_requests: int = 0
+        self.total_wait_time: float = 0.0
 
     async def acquire(self) -> float:
         """
-        Acquire permission to make a request, waiting if necessary.
+        Acquire permission to make a request, waiting if necessary due to rate limits or concurrency limits.
 
         Returns:
-            float: The wait time in seconds (0 if no wait was needed)
+            float: The wait time in seconds (0 if no wait was needed for rate limiting).
 
         Example:
             >>> wait_time = await limiter.acquire()
             >>> if wait_time > 0:
-            >>>     print(f"Waited {wait_time:.2f}s for rate limiting")
+            >>>     print(f"Waited {wait_time:.3f}s for rate limiting")
         """
-        start_wait = time.time()
-        wait_time = await self._wait_if_needed()
+        # Wait for rate limit first
+        rate_limit_wait_time = await self._wait_if_needed()
         self.total_requests += 1
-        self.total_wait_time += wait_time
+        self.total_wait_time += rate_limit_wait_time
 
-        # Acquire semaphore for concurrency control (this will wait if too many concurrent requests)
+        # Then wait for concurrency semaphore
         await self.semaphore.acquire()
 
-        return wait_time
+        return rate_limit_wait_time
 
     def release(self) -> None:
         """
-        Release the semaphore after request is completed.
+        Release the concurrency semaphore after the request is completed or failed.
 
         Example:
-            >>> limiter.release()
+            >>> try:
+            ...    # make request
+            ... finally:
+            ...    limiter.release()
         """
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
         """
-        Check if we need to wait to respect rate limits.
+        Internal method to check rate limits and wait if necessary.
+
+        Uses a monotonic clock for accurate time interval calculations.
 
         Returns:
-            float: Wait time in seconds (0 if no wait needed)
+            float: Wait time in seconds (0 if no wait needed).
         """
-        now = time.time()
+        now = time.monotonic()  # Use monotonic clock for interval timing
 
         # Clean up old timestamps outside the window
+        # This check ensures we don't keep growing the list indefinitely
+        # It iterates from the left (oldest) and stops when a timestamp is within the window
         while self.request_timestamps and now - self.request_timestamps[0] > self.window_size:
             self.request_timestamps.pop(0)
 
-        # If we've reached the limit, wait until oldest timestamp leaves the window
+        # If we've reached the limit, calculate wait time until the oldest request expires
         if len(self.request_timestamps) >= self.requests_per_window:
-            wait_time = self.request_timestamps[0] + self.window_size - now
-            if wait_time > 0:
-                self.logger.debug(f"Rate limit reached, waiting {wait_time:.2f}s")
-                await asyncio.sleep(wait_time)
-                # Recursive call to check again after waiting
-                return wait_time + await self._wait_if_needed()
+            oldest_timestamp = self.request_timestamps[0]
+            wait_duration = (oldest_timestamp + self.window_size) - now
 
-        # Record this request's timestamp
-        self.request_timestamps.append(time.time())
-        return 0
+            # Only wait if the calculated duration is positive
+            if wait_duration > 0:
+                # Use 3 decimal places for milliseconds precision in logs
+                self.logger.debug(
+                    f"Rate limit reached ({len(self.request_timestamps)}/{self.requests_per_window} "
+                    f"in {self.window_size}s). Waiting {wait_duration:.3f}s"
+                )
+                await asyncio.sleep(wait_duration)
+                # After waiting, check again recursively in case multiple requests waited simultaneously
+                # The recursive call handles scenarios where the wait wasn't quite enough
+                # and adds the new wait time to the original
+                return wait_duration + await self._wait_if_needed()
+            # If wait_duration is <= 0, it means the slot freed up while we were checking.
+            # No need to wait, but we should remove the expired timestamp before proceeding.
+            # This case is implicitly handled by the while loop above if run again, or the check below.
+
+        # Record this request's timestamp *after* potential waiting and cleanup
+        self.request_timestamps.append(time.monotonic())
+        return 0.0  # No waiting was required in this pass
 
     def get_stats(self) -> Dict[str, Any]:
         """
         Get statistics about rate limiter usage.
 
         Returns:
-            Dict with stats including total requests, wait time, and average wait
+            Dict[str, Any]: Dictionary with statistics including:
+                - total_requests (int): Total requests processed by this limiter.
+                - total_wait_time (float): Total seconds spent waiting due to rate limits.
+                - avg_wait_time (float): Average wait time per request.
+                - current_window_usage (int): Number of requests in the current time window.
+                - max_requests_per_window (int): Configured limit for the window.
 
         Example:
             >>> stats = limiter.get_stats()
-            >>> print(f"Made {stats['total_requests']} requests with {stats['avg_wait_time']:.2f}s average wait")
+            >>> print(f"Made {stats['total_requests']} requests with {stats['avg_wait_time']:.3f}s average wait")
         """
+        # Ensure current window usage is up-to-date by cleaning expired timestamps
+        now = time.monotonic()
+        self.request_timestamps = [ts for ts in self.request_timestamps if now - ts <= self.window_size]
+
         return {
             "total_requests": self.total_requests,
             "total_wait_time": self.total_wait_time,
-            "avg_wait_time": self.total_wait_time / max(1, self.total_requests),
+            "avg_wait_time": self.total_wait_time / max(1, self.total_requests),  # Avoid division by zero
             "current_window_usage": len(self.request_timestamps),
             "max_requests_per_window": self.requests_per_window,
         }
@@ -171,1769 +238,1603 @@ class EnhancedRateLimiter:
 
 class ExternalApiService:
     """
-    Enhanced service for interacting with MusicBrainz and Discogs APIs.
+    Enhanced service for interacting with MusicBrainz, Discogs, and Last.fm APIs.
 
-    Features:
-    - Accurate rate limiting with moving window approach
-    - Concurrency control for parallel requests
-    - Proper authentication handling for all APIs
-    - Structured logging for debugging
-    - Year determination with improved scoring algorithm
+    Uses `EnhancedRateLimiter` for precise rate control, revised scoring for year determination,
+    and includes artist context (activity period, region) for better accuracy.
     """
 
     def __init__(self, config: Dict[str, Any], console_logger: logging.Logger, error_logger: logging.Logger):
         """
         Initialize the API service with configuration and loggers.
+        Correctly reads nested configuration parameters.
 
         Args:
-            config: Application configuration
-            console_logger: Logger for console messages
-            error_logger: Logger for error messages
+            config (Dict[str, Any]): Application configuration dictionary.
+            console_logger (logging.Logger): Logger for console messages.
+            error_logger (logging.Logger): Logger for error messages.
 
-        Example:
-            >>> service = ExternalApiService(config, console_logger, error_logger)
+        Raises:
+            ValueError: If essential configuration sections or keys are missing or invalid.
         """
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.session: Optional[aiohttp.ClientSession] = None
 
-        # Extract API configuration
+        # --- Configuration Extraction ---
         year_config = config.get("year_retrieval", {})
+        if not isinstance(year_config, dict):
+            # Log critical error and raise, as service cannot function without this section
+            self.error_logger.critical("Configuration error: 'year_retrieval' section missing or invalid.")
+            raise ValueError("Configuration error: 'year_retrieval' section missing or invalid.")
 
-        # Last.fm API configuration
-        self.lastfm_api_key = config.get("year_retrieval", {}).get("lastfm_api_key")
-        self.lastfm_api_secret = config.get("year_retrieval", {}).get("lastfm_api_secret")
-        self.use_lastfm = self.lastfm_api_key is not None and config.get("year_retrieval", {}).get("use_lastfm", True)
+        # --- Correctly read nested API Auth settings ---
+        api_auth_config = year_config.get("api_auth", {})
+        if not isinstance(api_auth_config, dict):
+            self.error_logger.critical("Configuration error: 'year_retrieval.api_auth' subsection missing or invalid.")
+            raise ValueError("Configuration error: 'year_retrieval.api_auth' subsection missing or invalid.")
 
-        # Initialize enhanced rate limiters
-        self.rate_limiters = {
-            'discogs': EnhancedRateLimiter(
-                requests_per_window=year_config.get("discogs_requests_per_minute", 25),
-                window_size=60.0,  # 1 minute window
-                max_concurrent=year_config.get("concurrent_api_calls", 3),
-                logger=console_logger,
-            ),
-            'musicbrainz': EnhancedRateLimiter(
-                requests_per_window=year_config.get("musicbrainz_requests_per_second", 1),
-                window_size=1.0,  # 1 second window
-                max_concurrent=config.get("year_retrieval", {}).get("concurrent_api_calls", 3),
-                logger=console_logger,
-            ),
-            'lastfm': EnhancedRateLimiter(
-                requests_per_window=year_config.get("lastfm_requests_per_minute", 5),
-                window_size=1.0,  # 1 second window
-                max_concurrent=year_config.get("concurrent_api_calls", 3),
-                logger=console_logger,
-            ),
-        }
+        self.discogs_token = api_auth_config.get('discogs_token')
+        self.musicbrainz_app_name = api_auth_config.get('musicbrainz_app_name', "MusicGenreUpdater/UnknownVersion")
+        self.contact_email = api_auth_config.get('contact_email')  # Required for MB
+        self.lastfm_api_key = api_auth_config.get('lastfm_api_key')
+        self.use_lastfm = bool(self.lastfm_api_key) and api_auth_config.get(
+            "use_lastfm", True
+        )  # Check use_lastfm within api_auth too? Or keep top level? Let's check top level year_config for this toggle.
+        self.use_lastfm = bool(self.lastfm_api_key) and year_config.get(
+            "use_lastfm", True
+        )  # Corrected: use_lastfm toggle remains directly under year_retrieval
 
-        self.request_counts = {'discogs': 0, 'musicbrainz': 0, 'lastfm': 0}
+        # User-Agent setup
+        if not self.contact_email:
+            self.error_logger.critical(
+                "Configuration error: 'contact_email' is missing in 'year_retrieval.api_auth'. "
+                "MusicBrainz API usage requires a valid contact email or URL."
+            )
+            self.user_agent = self.musicbrainz_app_name  # Fallback
+        else:
+            self.user_agent = f"{self.musicbrainz_app_name} ({self.contact_email})"
+        # --------------------------------------------
 
-        # API authentication and client settings
-        self.preferred_api = year_config.get('preferred_api', 'musicbrainz')
-        self.discogs_token = year_config.get('discogs_token')
-        self.musicbrainz_app_name = year_config.get('musicbrainz_app_name', "MusicGenreUpdater/2.0")
-        self.musicbrainz_contact_email = year_config.get('contact_email', 'roman.borodavkin@gmail.com')
+        # --- Rate Limiter Initialization ---
+        rate_limits_config = year_config.get("rate_limits", {})
+        processing_config = year_config.get("processing", {})
+        logic_config = year_config.get("logic", {})
+        self.scoring_config = year_config.get("scoring", {})  # Load scoring config
 
-        # Parameters for year validation
-        self.min_valid_year = year_config.get('min_valid_year', 1900)
-        self.trust_threshold = year_config.get('trust_threshold', 50)
-        self.max_year_difference = year_config.get('max_year_difference', 5)
-        self.current_year = datetime.now().year + 1  # +1 allows future releases
+        try:
+            concurrent_calls = max(1, rate_limits_config.get("concurrent_api_calls", 5))  # Read from rate_limits subsection
+            self.rate_limiters = {
+                'discogs': EnhancedRateLimiter(
+                    requests_per_window=max(1, rate_limits_config.get("discogs_requests_per_minute", 25)),
+                    window_size=60.0,
+                    max_concurrent=concurrent_calls,
+                    logger=console_logger,
+                ),
+                'musicbrainz': EnhancedRateLimiter(
+                    requests_per_window=max(1, rate_limits_config.get("musicbrainz_requests_per_second", 1)),
+                    window_size=1.0,
+                    max_concurrent=concurrent_calls,
+                    logger=console_logger,
+                ),
+                'lastfm': EnhancedRateLimiter(
+                    requests_per_window=max(1, rate_limits_config.get("lastfm_requests_per_second", 5)),
+                    window_size=1.0,
+                    max_concurrent=concurrent_calls,
+                    logger=console_logger,
+                ),
+            }
+        except ValueError as e:
+            self.error_logger.critical(f"Invalid rate limiter configuration: {e}")
+            raise ValueError(f"Invalid rate limiter configuration: {e}") from e
+        # ----------------------------------
 
-        # Cache for artist activity periods
+        # --- Year Validation Parameters ---
+        self.min_valid_year = logic_config.get('min_valid_year', 1900)
+        self.definitive_score_threshold = logic_config.get('definitive_score_threshold', 85)
+        self.definitive_score_diff = logic_config.get('definitive_score_diff', 15)
+        self.current_year = datetime.now().year
+        # ----------------------------------
+
+        # --- Caching ---
         self.activity_cache: Dict[str, Tuple[Tuple[Optional[int], Optional[int]], float]] = {}
+        self.region_cache: Dict[str, Tuple[Optional[str], float]] = {}
+        self.cache_ttl_days = processing_config.get("cache_ttl_days", 30)  # Read from processing subsection
         self.artist_period_context: Optional[Dict[str, Optional[int]]] = None
-        self.cache_ttl_days = config.get("year_retrieval", {}).get("artist_cache_ttl_days", 30)  # Default 30 days
+        # ----------------------------------
 
-        # Stats tracking
-        self.request_counts = {'discogs': 0, 'musicbrainz': 0}
+        # --- Statistics Tracking ---
+        self.request_counts = {'discogs': 0, 'musicbrainz': 0, 'lastfm': 0}
+        self.api_call_durations: Dict[str, List[float]] = {'discogs': [], 'musicbrainz': [], 'lastfm': []}
+        # ----------------------------------
+
+        # Ensure scoring_config is a dict (already done above)
+        if not isinstance(self.scoring_config, dict):
+            self.console_logger.warning("Scoring configuration missing or invalid, using default scores.")
+            self.scoring_config = {}
 
     async def initialize(self, force: bool = False) -> None:
         """
-        Initialize the aiohttp session with optimized settings.
+        Initialize the aiohttp ClientSession.
+
+        Creates a new session if one doesn't exist, is closed, or if `force` is True.
+        Sets default User-Agent and Accept headers.
 
         Args:
-            force: Force reinitialization even if a session exists
-
-        Example:
-            >>> await service.initialize()
+            force (bool): If True, close the existing session and create a new one.
         """
-        if force or not self.session or self.session.closed:
-            if force and self.session and not self.session.closed:
-                await self.session.close()
+        if force and self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None  # Ensure it's recreated below
 
-            # Create session with optimized timeout and TCP connector settings
-            timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_connect=10, sock_read=20)
+        if not self.session or self.session.closed:
+            # Sensible timeouts
+            timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=30)
+            # Connector with reasonable limits
             connector = aiohttp.TCPConnector(
-                limit=20,  # Max connections (higher than default)
-                ssl=False,  # Skip SSL verification for performance
+                limit_per_host=10,  # Limit connections per host endpoint
+                limit=50,  # Limit total connections in the pool
+                ssl=True,  # Default to verifying SSL certs
+                force_close=True,  # Close connections after request - potentially less efficient but more robust against stale connections
                 use_dns_cache=True,
-                ttl_dns_cache=300,  # Cache DNS results for 5 minutes
+                ttl_dns_cache=300,  # Cache DNS for 5 minutes
             )
+            # Default headers for all requests made by this session
+            headers = {"User-Agent": self.user_agent, "Accept": "application/json", "Accept-Encoding": "gzip, deflate"}  # Request compression
 
-            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector)
-            self.console_logger.info(f"External API session initialized with optimized settings" + (" (forced)" if force else ""))
+            self.session = aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers)
+            self.console_logger.info(f"External API session initialized with User-Agent: {self.user_agent}" + (" (forced)" if force else ""))
 
     async def close(self) -> None:
         """
-        Close the aiohttp session and log statistics.
-
-        Example:
-            >>> await service.close()
+        Close the aiohttp ClientSession and log API usage statistics.
         """
         if self.session and not self.session.closed:
-            # Log rate limiting statistics
-            discogs_stats = self.rate_limiters['discogs'].get_stats()
-            mb_stats = self.rate_limiters['musicbrainz'].get_stats()
+            # Log API statistics before closing
+            self.console_logger.info("--- API Call Statistics ---")
+            total_api_calls = 0
+            total_api_time = 0.0
+            for api_name, limiter in self.rate_limiters.items():
+                # Ensure stats are up-to-date before logging
+                stats = limiter.get_stats()
+                durations = self.api_call_durations.get(api_name, [])
+                avg_duration = sum(durations) / max(1, len(durations)) if durations else 0.0
+                total_api_calls += stats['total_requests']
+                total_api_time += sum(durations)
+                self.console_logger.info(
+                    f"API: {api_name.title():<12} | "
+                    f"Requests: {stats['total_requests']:<5} | "
+                    f"Avg Wait: {stats['avg_wait_time']:.3f}s | "  # Increased precision
+                    f"Avg Duration: {avg_duration:.3f}s"  # Increased precision
+                )
 
-            self.console_logger.info(
-                f"API Stats - Discogs: {discogs_stats['total_requests']} requests, " f"avg wait: {discogs_stats['avg_wait_time']:.2f}s"
-            )
-            self.console_logger.info(
-                f"API Stats - MusicBrainz: {mb_stats['total_requests']} requests, " f"avg wait: {mb_stats['avg_wait_time']:.2f}s"
-            )
+            if total_api_calls > 0:
+                avg_total_duration = total_api_time / total_api_calls
+                self.console_logger.info(f"Total API Calls: {total_api_calls}, Average Call Duration: {avg_total_duration:.3f}s")
+            else:
+                self.console_logger.info("No API calls were made during this session.")
+            self.console_logger.info("---------------------------")
 
             await self.session.close()
             self.console_logger.info("External API session closed")
 
     async def _make_api_request(
-        self, api_name: str, url: str, headers: Dict[str, str] = None, max_retries: int = 3, base_delay: float = 1.0
+        self,
+        api_name: str,
+        url: str,
+        params: Optional[Dict[str, Union[str, int]]] = None,  # Allow int params
+        headers_override: Optional[Dict[str, str]] = None,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        timeout_override: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Make an API request with rate limiting, error handling, and retry logic.
+        Includes enhanced logging for diagnosing failures.
 
         Args:
-            api_name: API name for rate limiting ('musicbrainz' or 'discogs')
-            url: Full URL to request
-            headers: Request headers
-            max_retries: Maximum number of retry attempts (default: 3)
-            base_delay: Base delay for exponential backoff (default: 1s)
+            api_name (str): API name ('musicbrainz', 'discogs', 'lastfm').
+            url (str): Full URL to request.
+            params (Optional[Dict[str, Union[str, int]]]): Optional query parameters.
+            headers_override (Optional[Dict[str, str]]): Headers to override session defaults.
+            max_retries (int): Max retry attempts for 5xx/429/timeouts.
+            base_delay (float): Base delay for exponential backoff.
+            timeout_override (Optional[int]): Specific total timeout for this request.
 
         Returns:
-            Response data as dictionary or None if request failed
+            Optional[Dict[str, Any]]: Parsed JSON response or None on failure.
         """
-        if not self.session:
+        if not self.session or self.session.closed:
             await self.initialize()
+        if not self.session or self.session.closed:
+            self.error_logger.error(f"[{api_name}] Session not available for request to {url}")
+            return None
 
-        if not headers:
-            headers = {}
-
-        # Add appropriate authentication and user agent
-        if api_name == 'discogs':
-            if self.discogs_token:
-                headers['Authorization'] = f'Discogs token={self.discogs_token}'
-            headers['User-Agent'] = f'{self.musicbrainz_app_name} ({self.musicbrainz_contact_email})'
-        elif api_name == 'musicbrainz':
-            headers['User-Agent'] = f'{self.musicbrainz_app_name} ({self.musicbrainz_contact_email})'
+        request_headers = self.session.headers.copy()
+        if api_name == 'discogs' and self.discogs_token:
+            request_headers['Authorization'] = f'Discogs token={self.discogs_token}'
+        if headers_override:
+            request_headers.update(headers_override)
 
         limiter = self.rate_limiters.get(api_name)
         if not limiter:
-            self.error_logger.error(f"No rate limiter found for API: {api_name}")
+            self.error_logger.error(f"No rate limiter configured for API: {api_name}")
             return None
 
-        # Add retry logic with exponential backoff
-        import random
+        request_timeout = aiohttp.ClientTimeout(total=timeout_override) if timeout_override else self.session.timeout
+        last_exception: Optional[Exception] = None
+        # Construct full URL with params for logging *before* the loop
+        log_url = url + (f"?{urllib.parse.urlencode(params or {}, safe=':/')}" if params else "")
 
-        for retry in range(max_retries + 1):  # +1 for initial attempt
+        for attempt in range(max_retries + 1):
+            wait_time = 0.0
+            start_time = 0.0
+            elapsed = 0.0
+            response_status = -1
+            response_text_snippet = "[No Response Body]"  # Default snippet
+
             try:
-                # Get permission from rate limiter (this will wait if needed)
                 wait_time = await limiter.acquire()
-                if wait_time > 1.0:
-                    self.console_logger.debug(f"Waited {wait_time:.2f}s for {api_name} rate limiting")
+                if wait_time > 0.1:
+                    self.console_logger.debug(f"[{api_name}] Waited {wait_time:.3f}s for rate limiting")
 
-                # Track request count
                 self.request_counts[api_name] = self.request_counts.get(api_name, 0) + 1
+                start_time = time.monotonic()
 
-                # Make the actual request
-                start_time = time.time()
-                async with self.session.get(url, headers=headers, timeout=10) as response:
-                    elapsed = time.time() - start_time
+                async with self.session.get(url, params=params, headers=request_headers, timeout=request_timeout) as response:
+                    elapsed = time.monotonic() - start_time
+                    response_status = response.status
+                    self.api_call_durations[api_name].append(elapsed)
 
-                    # Log request details
-                    self.console_logger.debug(f"{api_name.title()} request: {url} - {response.status} ({elapsed:.2f}s)")
+                    # --- ADDED: Log headers being sent for Discogs ---
+                    # Note: Logging headers here, after the request is sent but before processing response.
+                    # If logging *before* sending is desired, move this block before the `async with`.
+                    if api_name == 'discogs':
+                        # Log only relevant headers for security/brevity if needed, but let's log all for now
+                        self.console_logger.debug(f"[discogs] Sending Headers: {request_headers}")
+                    # ------------------------------------------------
 
-                    # Check for rate limiting headers
-                    if api_name == 'discogs' and 'X-RateLimit-Remaining' in response.headers:
-                        remaining = response.headers.get('X-RateLimit-Remaining')
-                        limit = response.headers.get('X-RateLimit-Limit')
-                        self.console_logger.debug(f"Discogs rate limit: {remaining}/{limit} remaining")
+                    response_text_snippet = "[Could not read text]"
+                    try:
+                        # Read limited text for logging ALL Discogs responses
+                        if api_name == 'discogs':
+                            raw_text = await response.text(encoding='utf-8', errors='ignore')
+                            response_text_snippet = raw_text[:500]  # Log more characters for Discogs
+                            self.console_logger.debug(f"====== DISCORS RAW RESPONSE (Status: {response_status}) ======")
+                            self.console_logger.debug(response_text_snippet)
+                            self.console_logger.debug("====== END DISCORS RAW RESPONSE ====== ")
+                        else:
+                            # Keep shorter snippet for other APIs unless needed
+                            response_text_snippet = await response.text(encoding='utf-8', errors='ignore')
+                            response_text_snippet = response_text_snippet[:200]
+                    except Exception as read_err:
+                        response_text_snippet = f"[Error Reading Response: {read_err}]"
+                        self.error_logger.warning(f"[{api_name}] Failed to read response body: {read_err}")
 
-                    # Handle server errors with retries (503, 502, etc.)
-                    if response.status >= 500:
-                        # If we have retries left, wait and try again
-                        if retry < max_retries:
-                            error_text = await response.text()
+                    # Log basic request outcome
+                    self.console_logger.debug(f"[{api_name}] Request (Attempt {attempt+1}): {log_url} - Status: {response_status} ({elapsed:.3f}s)")
+
+                    # --- Handle Response Status ---
+                    # Retry on 429 or 5xx
+                    if response_status == 429 or response_status >= 500:
+                        last_exception = aiohttp.ClientResponseError(
+                            response.request_info, response.history, status=response_status, message=response_text_snippet
+                        )
+                        if attempt < max_retries:
+                            delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                            retry_after_header = response.headers.get('Retry-After')
+                            if retry_after_header:
+                                try:
+                                    retry_after_seconds = int(retry_after_header)
+                                    delay = max(delay, retry_after_seconds)
+                                    self.console_logger.warning(f"[{api_name}] Respecting Retry-After header: {retry_after_seconds}s")
+                                except ValueError:
+                                    pass
                             self.console_logger.warning(
-                                f"{api_name.title()} server error ({response.status}), retrying {retry+1}/{max_retries}: {error_text[:100]}"
+                                f"[{api_name}] Status {response_status}, retrying {attempt+1}/{max_retries} "
+                                f"in {delay:.2f}s. URL: {url}. Snippet: {response_text_snippet}"
                             )
-
-                            # Calculate delay with exponential backoff and jitter
-                            delay = base_delay * (2**retry) * (0.5 + random.random())
                             await asyncio.sleep(delay)
                             continue
+                        else:
+                            self.error_logger.error(
+                                f"[{api_name}] Request failed after {max_retries + 1} attempts with status {response_status}. "
+                                f"URL: {url}. Snippet: {response_text_snippet}"
+                            )
+                            return None
 
-                    # Handle other errors
-                    if response.status != 200:
-                        error_text = await response.text()
-                        self.error_logger.warning(f"{api_name.title()} API error: {response.status} - {error_text[:200]}")
+                    # Fail definitively on other errors (e.g., 404, 401, 403)
+                    if not response.ok:
+                        self.error_logger.warning(
+                            f"[{api_name}] API request failed with status {response_status}. URL: {url}. Snippet: {response_text_snippet}"
+                        )
+                        last_exception = aiohttp.ClientResponseError(
+                            response.request_info, response.history, status=response_status, message=response_text_snippet
+                        )
                         return None
 
+                    # Success (2xx) - Try to parse JSON
                     try:
-                        return await response.json()
-                    except Exception as e:
-                        self.error_logger.error(f"Error parsing {api_name} JSON response: {e}")
+                        if 'application/json' in response.headers.get('Content-Type', ''):
+                            # Use the already read text if possible, otherwise re-read with response.json()
+                            # This avoids reading twice but requires care if response_text_snippet was truncated
+                            # Let's stick to response.json() for safety unless performance is critical
+                            return await response.json()
+                        else:
+                            self.error_logger.warning(
+                                f"[{api_name}] Received non-JSON response from {url}. "
+                                f"Content-Type: {response.headers.get('Content-Type')}. Snippet: {response_text_snippet}"
+                            )
+                            return None
+                    except (aiohttp.ContentTypeError, ValueError, Exception) as json_error:  # Broader catch for json issues
+                        self.error_logger.error(
+                            f"[{api_name}] Error parsing JSON response from {url}: {json_error}. Snippet: {response_text_snippet}"
+                        )
+                        last_exception = json_error
                         return None
 
-            except asyncio.TimeoutError:
-                # If we have retries left, retry
-                if retry < max_retries:
-                    self.console_logger.warning(f"{api_name.title()} request timed out, retrying {retry+1}/{max_retries}: {url}")
-                    # Exponential backoff with jitter
-                    delay = base_delay * (2**retry) * (0.5 + random.random())
+            except asyncio.TimeoutError as timeout_error:
+                elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
+                self.api_call_durations[api_name].append(elapsed)
+                last_exception = timeout_error
+                if attempt < max_retries:
+                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                    self.console_logger.warning(
+                        f"[{api_name}] Request timed out after {elapsed:.2f}s (Attempt {attempt+1}), retrying in {delay:.2f}s: {url}"
+                    )
                     await asyncio.sleep(delay)
                     continue
                 else:
-                    self.error_logger.warning(f"{api_name.title()} request timed out after {max_retries} retries: {url}")
+                    self.error_logger.error(f"[{api_name}] Request timed out after {max_retries + 1} attempts ({elapsed:.2f}s): {url}")
+                    return None
+            except aiohttp.ClientError as client_error:
+                elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
+                self.api_call_durations[api_name].append(elapsed)
+                self.error_logger.error(f"[{api_name}] Client error during request to {url} (Attempt {attempt+1}): {client_error}")
+                last_exception = client_error
+                if attempt < max_retries and isinstance(client_error, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
+                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                    await asyncio.sleep(delay)
+                    continue
+                else:
                     return None
             except Exception as e:
-                self.error_logger.error(f"Error making {api_name} request: {e}")
+                elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
+                self.api_call_durations[api_name].append(elapsed)
+                self.error_logger.exception(f"[{api_name}] Unexpected error making request to {url} (Attempt {attempt+1}): {e}")
+                last_exception = e
                 return None
             finally:
-                # Always release the rate limiter semaphore
-                limiter.release()
+                if limiter:
+                    limiter.release()
 
-        # If we've exhausted all retries
+        # Should not be reached
+        self.error_logger.error(f"[{api_name}] Request loop ended without returning for URL: {url}. Last exception: {last_exception}")
         return None
 
+    # `should_update_album_year` remains the same as provided in the previous response.
+    # Ensure it gets `pending_verification_service` passed correctly.
     def should_update_album_year(
         self,
         tracks: List[Dict[str, str]],
         artist: str = "",
         album: str = "",
         current_library_year: str = "",
-        pending_verification_service=None,
+        pending_verification_service=None,  # Pass the service instance
     ) -> bool:
         """
         Determines whether to update the year for an album based on the status of its tracks.
 
         Args:
-            tracks: List of album tracks
-            artist: Artist name (for logging)
-            album: Album name (for logging)
-            current_library_year: Current year in the library
-            pending_verification_service: Service for marking albums for verification
+            tracks (List[Dict[str, str]]): List of track dictionaries for the album.
+            artist (str): Artist name (for logging).
+            album (str): Album name (for logging).
+            current_library_year (str): Current year value in the library.
+            pending_verification_service: Instance of PendingVerificationService or None.
 
         Returns:
-            True if you can update the year, False if you need to keep the current year
-
-        Example:
-            >>> can_update = service.should_update_album_year(album_tracks, "Artist", "Album Name", "2020")
-            >>> if can_update:
-            >>>     # proceed with year update
-            >>> else:
-            >>>     # keep current year
+            bool: True if the year can be updated based on track status, False otherwise.
         """
+        if not tracks:  # If no tracks provided, assume update is ok (or handle as error?)
+            return True
+
         prerelease_count = sum(1 for track in tracks if track.get("trackStatus", "").lower() == "prerelease")
         subscription_count = sum(1 for track in tracks if track.get("trackStatus", "").lower() == "subscription")
         total_tracks = len(tracks)
 
         # If there is at least one track in prerelease status
         if prerelease_count > 0:
-            # If there are no tracks in the subscription status, or if the pre-release tracks are more than 50%
-            if subscription_count == 0 or prerelease_count > total_tracks * 0.5:
+            # If there are no subscription tracks, OR if prerelease tracks are the majority (>50%)
+            if subscription_count == 0 or prerelease_count * 2 > total_tracks:
                 self.console_logger.info(
                     f"Album '{artist} - {album}' has {prerelease_count}/{total_tracks} tracks in prerelease status. "
-                    f"Keeping current year: {current_library_year}"
+                    f"Keeping current year: {current_library_year or 'N/A'}"
                 )
 
                 # Mark for future verification if service is available
                 if pending_verification_service:
-                    pending_verification_service.mark_for_verification(artist, album)
+                    try:
+                        # Use original artist/album names for consistency if available, else normalized
+                        pending_verification_service.mark_for_verification(artist, album)
+                    except Exception as e_pvs:
+                        self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
 
-                return False
+                return False  # Do not update year if prerelease conditions met
 
-        return True
+        return True  # OK to update year based on track status
 
+    # `get_album_year` remains the same as provided in the previous response (using the revised logic).
     async def get_album_year(
         self, artist: str, album: str, current_library_year: Optional[str] = None, pending_verification_service=None
     ) -> Tuple[Optional[str], bool]:
         """
-        Determine the original release year for an album using optimized API calls.
+        Determine the original release year for an album using optimized API calls and revised scoring.
 
-        This enhanced method prioritizes MusicBrainz release group dates and implements
-        a more robust scoring system with three different data sources: MusicBrainz, Discogs,
-        and Last.fm.
+        This REVISED method prioritizes MusicBrainz release group dates, uses an improved
+        scoring system across MusicBrainz, Discogs, and Last.fm, and avoids biasing
+        towards the current library year.
 
         Args:
-            artist: Artist name
-            album: Album name
-            current_library_year: Year currently in the library (if any)
-            pending_verification_service: Service to track albums needing future verification
+            artist (str): Artist name.
+            album (str): Album name.
+            current_library_year (Optional[str]): Year currently in the library (used for context only).
+            pending_verification_service: Instance of PendingVerificationService or None.
 
         Returns:
-            Tuple of (determined_year, is_definitive)
-            - determined_year: The determined original release year as a string, or None if not found
-            - is_definitive: False if the result is uncertain and should be verified later
-
-        Example:
-            >>> year, is_definitive = await service.get_album_year("Vildhjarta", "Thousands of Evils", "2013")
-            >>> print(f"Original release year: {year}, Definitive: {is_definitive}")
+            Tuple[Optional[str], bool]: (determined_year, is_definitive)
+            - determined_year: The determined original release year as a string, or None if not found/determined.
+            - is_definitive: True if the result is considered highly confident based on scoring thresholds.
         """
-        # Normalize inputs to improve matching
+        # Normalize inputs for API matching but keep original for logging/reporting
         artist_norm = self._normalize_name(artist)
         album_norm = self._normalize_name(album)
+        log_artist = artist if artist != artist_norm else artist_norm  # Prefer original if different
+        log_album = album if album != album_norm else album_norm
 
-        self.console_logger.info(f"Searching for original release year: '{artist_norm} - {album_norm}' (current: {current_library_year or 'none'})")
+        self.console_logger.info(f"Searching for original release year: '{log_artist} - {log_album}' (current: {current_library_year or 'none'})")
 
-        # Special handling for very recent/future releases
-        current_year = datetime.now().year
-
-        if current_library_year:
-            try:
-                library_year_int = int(current_library_year)
-                # If the library year is current or future year, trust it
-                if library_year_int >= current_year:
-                    self.console_logger.info(
-                        f"Current library year {current_library_year} indicates a very recent or upcoming release. Trusting library data."
-                    )
-                    return current_library_year, True
-            except ValueError:
-                pass
-
-        # Check if we should update based on track status
-        album_tracks = []  # You'll need to provide the actual tracks for this album here
-        if album_tracks and not self.should_update_album_year(
-            album_tracks, artist_norm, album_norm, current_library_year, pending_verification_service
-        ):
-            return current_library_year, False
-
-        # Get artist's activity period for better year evaluation
-        start_year, end_year = await self.get_artist_activity_period(artist_norm)
-
-        # Set artist period context for this request
-        self.artist_period_context = {'start_year': start_year, 'end_year': end_year}
-
-        self.console_logger.info(f"Artist activity period: {start_year or 'unknown'} - {end_year or 'present'}")
-
+        # --- Pre-computation Steps ---
+        start_year: Optional[int] = None
+        end_year: Optional[int] = None
+        artist_region: Optional[str] = None
         try:
-            # Make API calls concurrently - this is a key optimization
+            # 1. Get artist's activity period for context (cached)
+            start_year, end_year = await self.get_artist_activity_period(artist_norm)
+            self.artist_period_context = {'start_year': start_year, 'end_year': end_year}  # Set context for this run
+            activity_log = f"({start_year or '?'} - {end_year or 'present'})" if start_year or end_year else "(activity period unknown)"
+            self.console_logger.info(f"Artist activity period context: {activity_log}")
+
+            # 2. Get artist's likely region for scoring context (cached)
+            artist_region = await self._get_artist_region(artist_norm)
+            if artist_region:
+                self.console_logger.info(f"Artist region context: {artist_region.upper()}")
+        except Exception as context_err:
+            self.error_logger.warning(f"Error fetching artist context for '{log_artist}': {context_err}")
+            # Continue without context, scoring will be less accurate
+
+        # --- Fetch Data Concurrently ---
+        try:
             api_tasks = [
-                self._get_scored_releases_from_musicbrainz(artist_norm, album_norm),
-                self._get_scored_releases_from_discogs(artist_norm, album_norm),
+                # Pass artist_region context to API methods
+                self._get_scored_releases_from_musicbrainz(artist_norm, album_norm, artist_region),
+                self._get_scored_releases_from_discogs(artist_norm, album_norm, artist_region),
             ]
-
-            # Add Last.fm request if configured
             if self.use_lastfm:
-                api_tasks.append(self._get_year_from_lastfm(artist_norm, album_norm))
+                # Last.fm method doesn't use region context currently
+                api_tasks.append(self._get_scored_releases_from_lastfm(artist_norm, album_norm))
 
-            # Wait for all API calls to complete
+            # Wait for all API calls to complete, collecting results or exceptions
             results = await asyncio.gather(*api_tasks, return_exceptions=True)
 
-            # Process results
-            musicbrainz_data = results[0] if isinstance(results[0], list) else []
-            discogs_data = results[1] if len(results) > 1 and isinstance(results[1], list) else []
+            # --- Process Results ---
+            all_releases: List[Dict[str, Any]] = []
+            api_sources_found: Set[str] = set()
 
-            # Process Last.fm results if available
-            lastfm_data = []
-            if self.use_lastfm and len(results) > 2:
-                if isinstance(results[2], dict) and results[2].get('year'):
-                    lastfm_year = results[2].get('year')
-                    lastfm_source = results[2].get('source', 'Unknown')
-                    lastfm_confidence = results[2].get('confidence', 60)
+            api_names = ['musicbrainz', 'discogs', 'lastfm'] if self.use_lastfm else ['musicbrainz', 'discogs']
+            for i, result in enumerate(results):
+                api_name = api_names[i]
+                if isinstance(result, Exception):
+                    # Log API call failures clearly
+                    self.error_logger.warning(f"API call to {api_name} failed for '{log_artist} - {log_album}': {type(result).__name__}: {result}")
+                elif isinstance(result, list) and result:
+                    all_releases.extend(result)
+                    api_sources_found.add(api_name)
+                    self.console_logger.info(f"Received {len(result)} scored releases from {api_name.title()}")
+                elif not result:  # Explicitly check for empty list/None
+                    self.console_logger.info(f"No results from {api_name.title()} for '{log_artist} - {log_album}'")
 
-                    self.console_logger.info(f"Last.fm found year {lastfm_year} with confidence {lastfm_confidence} from source: {lastfm_source}")
-
-                    # Add Last.fm result in standard format
-                    lastfm_data = [
-                        {
-                            'source': 'lastfm',
-                            'title': album_norm,
-                            'year': lastfm_year,
-                            'confidence': lastfm_confidence,
-                            'source_detail': lastfm_source,
-                            'score': 0,
-                        }
-                    ]
-
-                    # Calculate score for Last.fm result
-                    for release in lastfm_data:
-                        release['score'] = self._score_lastfm_result(release, artist_norm, album_norm)
-
-            # Combine releases from all sources
-            all_releases = []
-            if musicbrainz_data:
-                all_releases.extend(musicbrainz_data)
-            if discogs_data:
-                all_releases.extend(discogs_data)
-            if lastfm_data:
-                all_releases.extend(lastfm_data)
-
-            # Nothing found or very minimal information
             if not all_releases:
-                self.console_logger.info(f"No release data found for '{artist} - {album}'")
+                self.console_logger.warning(f"No release data found from any API for '{log_artist} - {log_album}'")
+                # Mark for verification only if we have a potential year to keep
+                if pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
+                    try:
+                        pending_verification_service.mark_for_verification(artist, album)
+                        self.console_logger.info(
+                            f"Marked '{log_artist} - {log_album}' for future verification (no API data). Using current year: {current_library_year}"
+                        )
+                    except Exception as e_pvs:
+                        self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
+                    return current_library_year, False  # Return current year, not definitive
+                else:
+                    # No current year or it's invalid, and no API data -> cannot determine
+                    return None, False
 
-                # If we have a pending verification service, mark this album for future checking
-                if pending_verification_service and current_library_year:
-                    pending_verification_service.mark_for_verification(artist, album)
-                    self.console_logger.info(f"Marked '{artist} - {album}' for future verification. Using current year: {current_library_year}")
-
-                # Return the current library year but mark as non-definitive
-                return current_library_year, False
-
-            # Check if we have minimal data (less than 2 sources with reliable data)
-            if len(all_releases) < 2:
-                self.console_logger.info(f"Limited release data found for '{artist} - {album}' (only {len(all_releases)} sources)")
-
-                # Use limited data but mark for future verification
-                if pending_verification_service and current_library_year:
-                    pending_verification_service.mark_for_verification(artist, album)
-                    self.console_logger.info(f"Marked '{artist} - {album}' for future verification due to limited data")
-
-            # Cluster releases by years with improved logic
-            year_clusters = {}
-            year_scores = {}
+            # --- Aggregate Scores by Year ---
+            year_scores = defaultdict(list)  # Store list of scores for each year
+            valid_years_found: Set[str] = set()
 
             for release in all_releases:
                 year = release.get('year')
-                if not year:
-                    continue
+                score = release.get('score', 0)
+                # Check if year is valid before adding
+                if self._is_valid_year(year):
+                    year_scores[year].append(score)
+                    valid_years_found.add(year)
+                # else: # Optional: log discarded invalid years
+                #     self.console_logger.debug(f"Discarding release with invalid year: {release.get('title')} ({year})")
 
-                # Cluster releases by year
-                if year not in year_clusters:
-                    year_clusters[year] = []
-                year_clusters[year].append(release)
-
-            # New approach: use only the best score per year
-            for year, releases in year_clusters.items():
-                # Sort releases by score
-                sorted_releases = sorted(releases, key=lambda x: x.get('score', 0), reverse=True)
-
-                # Take only the highest-scoring release for this year
-                best_release = sorted_releases[0]
-                best_score = best_release.get('score', 0)
-
-                # For exact title+artist matches, use the full score
-                if best_score >= 100:  # Likely an exact match
-                    year_scores[year] = best_score
-                else:
-                    # For partial matches, we're more cautious
-                    year_scores[year] = best_score
-
-                self.console_logger.info(f"Year {year} best match: {best_release.get('title')} with score {best_score}")
-
-                # If this matches the current library year, give it a significant bonus
-                # This helps maintain stability unless there's strong evidence for another year
-                if current_library_year and year == current_library_year:
-                    library_bonus = self.config.get('year_retrieval', {}).get('library_year_bonus', 25)
-                    year_scores[year] += library_bonus
-                    self.console_logger.info(f"Added library year bonus of {library_bonus} to year {year}")
-
-            # Sort years by score
-            sorted_years = sorted(year_scores.items(), key=lambda x: x[1], reverse=True)
-
-            # Log results
-            self.console_logger.info(f"Year scores: " + ", ".join([f"{y}:{s}" for y, s in sorted_years]))
-
-            # Special handling for very recent releases
-            if current_library_year:
-                try:
-                    library_year_int = int(current_library_year)
-                    if library_year_int >= current_year:
-                        # This is a recent/upcoming release - prefer the library year
-                        self.console_logger.info(
-                            f"Current library year {current_library_year} is very recent/upcoming. "
-                            f"Keeping it unless there's very strong evidence otherwise."
-                        )
-
-                        # Only override if we have a high-confidence earlier year
-                        if sorted_years and sorted_years[0][1] > 80 and int(sorted_years[0][0]) < library_year_int:
-                            self.console_logger.info(
-                                f"Found high-confidence earlier year {sorted_years[0][0]} with score {sorted_years[0][1]}. "
-                                f"Overriding current year {current_library_year}."
-                            )
-                            return sorted_years[0][0], True
-
-                        return current_library_year, True
-                except ValueError:
-                    pass
-
-            # Take the year with the highest score
-            if sorted_years:
-                best_year = sorted_years[0][0]
-                best_score = sorted_years[0][1]
-
-                # Additional check: if there are multiple years with close scores,
-                # prefer the earliest year (more likely to be the original release)
-                close_years = [y for y, s in sorted_years if s >= best_score * 0.85]
-
-                if len(close_years) > 1:
-                    close_years_int = []
-                    for y in close_years:
-                        try:
-                            close_years_int.append(int(y))
-                        except ValueError:
-                            continue
-
-                    if close_years_int:
-                        # Among years with close scores, take the earliest (but valid)
-                        valid_years = [y for y in close_years_int if self._is_valid_year(str(y), 75)]
-                        if valid_years:
-                            earliest_valid_year = str(min(valid_years))
-                            self.console_logger.info(f"Multiple high-scoring years found. Using earliest valid: {earliest_valid_year}")
-
-                            # Determine if this is a definitive result based on score
-                            is_definitive = best_score >= self.trust_threshold
-                            if not is_definitive and pending_verification_service:
-                                pending_verification_service.mark_for_verification(artist, album)
-
-                            return earliest_valid_year, is_definitive
-
-                self.console_logger.info(f"Selected best year by score: {best_year} (score: {best_score})")
-
-                # Final check: if the selected year is much newer than the current library year,
-                # and the current library year scores reasonably well, stick with the library year
-                if current_library_year and best_year != current_library_year:
+            if not year_scores:
+                self.console_logger.warning(f"No valid years found after processing API results for '{log_artist} - {log_album}'")
+                if pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
                     try:
-                        best_year_int = int(best_year)
-                        current_year_int = int(current_library_year)
+                        pending_verification_service.mark_for_verification(artist, album)
+                    except Exception as e_pvs:
+                        self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
+                    return current_library_year, False
+                else:
+                    return None, False
 
-                        # If current year is earlier and scores at least 70% of best year
-                        if current_year_int < best_year_int and year_scores.get(current_library_year, 0) >= best_score * 0.7:
+            # --- Determine Best Year based on Aggregated Scores ---
 
-                            # If significant difference (>3 years) and current year is valid
-                            if best_year_int - current_year_int > 3 and self._is_valid_year(current_library_year, 60):
+            # Calculate the maximum score achieved for each year found
+            final_year_scores: Dict[str, int] = {year: max(scores) for year, scores in year_scores.items()}
 
-                                self.console_logger.info(
-                                    f"Keeping current library year {current_library_year} instead of newer {best_year} "
-                                    + f"(scores: {year_scores.get(current_library_year, 0)} vs {best_score})"
-                                )
+            # Sort years: primarily by score (desc), secondarily by year (asc - prefer earlier for ties)
+            sorted_years = sorted(
+                final_year_scores.items(), key=lambda item: (-item[1], int(item[0]))  # Note: int(item[0]) assumes year is numeric string
+            )
 
-                                # Mark for verification if the scores are close
-                                is_definitive = best_score - year_scores.get(current_library_year, 0) >= 25
-                                if not is_definitive and pending_verification_service:
-                                    pending_verification_service.mark_for_verification(artist, album)
+            # Log the ranked years and their highest scores
+            log_scores = ", ".join([f"{y}:{s}" for y, s in sorted_years[:5]])  # Log top 5 for brevity
+            self.console_logger.info(f"Ranked year scores (Year:MaxScore): {log_scores}" + ("..." if len(sorted_years) > 5 else ""))
 
-                                return current_library_year, is_definitive
-                    except ValueError:
-                        pass
+            # --- Select Final Year and Determine Confidence ---
+            best_year, best_score = sorted_years[0]
+            is_definitive = False
 
-                # Determine if the result is definitive based on the score
-                is_definitive = best_score >= self.trust_threshold
-                if not is_definitive and pending_verification_service:
+            # Condition 1: Score meets the absolute threshold
+            high_score_met = best_score >= self.definitive_score_threshold
+
+            # Condition 2: Score is significantly higher than the next best year (if one exists)
+            significant_diff_met = True  # Default to True if only one year was found
+            if len(sorted_years) > 1:
+                second_best_score = sorted_years[1][1]
+                score_difference = best_score - second_best_score
+                significant_diff_met = score_difference >= self.definitive_score_diff
+                self.console_logger.debug(f"Score difference to next best year: {score_difference} (Threshold: {self.definitive_score_diff})")
+            else:
+                self.console_logger.debug("Only one candidate year found.")
+
+            # Final definitive status depends on both conditions
+            is_definitive = high_score_met and significant_diff_met
+
+            self.console_logger.info(
+                f"Selected year: {best_year} (Score: {best_score}). "
+                f"Definitive? {is_definitive} (Score Met: {high_score_met}, Diff Met: {significant_diff_met})"
+            )
+
+            # If not definitive, mark for potential future verification
+            if not is_definitive and pending_verification_service:
+                try:
                     pending_verification_service.mark_for_verification(artist, album)
+                    self.console_logger.info(f"Result for '{log_artist} - {log_album}' is not definitive. Marked for future verification.")
+                except Exception as e_pvs:
+                    self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
 
-                return best_year, is_definitive
+            # Return the best year found and whether it's considered definitive
+            return best_year, is_definitive
 
-            # If we can't determine a year, mark for verification and return current year
-            if pending_verification_service and current_library_year:
-                pending_verification_service.mark_for_verification(artist, album)
-
-            return current_library_year, False
+        except Exception as e:
+            # Catch unexpected errors during the main processing logic
+            self.error_logger.exception(f"Unexpected error in get_album_year for '{log_artist} - {log_album}': {e}")
+            # Fallback: return current library year if valid, otherwise None; mark as not definitive
+            if current_library_year and self._is_valid_year(current_library_year):
+                return current_library_year, False
+            else:
+                return None, False
         finally:
-            # Always clear the artist period context after use
+            # Crucial: Clear the context after the function finishes or errors out
             self.artist_period_context = None
 
-    async def get_artist_activity_period(self, artist: str) -> Tuple[Optional[int], Optional[int]]:
+    # `get_artist_activity_period` remains the same as provided in the previous response.
+    async def get_artist_activity_period(self, artist_norm: str) -> Tuple[Optional[int], Optional[int]]:
         """
-        Retrieve the period of activity for an artist from MusicBrainz.
-        The result is cached to avoid redundant API calls.
+        Retrieve the period of activity for an artist from MusicBrainz, with caching.
 
         Args:
-            artist (str): The artist's name.
+            artist_norm (str): The normalized artist's name.
 
         Returns:
             Tuple[Optional[int], Optional[int]]: (start_year, end_year).
-            If end_year is None, the artist is still active.
+            If end_year is None, the artist is likely still active. Returns (None, None) on failure.
         """
-        # Clean cache if it's too large
-        if len(self.activity_cache) > 100:
-            self._clean_activity_cache()
+        cache_key = f"activity_{artist_norm}"
+        cache_ttl_seconds = self.cache_ttl_days * 86400
+        current_time = time.monotonic()
 
-        # Check cache first to avoid redundant API calls
-        cache_key = f"activity_{artist.lower()}"
-        # Return cached data if available
+        # Check cache first
         if cache_key in self.activity_cache:
-            cache_ttl_seconds = self.cache_ttl_days * 86400  # Convert days to seconds
-            current_time = time.time()
+            (start_year, end_year), timestamp = self.activity_cache[cache_key]
+            if current_time - timestamp < cache_ttl_seconds:
+                self.console_logger.debug(f"Using cached activity period for '{artist_norm}': {start_year or '?'} - {end_year or 'present'}")
+                return start_year, end_year
+            else:
+                self.console_logger.debug(f"Activity cache expired for '{artist_norm}'")
+                del self.activity_cache[cache_key]  # Remove expired entry
 
-            if cache_key in self.activity_cache:
-                (start_year, end_year), timestamp = self.activity_cache[cache_key]
+        # Clean cache periodically if it grows too large (simple strategy)
+        if len(self.activity_cache) > 500:  # Example threshold
+            self._clean_expired_cache(self.activity_cache, cache_ttl_seconds, "activity")
 
-                current_time = time.time()
-                # Checking if cache is still valid
-                if current_time - timestamp < cache_ttl_seconds:
-                    return start_year, end_year
-                else:
-                    self.console_logger.info(f"Cache expired for artist activity: {artist}")
-            return self.activity_cache[cache_key]
-
-        self.console_logger.info(f"Determining activity period for artist: {artist}")
-        current_year = datetime.now().year
-
-        # Check if the artist appears to be new based on name
-        appears_new = any(marker in artist.lower() for marker in ["2020", "2021", "2022", "2023", "2024", "tiktok", "viral"])
-        appears_old = any(marker in artist.lower() for marker in ["classic", "legend", "90s", "80s"])
+        self.console_logger.debug(f"Fetching activity period for artist: {artist_norm}")
+        start_year_result: Optional[int] = None
+        end_year_result: Optional[int] = None
 
         try:
-            # Search for the artist using their name
-            artist_encoded = urllib.parse.quote_plus(artist)
-            search_url = f"https://musicbrainz.org/ws/2/artist/?query=artist:{artist_encoded}&fmt=json"
+            # Search MusicBrainz for the artist
+            params = {"query": f'artist:"{artist_norm}"', "fmt": "json", "limit": "5"}  # Limit results
+            search_url = "https://musicbrainz.org/ws/2/artist/"
+            data = await self._make_api_request('musicbrainz', search_url, params=params)
 
-            data = await self._make_api_request('musicbrainz', search_url)
             if not data or "artists" not in data or not data["artists"]:
-                self.console_logger.warning(f"Cannot determine activity period for {artist}: Artist not found")
-
-                # For new artists that aren't in MusicBrainz yet, assume they're new (last 2-3 years)
-                if appears_new:
-                    start_year = current_year - 2
-                    self.console_logger.info(f"Artist '{artist}' appears to be new and not in MusicBrainz - assuming from {start_year}")
-                    self.activity_cache[cache_key] = (start_year, None)
-                    return start_year, None
-                else:
-                    start_year = current_year - 3
-                    self.console_logger.info(f"Artist '{artist}' not found - assuming recent from {start_year}")
-                    self.activity_cache[cache_key] = (start_year, None)
-                    return start_year, None
-
-            # Score artists for better matching
-            scored_artists = []
-            for artist_data in data["artists"]:
-                score = 0
-                # Exact name match is highest priority
-                if artist_data.get("name", "").lower() == artist.lower():
-                    score += 100
-                # Partial match
-                elif artist.lower() in artist_data.get("name", "").lower() or artist_data.get("name", "").lower() in artist.lower():
-                    score += 50
-
-                # Boost for recent artists (active since 2020)
-                begin_date = artist_data.get("life-span", {}).get("begin", "")
-                if begin_date.startswith("202"):  # 2020+
-                    score += 40
-
-                # Check for aliases (alternative names)
-                if "aliases" in artist_data:
-                    for alias in artist_data["aliases"]:
-                        if alias.get("name", "").lower() == artist.lower():
-                            score += 90  # Nearly as good as exact match
-                            break
-
-                scored_artists.append((score, artist_data))
-
-            # Sort by score descending
-            scored_artists.sort(reverse=True, key=lambda x: x[0])
-
-            # Take best match
-            if not scored_artists:
-                self.console_logger.warning(f"No artist found for query: {artist}")
-                self.activity_cache[cache_key] = (None, None)
+                self.console_logger.warning(f"Cannot determine activity period for '{artist_norm}': Artist not found in MusicBrainz.")
+                # Cache the negative result
+                self.activity_cache[cache_key] = ((None, None), current_time)
                 return None, None
 
-            best_score, artist_data = scored_artists[0]
-            artist_id = artist_data.get("id")
+            # --- Find the best matching artist ---
+            # Simple approach: use the first result if its name matches closely enough.
+            # More complex logic could compare aliases, types (Person/Group), disambiguation, score etc.
+            best_match_artist = data["artists"][0]
+            artist_name_found = best_match_artist.get("name", "Unknown")
+            artist_id = best_match_artist.get("id")
 
-            # Look for aliases if not done yet
-            if "aliases" not in artist_data and artist_id:
-                alias_url = f"https://musicbrainz.org/ws/2/artist/{artist_id}?inc=aliases&fmt=json"
-                detailed_data = await self._make_api_request('musicbrainz', alias_url)
-                if detailed_data and "aliases" in detailed_data:
-                    artist_data["aliases"] = detailed_data["aliases"]
+            # Optional: Log if the best match name differs significantly
+            if artist_name_found.lower() != artist_norm.lower():
+                self.console_logger.debug(f"Best MusicBrainz match for '{artist_norm}' is '{artist_name_found}' (ID: {artist_id})")
 
-            # Check if the API provides lifespan directly
-            begin_date = artist_data.get("life-span", {}).get("begin")
-            end_date = artist_data.get("life-span", {}).get("end")
-            ended = artist_data.get("life-span", {}).get("ended")
+            # --- Extract lifespan ---
+            life_span = best_match_artist.get("life-span", {})
+            if isinstance(life_span, dict):  # Ensure it's a dictionary
+                begin_date_str = life_span.get("begin")
+                end_date_str = life_span.get("end")
+                ended = life_span.get("ended", False)  # Check if the 'ended' flag is true
 
-            # If we have complete lifespan data, use it but verify
-            if begin_date:
-                try:
-                    start_year = int(begin_date.split("-")[0])
-                    end_year = int(end_date.split("-")[0]) if end_date else None
+                # Parse start year
+                if begin_date_str:
+                    try:
+                        # Extract only the year part (YYYY)
+                        year_part = begin_date_str.split("-")[0]
+                        if len(year_part) == 4 and year_part.isdigit():
+                            start_year_result = int(year_part)
+                        else:
+                            self.console_logger.warning(f"Could not parse year from begin date '{begin_date_str}' for {artist_name_found}")
+                    except (ValueError, IndexError, TypeError):
+                        self.console_logger.warning(f"Error parsing begin date '{begin_date_str}' for {artist_name_found}")
 
-                    # VALIDATION: Check if lifespan makes sense
+                # Parse end year
+                if end_date_str:
+                    try:
+                        year_part = end_date_str.split("-")[0]
+                        if len(year_part) == 4 and year_part.isdigit():
+                            end_year_result = int(year_part)
+                        else:
+                            self.console_logger.warning(f"Could not parse year from end date '{end_date_str}' for {artist_name_found}")
+                    except (ValueError, IndexError, TypeError):
+                        self.console_logger.warning(f"Error parsing end date '{end_date_str}' for {artist_name_found}")
+                elif not ended and start_year_result is not None:
+                    # If the 'ended' flag is explicitly false or missing, and we have a start year,
+                    # assume the artist is still active (end_year remains None).
+                    end_year_result = None
+                elif ended and start_year_result is not None:
+                    # If 'ended' is true but no end_date_str is present, it's ambiguous.
+                    # We could try to infer from last release, but for simplicity, let's treat as active (None).
+                    self.console_logger.debug(f"Artist '{artist_name_found}' marked as ended but no end date found in life-span.")
+                    end_year_result = None  # Treat as still active or recently ended
 
-                    # Override contradictory lifespan for new-looking artists
-                    if appears_new and start_year < 2018:
-                        self.console_logger.info(f"Artist '{artist}' appears to be new but has old start year {start_year}. Adjusting to 2020.")
-                        start_year = 2020
-                        end_year = None
-                    # Similarly for old-looking artists with suspiciously recent start dates
-                    elif appears_old and start_year > 2015:
-                        self.console_logger.info(f"Artist '{artist}' appears to be established but has very recent start year {start_year}.")
-                        # Don't override but note the discrepancy
-
-                    # Now get the releases to verify the lifespan
-                    releases_url = f"https://musicbrainz.org/ws/2/release-group?artist={artist_id}&fmt=json"
-                    releases_data = await self._make_api_request('musicbrainz', releases_url)
-
-                    if releases_data and "release-groups" in releases_data:
-                        release_years = []
-                        for rg in releases_data["release-groups"]:
-                            if "first-release-date" in rg and rg["first-release-date"]:
-                                try:
-                                    year = int(rg["first-release-date"].split("-")[0])
-                                    release_years.append(year)
-                                except (ValueError, IndexError):
-                                    pass
-
-                        if release_years:
-                            oldest_release = min(release_years)
-                            newest_release = max(release_years)
-
-                            # Check for major discrepancies between lifespan and releases
-                            if start_year > oldest_release + 1:
-                                self.console_logger.info(
-                                    f"Start year {start_year} is later than oldest release {oldest_release} for '{artist}'. Adjusting."
-                                )
-                                start_year = oldest_release
-
-                            if end_year and newest_release > end_year + 2:
-                                self.console_logger.info(
-                                    f"End year {end_year} is earlier than newest release {newest_release} for '{artist}'. Adjusting."
-                                )
-                                # Either the end date is wrong or there are posthumous releases
-                                # If the gap is large, probably the end date is wrong
-                                if newest_release > end_year + 5:
-                                    end_year = None  # Assume still active
-
-                    self.console_logger.info(f"Found artist lifespan: {start_year} - {end_year or 'present'}")
-                    self.activity_cache[cache_key] = ((start_year, end_year), time.time())
-                    return start_year, end_year
-                except (ValueError, IndexError):
-                    # If there's an error parsing the dates, fallback to releases
-                    pass
-
-            # Get release groups for this artist as a fallback
-            releases_url = f"https://musicbrainz.org/ws/2/release-group?artist={artist_id}&fmt=json"
-
-            data = await self._make_api_request('musicbrainz', releases_url)
-            if not data:
-                # For new-looking artists without data, assume recent start
-                if appears_new:
-                    start_year = current_year - 2
-                    self.console_logger.info(f"No release data for new-looking artist '{artist}'. Assuming start year {start_year}")
-                    self.activity_cache[cache_key] = (start_year, None)
-                    return start_year, None
-
-                self.console_logger.warning(f"Failed to get releases for {artist}")
-                self.activity_cache[cache_key] = (None, None)
-                return None, None
-
-            release_groups = data.get("release-groups", [])
-
-            if not release_groups:
-                # Assume recent start for new-looking artists without releases
-                if appears_new:
-                    start_year = current_year - 2
-                    self.console_logger.info(f"No releases found for new-looking artist '{artist}'. Assuming start year {start_year}")
-                    self.activity_cache[cache_key] = (start_year, None)
-                    return start_year, None
-
-                self.console_logger.warning(f"No releases found for {artist}")
-                self.activity_cache[cache_key] = (None, None)
-                return None, None
-
-            # Extract years from release dates
-            years = []
-            for rg in release_groups:
-                if "first-release-date" in rg:
-                    date = rg["first-release-date"]
-                    if date:
-                        try:
-                            year = int(date.split("-")[0])
-                            years.append(year)
-                        except (ValueError, IndexError):
-                            pass
-
-            if not years:
-                # For new-looking artists without parsable years, assume recent start
-                if appears_new:
-                    start_year = current_year - 2
-                    self.console_logger.info(f"No parsable release years for new-looking artist '{artist}'. Assuming start year {start_year}")
-                    self.activity_cache[cache_key] = (start_year, None)
-                    return start_year, None
-
-                self.console_logger.warning(f"No release years found for {artist}")
-                self.activity_cache[cache_key] = (None, None)
-                return None, None
-
-            # Find the earliest and latest years
-            start_year = min(years)
-            end_year = max(years)
-
-            # IMPORTANT: Check if the start_year is accurate for new artists
-            if end_year >= current_year - 3:  # Recent artist with releases in last 3 years
-                # If earliest release seems too old (over 10 years gap) for recent artist, check more carefully
-                if current_year - start_year > 10:
-                    self.console_logger.info(f"Artist '{artist}' has recent releases but also old start year {start_year}.")
-
-                    # Check for clusters of years to see if there's a gap suggesting a different artist
-                    year_clusters = {}
-                    for y in years:
-                        decade = y // 10 * 10
-                        year_clusters[decade] = year_clusters.get(decade, 0) + 1
-
-                    # Check if most releases are recent (80%+ in last decade)
-                    current_decade = current_year // 10 * 10
-                    recent_releases = sum(year_clusters.get(decade, 0) for decade in [current_decade, current_decade - 10])
-
-                    if recent_releases >= len(years) * 0.8:
-                        # Calculate start year based on recent releases only
-                        recent_years = [y for y in years if y >= current_decade - 10]
-                        adjusted_start = min(recent_years)
-                        self.console_logger.info(f"Most releases are recent - adjusting start year from {start_year} to {adjusted_start}")
-                        start_year = adjusted_start
-
-            # If artist is still active (recent releases)
-            if end_year >= current_year - 3:
-                end_year = None  # Mark as still active
-
-            self.console_logger.info(f"Determined activity period for {artist}: {start_year} - {end_year or 'present'}")
-
-            # Store in cache to avoid repeated API calls
-            self.activity_cache[cache_key] = (start_year, end_year)
-            return start_year, end_year
+            # Store result (even if None) in cache
+            self.activity_cache[cache_key] = ((start_year_result, end_year_result), current_time)
+            self.console_logger.debug(f"Determined activity period for '{artist_norm}': {start_year_result or '?'} - {end_year_result or 'present'}")
+            return start_year_result, end_year_result
 
         except Exception as e:
-            self.error_logger.error(f"Error determining activity period for '{artist}': {e}")
-            # If error occurred but the artist appears new, assume recent start
-            if appears_new:
-                start_year = current_year - 2
-                self.console_logger.info(f"Error determining period, but '{artist}' appears to be new. Assuming start year {start_year}")
-                self.activity_cache[cache_key] = (start_year, None)
-                return start_year, None
+            self.error_logger.exception(f"Error determining activity period for '{artist_norm}': {e}")
+            # Cache failure case
+            self.activity_cache[cache_key] = ((None, None), current_time)
+            return None, None
+
+    # `_get_artist_region` remains the same as provided in the previous response.
+    async def _get_artist_region(self, artist_norm: str) -> Optional[str]:
+        """
+        Determine the region (country) of an artist using MusicBrainz API, with caching.
+
+        Args:
+            artist_norm (str): Normalized artist name.
+
+        Returns:
+            Optional[str]: Lowercase ISO 3166-1 alpha-2 country code (e.g., "us", "gb", "jp") or None if unknown.
+        """
+        cache_key = f"region_{artist_norm}"
+        cache_ttl_seconds = self.cache_ttl_days * 86400  # Use same TTL as activity period
+        current_time = time.monotonic()
+
+        # Check cache first
+        if cache_key in self.region_cache:
+            region, timestamp = self.region_cache[cache_key]
+            if current_time - timestamp < cache_ttl_seconds:
+                self.console_logger.debug(f"Using cached region '{region}' for artist '{artist_norm}'")
+                return region
             else:
-                self.activity_cache[cache_key] = (None, None)
-                return None, None
+                self.console_logger.debug(f"Region cache expired for '{artist_norm}'")
+                del self.region_cache[cache_key]
 
-    def _get_artist_region(self, artist: str) -> Optional[str]:
+        # Clean cache periodically
+        if len(self.region_cache) > 500:
+            self._clean_expired_cache(self.region_cache, cache_ttl_seconds, "region")
+
+        region_result: Optional[str] = None
+        try:
+            # Query MusicBrainz API for artist data, limiting to the top result
+            params = {"query": f'artist:"{artist_norm}"', "fmt": "json", "limit": "1"}
+            search_url = "https://musicbrainz.org/ws/2/artist/"
+            data = await self._make_api_request('musicbrainz', search_url, params=params)
+
+            if data and "artists" in data and data["artists"]:
+                best_artist = data["artists"][0]
+
+                # 1. Check the 'country' field first (direct ISO code)
+                country_code = best_artist.get("country")
+                if country_code and isinstance(country_code, str) and len(country_code) == 2:
+                    region_result = country_code.lower()
+                    self.console_logger.debug(f"Found region '{region_result}' via 'country' field for '{artist_norm}'")
+                else:
+                    # 2. Fallback to 'area' information if 'country' is missing/invalid
+                    area = best_artist.get("area")
+                    if area and isinstance(area, dict):
+                        # Check if area is explicitly a country
+                        if area.get("type") == "Country":
+                            # Try to get ISO code from the area itself
+                            iso_codes = area.get("iso-3166-1-codes")
+                            if iso_codes and isinstance(iso_codes, list) and len(iso_codes) > 0:
+                                # Use the first ISO code found
+                                region_result = iso_codes[0].lower()
+                                self.console_logger.debug(f"Found region '{region_result}' via area ISO codes for '{artist_norm}'")
+                            # else: # Optional: Could try parsing area.name, but less reliable
+                            #     self.console_logger.debug(f"Area found for '{artist_norm}' but no ISO code: {area.get('name')}")
+                        # else: # Area is not a country (e.g., city, subdivision) - ignore for region
+                        #    self.console_logger.debug(
+                        #        f"Area found for '{artist_norm}' is not a country: {area.get('name')} "
+                        #        f"(Type: {area.get('type')})"
+                        #    )
+            else:
+                # Artist not found in MusicBrainz
+                self.console_logger.debug(f"No artist found in MusicBrainz to determine region for '{artist_norm}'")
+
+        except Exception as e:
+            # Log errors during API request or processing
+            self.error_logger.warning(f"Error retrieving artist region for '{artist_norm}': {e}")
+
+        # Cache the result (even if it's None) before returning
+        self.region_cache[cache_key] = (region_result, current_time)
+        return region_result
+
+    # `_score_original_release` remains the same as provided in the previous response.
+    # file: services/external_api_service.py
+
+    # Replace the existing _score_original_release function with this one:
+    def _score_original_release(self, release: Dict[str, Any], artist_norm: str, album_norm: str, artist_region: Optional[str]) -> int:
         """
-        Attempt to determine the likely region of origin for an artist.
+        REVISED scoring function prioritizing original release indicators (v3).
 
-        This is a simple implementation that could be expanded with a database
-        of artist regions or API calls to get more accurate data.
+        Assigns a score based on how likely the `release` dictionary represents
+        the original release of the album defined by `artist_norm` and `album_norm`.
+        Prioritizes MusicBrainz Release Group date and penalizes later releases more heavily.
 
         Args:
-            artist: Artist name
+            release (Dict[str, Any]): Release data dictionary from API processing functions.
+            artist_norm (str): Normalized artist name being searched.
+            album_norm (str): Normalized album name being searched.
+            artist_region (Optional[str]): Lowercase country code of the artist (if known).
 
         Returns:
-            Region code (country code) or None if unknown
-
-        Example:
-            >>> region = service._get_artist_region("Metallica")
-            >>> print(region)  # Returns "us"
+            int: Score (typically 0-100+, higher is better).
         """
+        # Ensure scoring_config is a dict, fallback to empty if not found or invalid
+        scoring_cfg = self.scoring_config if isinstance(self.scoring_config, dict) else {}
 
-        # This could be expanded with a proper database or API call
-        # For now, just a simple map of known artists
-        async def _get_artist_region(self, artist: str) -> Optional[str]:
-            """
-            Determine the region (country) of an artist using MusicBrainz API.
+        # --- Initialization ---
+        score: int = scoring_cfg.get('base_score', 10)  # Start with base score
+        score_components: List[str] = []  # For debugging
 
-            Args:
-                artist: Artist name
+        # Extract key fields
+        release_title_orig = release.get('title', '')
+        release_artist_orig = release.get('artist', '')
+        year_str = release.get('year', '')
+        source = release.get('source', 'unknown')
+        release_title_norm = self._normalize_name(release_title_orig)
+        release_artist_norm = self._normalize_name(release_artist_orig)
 
-            Returns:
-                ISO country code (lowercase) or None if unknown
-
-            Example:
-                >>> region = await service._get_artist_region("Metallica")
-                >>> print(region)  # Returns "us"
-            """
-            # Check cache first
-            cache_key = f"region_{artist.lower()}"
-            if hasattr(self, 'region_cache') and cache_key in self.region_cache:
-                return self.region_cache.get(cache_key)
-
-            # Initialize region cache if it doesn't exist
-            if not hasattr(self, 'region_cache'):
-                self.region_cache = {}
-
-            try:
-                # Query MusicBrainz API for artist data
-                artist_encoded = urllib.parse.quote_plus(artist)
-                search_url = f"https://musicbrainz.org/ws/2/artist/?query=artist:{artist_encoded}&fmt=json"
-
-                data = await self._make_api_request('musicbrainz', search_url)
-                if data and "artists" in data and data["artists"]:
-                    # Get the most relevant artist (first result)
-                    best_artist = data["artists"][0]
-
-                    # Get country from MusicBrainz
-                    country = best_artist.get("country", "").lower()
-                    if country:
-                        self.console_logger.debug(f"Found region {country} for artist '{artist}' from MusicBrainz")
-                        self.region_cache[cache_key] = country
-                        return country
-
-                    # Try to get area information as fallback
-                    if "area" in best_artist and "iso-3166-1-codes" in best_artist["area"]:
-                        country_codes = best_artist["area"]["iso-3166-1-codes"]
-                        if country_codes and len(country_codes) > 0:
-                            country = country_codes[0].lower()
-                            self.region_cache[cache_key] = country
-                            return country
-
-            except Exception as e:
-                self.error_logger.warning(f"Error retrieving artist region for '{artist}': {e}")
-
-            # Fall back to heuristics if API didn't return a region
-            artist_lower = artist.lower()
-
-            # Common name patterns that might indicate regions
-            if re.search(r'\b(mc|mac)[a-z]', artist_lower) and "the" not in artist_lower:
-                self.region_cache[cache_key] = "gb"  # Scottish/Irish naming pattern
-                return "gb"
-
-            if any(suffix in artist_lower for suffix in ["-en", "-on", "-son", "-sen", "sson", "berg"]):
-                self.region_cache[cache_key] = "se"  # Nordic naming pattern
-                return "se"
-
-            if any(word in artist_lower.split() for word in ["die", "der", "das", "und"]):
-                self.region_cache[cache_key] = "de"  # German language
-                return "de"
-
-            if artist_lower.endswith("ov") or artist_lower.endswith("sky"):
-                self.region_cache[cache_key] = "ru"  # Russian/Slavic naming pattern
-                return "ru"
-
-            if "babymetal" in artist_lower or "band-maid" in artist_lower:
-                self.region_cache[cache_key] = "jp"  # Known Japanese bands
-                return "jp"
-
-            # Default to None (unknown)
-            self.region_cache[cache_key] = None
-            return None
-
-    def _score_original_release(self, release: Dict[str, Any], artist: str, album: str) -> int:
-        """
-        Enhanced scoring function with improved weighting for original release indicators.
-
-        Args:
-            release: Release data dictionary
-            artist: Artist name being searched
-            album: Album name being searched
-
-        Returns:
-            Score between 0 and 100
-        """
-        # Get scoring weights from config or use defaults
-        scoring_config = self.config.get('year_retrieval', {}).get('scoring', {})
-
-        score = scoring_config.get('default_base_score', 20)
-        score_components = []
-        current_year = datetime.now().year
-
-        # Check for artist name match
-        release_artist = release.get('artist', '').lower()
-        artist_norm = artist.lower()
-
-        # Check artist match
-        artist_match = False
-        if release_artist == artist_norm:
-            artist_match = True
-            artist_match_bonus = scoring_config.get('artist_match_bonus', 20)
+        # --- 1. Core Match Quality ---
+        # Artist Match Bonus
+        artist_match_bonus = 0
+        if release_artist_norm and release_artist_norm == artist_norm:
+            artist_match_bonus = scoring_cfg.get('artist_exact_match_bonus', 20)  # Reduced
             score += artist_match_bonus
-            score_components.append(f"Artist exact match: +{artist_match_bonus}")
+            score_components.append(f"Artist Exact Match: +{artist_match_bonus}")
 
-        # Album title matching with completely revised approach
-        release_title = release.get('title', '').lower()
-        album_norm = album.lower()
+        # Album Title Match Bonus/Penalty
+        title_match_bonus = 0
+        title_penalty = 0
 
-        # Clean titles for comparison
-        def clean_for_comparison(text):
+        def simple_norm(text: str) -> str:
             return re.sub(r'[^\w\s]', '', text.lower()).strip()
 
-        release_title_clean = clean_for_comparison(release_title)
-        album_norm_clean = clean_for_comparison(album_norm)
+        comp_release_title = simple_norm(release_title_norm)
+        comp_album_norm = simple_norm(album_norm)
 
-        # EXACT MATCH CHECK - Most important!
-        if release_title_clean == album_norm_clean:
-            # Massive bonus for exact match
-            exact_match_bonus = scoring_config.get('exact_match_bonus', 20) * 7  # Extremely strong weight
-            score += exact_match_bonus
-            score_components.append(f"EXACT title match: +{exact_match_bonus}")
-
-            # Additional super bonus for perfect artist+album match
-            if artist_match:
-                perfect_match_bonus = 70  # Very high bonus for perfect match
+        if comp_release_title == comp_album_norm:
+            title_match_bonus = scoring_cfg.get('album_exact_match_bonus', 25)  # Reduced
+            score += title_match_bonus
+            score_components.append(f"Album Exact Match: +{title_match_bonus}")
+            if artist_match_bonus > 0:  # Only apply perfect if artist also matched
+                perfect_match_bonus = scoring_cfg.get('perfect_match_bonus', 10)  # Reduced
                 score += perfect_match_bonus
-                score_components.append(f"PERFECT artist+album match: +{perfect_match_bonus}")
+                score_components.append(f"Perfect Artist+Album Match: +{perfect_match_bonus}")
         else:
-            # NOT AN EXACT MATCH - Now determine how to treat partial matches
+            # Handle variations (e.g., "Album (Deluxe)")
+            if comp_release_title.startswith(comp_album_norm) and re.match(
+                r'^[\(\[][^)\]]+[\)\]]$', comp_release_title[len(comp_album_norm) :].strip()
+            ):
+                title_match_bonus = scoring_cfg.get('album_variation_bonus', 10)
+                score += title_match_bonus
+                score_components.append(f"Album Variation (Suffix): +{title_match_bonus}")
+            elif comp_album_norm.startswith(comp_release_title) and re.match(
+                r'^[\(\[][^)\]]+[\)\]]$', comp_album_norm[len(comp_release_title) :].strip()
+            ):
+                title_match_bonus = scoring_cfg.get('album_variation_bonus', 10)
+                score += title_match_bonus
+                score_components.append(f"Album Variation (Search Suffix): +{title_match_bonus}")
+            # Penalize substring inclusion (less likely original)
+            elif comp_album_norm in comp_release_title or comp_release_title in comp_album_norm:
+                title_penalty = scoring_cfg.get('album_substring_penalty', -15)  # Reduced penalty
+                score += title_penalty
+                score_components.append(f"Album Substring Mismatch: {title_penalty}")
+            else:  # Penalize unrelated titles
+                title_penalty = scoring_cfg.get('album_unrelated_penalty', -40)  # Reduced penalty
+                score += title_penalty
+                score_components.append(f"Album Unrelated: {title_penalty}")
 
-            # CASE 1: Variation with extra info in parentheses/brackets
-            # Examples: "Album" vs "Album (Remastered)" or "Album [Deluxe Edition]"
-            base_title_pattern = re.escape(album_norm_clean) + r'(\s+[\(\[][^\)\]]+[\)\]])*$'
-            if re.match(base_title_pattern, release_title_clean):
-                variation_bonus = scoring_config.get('title_variation_bonus', 15)
-                score += variation_bonus
-                score_components.append(f"Title variation (basic+extras): +{variation_bonus}")
-
-            # CASE 2: Same but reversed - searched album has extra text
-            # Examples: "Album (Remastered)" vs "Album"
-            base_release_pattern = re.escape(release_title_clean) + r'(\s+[\(\[][^\)\]]+[\)\]])*$'
-            if re.match(base_release_pattern, album_norm_clean):
-                variation_bonus = scoring_config.get('title_variation_bonus', 15)
-                score += variation_bonus
-                score_components.append(f"Title variation (release is base): +{variation_bonus}")
-
-            # CASE 3: Short title is substring of long title but not at beginning
-            # "Nomad" vs "The Nomad Series" - THIS IS BAD!
-            elif len(album_norm_clean) < len(release_title_clean) and album_norm_clean in release_title_clean:
-                # Major penalty for being embedded in a longer title
-                substring_penalty = -60  # Very severe penalty
-                score += substring_penalty
-                score_components.append(f"Short title embedded in longer title: {substring_penalty}")
-
-            # CASE 4: Long title is substring of short title but not at beginning
-            # "The Nomad Series" vs "Nomad" - Also likely bad
-            elif len(release_title_clean) < len(album_norm_clean) and release_title_clean in album_norm_clean:
-                substring_penalty = -50
-                score += substring_penalty
-                score_components.append(f"Release title embedded in search title: {substring_penalty}")
-
-            # CASE 5: No relationship - titles are completely different
-            else:
-                # Strong penalty for unrelated titles
-                unrelated_title_penalty = -70
-                score += unrelated_title_penalty
-                score_components.append(f"Unrelated titles: {unrelated_title_penalty}")
-
-        # Add bonus for release group first-release match
-        if 'releasegroup_first_date' in release and release.get('year') and release['releasegroup_first_date']:
+        # --- 2. Release Characteristics ---
+        # MusicBrainz Release Group First Date Match (VERY important)
+        rg_first_date_str = release.get('releasegroup_first_date')
+        rg_first_year: Optional[int] = None
+        if source == 'musicbrainz' and rg_first_date_str:
             try:
-                rg_year = release['releasegroup_first_date'][:4]
-                if rg_year == release['year']:
-                    first_release_bonus = scoring_config.get('first_release_date_bonus', 30)
-                    score += first_release_bonus
-                    score_components.append(f"Release group first date match: +{first_release_bonus}")
-            except (IndexError, ValueError):
+                rg_year_str = rg_first_date_str.split('-')[0]
+                if len(rg_year_str) == 4 and rg_year_str.isdigit():
+                    rg_first_year = int(rg_year_str)
+                    # Strong bonus if release year matches the RG first year
+                    if year_str and rg_year_str == year_str:
+                        rg_match_bonus = scoring_cfg.get('mb_release_group_match_bonus', 50)  # Increased!
+                        score += rg_match_bonus
+                        score_components.append(f"MB RG First Date Match: +{rg_match_bonus}")
+            except (IndexError, ValueError, TypeError):
                 pass
 
-        # Add country preference score
-        if 'country_score' in release and release['country_score'] > 0:
-            score += release['country_score']
-            score_components.append(f"Preferred country ({release.get('country')}): +{release['country_score']}")
+        # Release Type (Album preferred)
+        release_type = str(release.get('type', '')).lower()
+        type_bonus = 0
+        type_penalty = 0
+        if 'album' in release_type:
+            type_bonus = scoring_cfg.get('type_album_bonus', 15)
+            score_components.append(f"Type Album: +{type_bonus}")
+        elif any(t in release_type for t in ['ep', 'single']):
+            type_penalty = scoring_cfg.get('type_ep_single_penalty', -10)
+            score_components.append(f"Type EP/Single: {type_penalty}")
+        elif any(t in release_type for t in ['compilation', 'live', 'soundtrack', 'remix']):
+            type_penalty = scoring_cfg.get('type_compilation_live_penalty', -25)
+            score_components.append(f"Type Comp/Live/Remix/Soundtrack: {type_penalty}")
+        score += type_bonus + type_penalty
 
-        # Release status with expanded types
-        status = (release.get('status') or '').lower()
-
+        # Release Status (Official preferred)
+        status = str(release.get('status', '')).lower()
+        status_bonus = 0
+        status_penalty = 0
         if status == 'official':
-            official_bonus = scoring_config.get('official_status_bonus', 15)
-            score += official_bonus
-            score_components.append(f"Official status: +{official_bonus}")
-        elif status == 'bootleg':
-            bootleg_penalty = scoring_config.get('bootleg_penalty', -40)
-            score += bootleg_penalty
-            score_components.append(f"Bootleg: {bootleg_penalty}")
-        elif status == 'promo':
-            promo_penalty = scoring_config.get('promo_penalty', -20)
-            score += promo_penalty
-            score_components.append(f"Promo: {promo_penalty}")
-        elif status == 'unauthorized':
-            unauthorized_penalty = scoring_config.get('unauthorized_penalty', -35)
-            score += unauthorized_penalty
-            score_components.append(f"Unauthorized: {unauthorized_penalty}")
+            status_bonus = scoring_cfg.get('status_official_bonus', 10)
+            score_components.append(f"Status Official: +{status_bonus}")
+        elif any(s in status for s in ['bootleg', 'unofficial', 'pseudorelease']):
+            status_penalty = scoring_cfg.get('status_bootleg_penalty', -50)
+            score_components.append(f"Status Bootleg/Unofficial: {status_penalty}")
+        elif status == 'promotion':
+            status_penalty = scoring_cfg.get('status_promo_penalty', -20)
+            score_components.append(f"Status Promo: {status_penalty}")
+        score += status_bonus + status_penalty
 
-        # Enhanced reissue detection
-        # 1. Check explicit reissue flag
+        # Reissue Indicator Penalty
         if release.get('is_reissue', False):
-            reissue_penalty = scoring_config.get('reissue_penalty', -40)
+            reissue_penalty = scoring_cfg.get('reissue_penalty', -30)
             score += reissue_penalty
-            score_components.append(f"Explicit reissue flag: {reissue_penalty}")
+            score_components.append(f"Reissue Indicator: {reissue_penalty}")
 
-        # Year validation relative to artist's career
-        year_str = release.get('year', '')
-        if year_str:
+        # --- 3. Contextual Factors ---
+        year = -1
+        year_diff_penalty = 0
+        is_valid_year_format = False
+        if year_str and year_str.isdigit() and len(year_str) == 4:
+            is_valid_year_format = True
             try:
                 year = int(year_str)
+            except ValueError:
+                is_valid_year_format = False
 
-                # Check for future dates (impossible for original release)
-                if year > current_year:
-                    future_penalty = scoring_config.get('future_date_penalty', -50)
-                    score += future_penalty
-                    score_components.append(f"Future date: {future_penalty}")
-                    return max(0, score)  # Immediately return with a low score
-
-                # Check if album title contains year and if it matches release year
-                year_in_album = re.search(r'\b(19\d\d|20\d\d)\b', album_norm)
-                if year_in_album and int(year_in_album.group(1)) == year:
-                    matching_year_bonus = 25
-                    score += matching_year_bonus
-                    score_components.append(f"Year in album title matches release year: +{matching_year_bonus}")
-
-                # Use the artist period context if available
+        if not is_valid_year_format:
+            score = 0  # Invalid year format invalidates score
+            score_components.append("Year Invalid Format: score=0")
+        else:
+            # Check year range
+            if not (self.min_valid_year <= year <= self.current_year + 5):
+                score = 0
+                score_components.append("Year Out of Range: score=0")
+            else:
+                # Apply Artist Activity Period Context
                 if self.artist_period_context:
                     start_year = self.artist_period_context.get('start_year')
                     end_year = self.artist_period_context.get('end_year')
 
-                    # Verify lifespan consistency with release date
-                    if start_year and end_year:  # If we have complete lifespan data
-                        # If release came out after official end + 2 years (allowing for posthumous releases)
-                        if year > end_year + 2:
-                            lifespan_inconsistency = -40
-                            score += lifespan_inconsistency
-                            score_components.append(f"Release after career end: {lifespan_inconsistency}")
+                    # Penalty if year is before artist start (allow 1 year grace)
+                    if start_year and year < start_year - 1:
+                        years_before = start_year - year
+                        penalty_val = min(50, 5 + (years_before - 1) * 5)
+                        score += scoring_cfg.get('year_before_start_penalty', -penalty_val)
+                        score_components.append(
+                            f"Year Before Start ({years_before} yrs): {scoring_cfg.get('year_before_start_penalty', -penalty_val)}"
+                        )
 
-                        # If release came out before official start - 1 year (allowing for early demos)
-                        if year < start_year - 1:
-                            lifespan_inconsistency = -30
-                            score += lifespan_inconsistency
-                            score_components.append(f"Release before career start: {lifespan_inconsistency}")
+                    # Penalty if year is after artist end (allow 3 years grace)
+                    if end_year and year > end_year + 3:
+                        years_after = year - end_year
+                        penalty_val = min(40, 5 + (years_after - 3) * 3)
+                        score += scoring_cfg.get('year_after_end_penalty', -penalty_val)
+                        score_components.append(f"Year After End ({years_after} yrs): {scoring_cfg.get('year_after_end_penalty', -penalty_val)}")
 
-                    # Standard artist period checks (modified to be more robust)
-                    if start_year:
-                        # For new artists (started after 2020)
-                        if start_year >= 2020:
-                            if year >= 2022:
-                                # For new artists, very recent years are more likely correct
-                                new_artist_recent_year_bonus = 30
-                                score += new_artist_recent_year_bonus
-                                score_components.append(f"Recent year for new artist: +{new_artist_recent_year_bonus}")
-                            elif year < 2018:
-                                # For new artists, old years are likely incorrect
-                                new_artist_old_year_penalty = -40
-                                score += new_artist_old_year_penalty
-                                score_components.append(f"Old year for new artist: {new_artist_old_year_penalty}")
-                        else:
-                            # Regular artist activity period logic
-                            years_after_start = year - start_year
-                            if years_after_start == 0:
-                                earliest_year_bonus = scoring_config.get('earliest_year_bonus', 30)
-                                score += earliest_year_bonus
-                                score_components.append(f"Earliest possible year: +{earliest_year_bonus}")
-                            elif years_after_start <= 2:
-                                early_release_bonus = scoring_config.get('early_release_bonus', 20)
-                                score += early_release_bonus
-                                score_components.append(f"Early career release: +{early_release_bonus}")
-                            elif years_after_start <= 5:
-                                moderate_bonus = 10
-                                score += moderate_bonus
-                                score_components.append(f"Early-mid career: +{moderate_bonus}")
-                            else:
-                                # Later release penalty moderated by artist longevity
-                                artist_longevity = (end_year or current_year) - start_year
-                                if artist_longevity > 15:  # Long-term artist
-                                    late_release_penalty = min(15, years_after_start)
-                                else:  # Shorter-term artist
-                                    late_release_penalty = min(30, years_after_start * 2)
-                                score -= late_release_penalty
-                                score_components.append(f"Late career: -{late_release_penalty}")
-            except ValueError:
-                pass
+                    # Bonus if year is near artist start
+                    if start_year and 0 <= (year - start_year) <= 1:
+                        score += scoring_cfg.get('year_near_start_bonus', 20)
+                        score_components.append(f"Year Near Start: +{scoring_cfg.get('year_near_start_bonus', 20)}")
 
-        # Log score components
-        for component in score_components:
-            self.console_logger.debug(f"Score component - {component}")
+                # *** NEW: Penalty based on difference from RG First Year ***
+                if rg_first_year and year > rg_first_year + 1:  # If release year is >1yr after RG first year
+                    year_diff = year - rg_first_year
+                    # Apply a scaling penalty, e.g., -5 points per year difference after the first year
+                    penalty_scale = scoring_cfg.get('year_diff_penalty_scale', -5)
+                    max_penalty = scoring_cfg.get('year_diff_max_penalty', -40)
+                    year_diff_penalty = max(max_penalty, (year_diff - 1) * penalty_scale)
+                    score += year_diff_penalty
+                    score_components.append(f"Year Diff from RG Date ({year_diff} yrs): {year_diff_penalty}")
 
-        # Log the final score calculation
-        self.console_logger.info(f"Final score for {release.get('title')} ({year_str}): {score} from {len(score_components)} factors")
+        # Country / Region Match
+        release_country = release.get('country', '').lower()
+        if artist_region and release_country:
+            if release_country == artist_region:
+                score += scoring_cfg.get('country_artist_match_bonus', 10)
+                score_components.append(
+                    f"Country Matches Artist Region ({artist_region.upper()}): +{scoring_cfg.get('country_artist_match_bonus', 10)}"
+                )
+            elif release_country in scoring_cfg.get(
+                'major_market_codes', ['us', 'gb', 'uk', 'de', 'jp', 'fr']
+            ):  # Check against configured major markets
+                score += scoring_cfg.get('country_major_market_bonus', 5)
+                score_components.append(f"Country Major Market ({release_country.upper()}): +{scoring_cfg.get('country_major_market_bonus', 5)}")
 
-        return max(0, min(score, 100))  # Limit to 0-100 range
+        # --- 4. Source Reliability ---
+        source_adjustment = 0
+        if source == 'musicbrainz':
+            source_adjustment = scoring_cfg.get('source_mb_bonus', 5)
+        elif source == 'discogs':
+            source_adjustment = scoring_cfg.get('source_discogs_bonus', 2)
+        elif source == 'lastfm':
+            source_adjustment = scoring_cfg.get('source_lastfm_penalty', -5)
+        if source_adjustment != 0:
+            score += source_adjustment
+            score_components.append(f"Source {source.title()}: {source_adjustment:+}")
 
-    async def _get_scored_releases_from_musicbrainz(self, artist: str, album: str) -> List[Dict[str, Any]]:
+        # Final score adjustment
+        final_score = max(0, score)  # Score cannot be negative
+
+        # --- Debug Logging ---
+        # Log details only if score is potentially decisive or problematic
+        if final_score > self.definitive_score_threshold - 20 or year_diff_penalty < 0 or title_penalty < 0:
+            debug_log_msg = f"Score Calculation for '{release_title_orig}' ({year_str}) [{source}]:\n"
+            debug_log_msg += "\n".join([f"  - {comp}" for comp in score_components])
+            debug_log_msg += f"\n  ==> Final Score: {final_score}"
+            # Use DEBUG level for potentially verbose output
+            self.console_logger.debug(debug_log_msg)
+
+        return final_score
+
+    # `_get_scored_releases_from_musicbrainz` remains the same as provided in the previous response.
+    async def _get_scored_releases_from_musicbrainz(self, artist_norm: str, album_norm: str, artist_region: Optional[str]) -> List[Dict[str, Any]]:
         """
-        Retrieve and score releases from MusicBrainz with enhanced focus on original release dates.
+        Retrieve and score releases from MusicBrainz, prioritizing Release Group search.
+        Includes fallback search strategies if the initial precise query fails.
 
         Args:
-            artist: Artist name
-            album: Album name
+            artist_norm (str): Normalized artist name.
+            album_norm (str): Normalized album name.
+            artist_region (Optional[str]): Artist's region code for scoring.
 
         Returns:
-            List of scored release dictionaries with improved release group date handling
+            List[Dict[str, Any]]: List of scored releases, sorted descending by score.
         """
         scored_releases: List[Dict[str, Any]] = []
+        release_groups = []  # Initialize list to store found release groups
+
         try:
-            artist_encoded = urllib.parse.quote_plus(artist)
-            album_encoded = urllib.parse.quote_plus(album)
+            # Helper for Lucene escaping
+            def escape_lucene(term: str) -> str:
+                term = term.replace('\\', '\\\\')
+                for char in r'+-&|!(){}[]^"~*?:\/':
+                    term = term.replace(char, f'\\{char}')
+                return term
 
-            # First try release group search
-            search_url = f"https://musicbrainz.org/ws/2/release-group/?query=artist:{artist_encoded} AND releasegroup:{album_encoded}&fmt=json"
+            base_search_url = "https://musicbrainz.org/ws/2/release-group/"
+            common_params = {"fmt": "json", "limit": "10"}  # Common params for searches
 
-            data = await self._make_api_request('musicbrainz', search_url)
-            if not data:
-                self.console_logger.warning(f"MusicBrainz release group search failed for {artist} - {album}")
-                return []
+            # --- Attempt 1: Precise Fielded Search (Primary Strategy) ---
+            primary_query = f'artist:"{escape_lucene(artist_norm)}" AND releasegroup:"{escape_lucene(album_norm)}"'
+            params_rg1 = {**common_params, "query": primary_query}
+            log_rg_url1 = base_search_url + "?" + urllib.parse.urlencode(params_rg1, safe=':/')
+            self.console_logger.debug(f"[musicbrainz] Attempt 1 URL: {log_rg_url1}")
 
-            release_groups = data.get("release-groups", [])
+            rg_data1 = await self._make_api_request('musicbrainz', base_search_url, params=params_rg1)
 
-            # Process release groups - we want to capture their first-release-date
-            release_group_data = {}
-            for rg in release_groups:
-                rg_id = rg.get("id")
-                if rg_id and "first-release-date" in rg:
-                    release_group_data[rg_id] = {
-                        "first-release-date": rg.get("first-release-date"),
-                        "primary-type": rg.get("primary-type", ""),
-                        "title": rg.get("title", ""),
-                    }
+            if rg_data1 and rg_data1.get("count", 0) > 0 and rg_data1.get("release-groups"):
+                self.console_logger.debug("Attempt 1 (Precise Search) successful.")
+                release_groups = rg_data1.get("release-groups", [])
+            else:
+                self.console_logger.warning(
+                    f"[musicbrainz] Attempt 1 (Precise Search) failed or yielded no results for query: {primary_query}. Trying fallback."
+                )
 
-            # Now search for the actual releases
-            if release_groups:
-                # Found release groups, get releases for each group
-                self.console_logger.info(f"Found {len(release_groups)} release groups for {artist} - {album}")
+                # --- Attempt 2: Broader Search (Keywords without fields) ---
+                fallback_query1 = f'"{escape_lucene(artist_norm)}" AND "{escape_lucene(album_norm)}"'
+                params_rg2 = {**common_params, "query": fallback_query1}
+                log_rg_url2 = base_search_url + "?" + urllib.parse.urlencode(params_rg2, safe=':/')
+                self.console_logger.debug(f"[musicbrainz] Attempt 2 URL: {log_rg_url2}")
 
-                for release_group in release_groups[:3]:  # Limit to top 3 groups
-                    release_group_id = release_group.get("id")
+                rg_data2 = await self._make_api_request('musicbrainz', base_search_url, params=params_rg2)
 
-                    # Get all releases for this group
-                    releases_url = f"https://musicbrainz.org/ws/2/release?release-group={release_group_id}&fmt=json"
-                    releases_data = await self._make_api_request('musicbrainz', releases_url)
-
-                    if not releases_data:
-                        self.console_logger.warning(f"Failed to get releases for group {release_group_id}")
-                        continue
-
-                    releases = releases_data.get("releases", [])
-                    if not releases:
-                        continue
-
-                    # Log useful information about the release group
-                    primary_type = release_group.get("primary-type", "Unknown")
-                    first_release_date = release_group.get("first-release-date", "Unknown")
-                    self.console_logger.info(f"Release group info - Type: {primary_type}, First release date: {first_release_date}")
-
-                    # Process each release and add release group first-release-date
-                    for release in releases:
-                        # Extract year from date
-                        year = None
-                        release_date = release.get("date", "")
-                        if release_date:
-                            year_match = re.search(r'^(\d{4})', release_date)
-                            if year_match:
-                                year = year_match.group(1)
-
-                        # Check for country preferences
-                        country = release.get("country", "")
-                        country_score = 0
-                        preferred_countries = self.config.get("year_retrieval", {}).get("preferred_countries", ["US", "UK", "GB"])
-
-                        # Get scoring configuration
-                        scoring_config = self.config.get('year_retrieval', {}).get('scoring', {})
-
-                        country_score = 0
-                        if country.lower() == "us":
-                            country_score = scoring_config.get('us_country_bonus', 10)
-                        elif country.lower() in ["uk", "gb"]:
-                            country_score = scoring_config.get('uk_country_bonus', 8)
-                        elif country.lower() == "jp":
-                            country_score = scoring_config.get('japan_country_bonus', 5)
-                        else:
-                            # For other countries with preferred_countries
-                            if country in preferred_countries:
-                                country_score = scoring_config.get('preferred_country_bonus', 3)
-
-                        # Create A Standardized Release Data Structure for Scoring
-                        # Obtaining a full list of keywords from config
-                        reissue_keywords = self.config.get('year_retrieval', {}).get('reissue_keywords', [])
-                        is_reissue = any(kw.lower() in release.get('title', '').lower() for kw in reissue_keywords)
-                        release_data = {
-                            'source': 'musicbrainz',
-                            'title': release.get('title', ''),
-                            'type': release.get('primary-type', '') or release_group.get('primary-type', ''),
-                            'status': release.get('status', ''),
-                            'year': year,
-                            'country': country,
-                            'packaging': release.get('packaging', ''),
-                            'is_reissue': is_reissue,
-                            'releasegroup_id': release_group_id,
-                            'releasegroup_first_date': first_release_date,
-                            'country_score': country_score,
-                            'score': 0,
-                        }
-
-                        # Only score if we have a year
-                        if release_data['year']:
-                            # Add extra points if this is from the first release date of the release group
-                            if first_release_date and first_release_date.startswith(release_data['year']):
-                                release_data['original_release_bonus'] = 25
-                            else:
-                                release_data['original_release_bonus'] = 0
-
-                            release_data['score'] = self._score_original_release(release_data, artist, album)
-                            scored_releases.append(release_data)
-
-                # Sort by score
-                scored_releases.sort(key=lambda x: x['score'], reverse=True)
-
-                # Log top results for debugging
-                self.console_logger.info(f"Scored {len(scored_releases)} results from MusicBrainz")
-                for i, r in enumerate(scored_releases[:3]):
-                    self.console_logger.info(
-                        f"MB #{i+1}: {r['title']} ({r['year']}) - Status: {r['status']}, Country: {r['country']}, Score: {r['score']}"
+                if rg_data2 and rg_data2.get("count", 0) > 0 and rg_data2.get("release-groups"):
+                    self.console_logger.debug("Attempt 2 (Broad Search) successful.")
+                    release_groups = rg_data2.get("release-groups", [])
+                else:
+                    self.console_logger.warning(
+                        f"[musicbrainz] Attempt 2 (Broad Search) failed or yielded no results for query: {fallback_query1}. Trying last fallback."
                     )
 
-                return scored_releases
+                    # --- Attempt 3: Search by Album Title Only ---
+                    fallback_query2 = f'"{escape_lucene(album_norm)}"'  # Search only by album title keyword
+                    params_rg3 = {**common_params, "query": fallback_query2}
+                    log_rg_url3 = base_search_url + "?" + urllib.parse.urlencode(params_rg3, safe=':/')
+                    self.console_logger.debug(f"[musicbrainz] Attempt 3 URL: {log_rg_url3}")
+
+                    rg_data3 = await self._make_api_request('musicbrainz', base_search_url, params=params_rg3)
+
+                    if rg_data3 and rg_data3.get("count", 0) > 0 and rg_data3.get("release-groups"):
+                        self.console_logger.debug("Attempt 3 (Album Title Only Search) successful. Will filter by artist.")
+                        release_groups = rg_data3.get("release-groups", [])
+                    else:
+                        self.console_logger.warning(f"[musicbrainz] All search attempts failed for '{artist_norm} - {album_norm}'.")
+                        return []  # Return empty list if all searches fail
+
+            # --- Filter Results if Broader Search Was Used ---
+            # We need to ensure the artist credit matches "Abney Park" if we used fallback searches
+            filtered_release_groups = []
+            if not (rg_data1 and rg_data1.get("count", 0) > 0):  # If primary search failed, filter results from fallback
+                self.console_logger.debug(f"Filtering {len(release_groups)} fallback results for artist '{artist_norm}'...")
+                for rg in release_groups:
+                    artist_credit = rg.get("artist-credit", [])
+                    if artist_credit and isinstance(artist_credit, list):
+                        # Check if the first artist name in the credit matches closely
+                        # Using a simple lowercase comparison for now
+                        first_artist = artist_credit[0]
+                        if isinstance(first_artist, dict) and first_artist.get("name", "").lower() == artist_norm.lower():
+                            filtered_release_groups.append(rg)
+                        else:  # Log skipped groups?
+                            skipped_artist = first_artist.get("name", "Unknown") if isinstance(first_artist, dict) else "Unknown"
+                            self.console_logger.debug(
+                                f"Skipping RG '{rg.get('title')}' due to artist mismatch ('{skipped_artist}' != '{artist_norm}')"
+                            )
+                self.console_logger.info(f"Found {len(filtered_release_groups)} release groups matching artist after filtering fallback results.")
+                if not filtered_release_groups:
+                    return []  # No relevant groups found after filtering
+                release_groups = filtered_release_groups  # Use the filtered list
             else:
-                # If no release groups, fall back to direct release search
-                search_url = f"https://musicbrainz.org/ws/2/release/?query=artist:{artist_encoded} AND release:{album_encoded}&fmt=json"
-                data = await self._make_api_request('musicbrainz', search_url)
+                # If primary search worked, we assume the artist match is already good
+                self.console_logger.info(f"Using {len(release_groups)} results from primary MusicBrainz search.")
 
-                if not data:
-                    self.console_logger.warning(f"MusicBrainz release search failed for {artist} - {album}")
-                    return []
+            # --- Process Filtered/Found Release Groups ---
+            processed_release_ids: Set[str] = set()
+            MAX_GROUPS_TO_PROCESS = 3  # Limit processing if multiple groups found
+            groups_to_process = release_groups[:MAX_GROUPS_TO_PROCESS]
+            release_fetch_tasks = []
+            rg_info_map = {idx: groups_to_process[idx] for idx in range(len(groups_to_process))}  # Map index to RG data
 
-                releases = data.get("releases", [])
+            for idx, rg in enumerate(groups_to_process):
+                rg_id = rg.get("id")
+                if not rg_id:
+                    continue
+                release_params = {"release-group": rg_id, "inc": "media", "fmt": "json", "limit": "50"}
+                release_search_url = "https://musicbrainz.org/ws/2/release/"
+                release_fetch_tasks.append(self._make_api_request('musicbrainz', release_search_url, params=release_params))
 
-                if not releases:
-                    self.console_logger.info(f"No results from MusicBrainz for '{artist} - {album}'")
-                    return []
+            release_results = await asyncio.gather(*release_fetch_tasks, return_exceptions=True)
 
-                # Process releases without release group data
+            # --- Score Fetched Releases ---
+            for idx, result in enumerate(release_results):
+                rg_info_full = rg_info_map.get(idx)  # Get full RG data using the index map
+                if not rg_info_full:
+                    continue
+                rg_id = rg_info_full["rg_id"] = rg_info_full.get("id")  # Store ID in mapped dict too
+
+                # Extract details needed for scoring/processing from rg_info_full
+                rg_first_date = rg_info_full.get("first-release-date")
+                rg_primary_type = rg_info_full.get("primary-type")
+                rg_artist_credit = rg_info_full.get("artist-credit", [])
+                rg_artist_name = ""
+                if rg_artist_credit and isinstance(rg_artist_credit, list):
+                    first_artist = rg_artist_credit[0]
+                    if isinstance(first_artist, dict):
+                        rg_artist_name = first_artist.get("name", "")
+
+                if isinstance(result, Exception):
+                    self.error_logger.warning(f"Failed to fetch releases for MB RG ID {rg_id}: {result}")
+                    continue
+                if not result or "releases" not in result:
+                    if result is not None:
+                        self.console_logger.warning(f"No release data found for MB RG ID {rg_id}")
+                    continue
+
+                releases = result.get("releases", [])
                 for release in releases:
-                    # Extract year from date
-                    year = None
-                    release_date = release.get("date", "")
-                    if release_date:
-                        year_match = re.search(r'^(\d{4})', release_date)
+                    release_id = release.get("id")
+                    if not release_id or release_id in processed_release_ids:
+                        continue
+                    processed_release_ids.add(release_id)
+
+                    year: Optional[str] = None
+                    release_date_str = release.get("date", "")
+                    if release_date_str:
+                        year_match = re.match(r'^(\d{4})', release_date_str)
                         if year_match:
                             year = year_match.group(1)
 
-                    # Create release data structure
-                    release_data = {
+                    status_val = release.get("status")  # Getting the value, can be None
+                    status = status_val.lower() if isinstance(status_val, str) else ""  # We translate to lowercase only if it is a string
+
+                    country_val = release.get("country")  # Getting the value, can be None
+                    country = country_val.lower() if isinstance(country_val, str) else ""  # Convert to lowercase only if it is a string
+
+                    release_title = release.get("title", "")
+                    release_title = release.get("title", "")
+                    media = release.get("media", [])
+                    format_details = media[0].get("format", "") if media and isinstance(media, list) else ""
+                    reissue_keywords = self.scoring_config.get('reissue_keywords', []) if isinstance(self.scoring_config, dict) else []
+                    is_reissue = any(kw.lower() in release_title.lower() for kw in reissue_keywords)
+
+                    release_info = {
                         'source': 'musicbrainz',
-                        'title': release.get('title', ''),
-                        'type': release.get('primary-type', ''),
-                        'status': release.get('status', ''),
+                        'id': release_id,
+                        'title': release_title,
+                        'artist': rg_artist_name or artist_norm,  # Use artist from RG credit
                         'year': year,
-                        'country': release.get('country', ''),
-                        'packaging': release.get('packaging', ''),
-                        'is_reissue': False,  # Can't determine from basic search
+                        'type': rg_primary_type or release.get("release-group", {}).get("primary-type"),  # Use RG type
+                        'status': status,
+                        'country': country,
+                        'format_details': format_details,
+                        'is_reissue': is_reissue,
+                        'releasegroup_id': rg_id,
+                        'releasegroup_first_date': rg_first_date,  # Pass RG first date
                         'score': 0,
                     }
 
-                    # Only score if we have a year
-                    if release_data['year']:
-                        release_data['score'] = self._score_original_release(release_data, artist, album)
-                        scored_releases.append(release_data)
+                    if self._is_valid_year(release_info['year']):
+                        release_info['score'] = self._score_original_release(release_info, artist_norm, album_norm, artist_region)
+                        scored_releases.append(release_info)
 
-                # Sort by score
-                scored_releases.sort(key=lambda x: x['score'], reverse=True)
-
-                # Log results
-                self.console_logger.info(f"Scored {len(scored_releases)} results from MusicBrainz basic search")
-
-                return scored_releases
-
-        except Exception as e:
-            self.error_logger.error(f"Error retrieving year from MusicBrainz for '{artist} - {album}': {e}")
-            return []
-
-    async def _get_scored_releases_from_discogs(self, artist: str, album: str) -> List[Dict[str, Any]]:
-        """
-        Retrieve and score releases from Discogs.
-
-        Args:
-            artist: Artist name
-            album: Album name
-
-        Returns:
-            List of scored release dictionaries
-        """
-        scored_releases: List[Dict[str, Any]] = []
-        try:
-            artist_encoded = urllib.parse.quote_plus(artist)
-            album_encoded = urllib.parse.quote_plus(album)
-
-            search_url = f"https://api.discogs.com/database/search?artist={artist_encoded}&release_title={album_encoded}&type=release"
-            self.console_logger.info(f"Discogs query: {search_url}")
-
-            data = await self._make_api_request('discogs', search_url)
-            if not data:
-                return []
-
-            results = data.get('results', [])
-
-            if not results:
-                self.console_logger.info(f"No results from Discogs for '{artist} - {album}'")
-                return []
-
-            self.console_logger.info(f"Found {len(results)} potential matches from Discogs")
-
-            # Process the results
-            for item in results:
-                title = item.get('title', '')
-                is_reissue = any(kw.lower() in title.lower() for kw in self.config.get('year_retrieval', {}).get('reissue_keywords', []))
-
-                formats = item.get('format', [])
-                formats_str = ', '.join(formats) if isinstance(formats, list) else str(formats)
-
-                # Extract detailed format information
-                format_details = []
-                if 'format_quantity' in item:
-                    format_details.append(f"{item['format_quantity']}x{formats_str}")
-                else:
-                    format_details.append(formats_str)
-
-                # Check for special labels or flags
-                formats_tags = item.get('formats', [])
-                special_flags = []
-
-                for fmt in formats_tags:
-                    if isinstance(fmt, dict):
-                        if 'descriptions' in fmt:
-                            special_flags.extend(fmt['descriptions'])
-
-                # Log detailed information about the release
-                self.console_logger.info(
-                    f"Discogs release: {title} ({item.get('year', 'Unknown')}) - "
-                    + f"Country: {item.get('country', 'Unknown')}, Format: {formats_str}"
-                    + (f", Tags: {', '.join(special_flags)}" if special_flags else "")
-                )
-
-                # Determine if this is likely a reissue based on format details
-                format_based_reissue = any(
-                    kw.lower() in ' '.join(special_flags).lower() for kw in self.config.get('year_retrieval', {}).get('reissue_keywords', [])
-                )
-
-                # Sometimes reissues are marked in the comments
-                comments = item.get('comment', '')
-                comments_suggest_reissue = False
-                if comments and isinstance(comments, str):
-                    comments_suggest_reissue = any(
-                        kw.lower() in comments.lower() for kw in self.config.get('year_retrieval', {}).get('reissue_keywords', [])
-                    )
-
-                # Create release data object
-                release_data = {
-                    'source': 'discogs',
-                    'title': title,
-                    'type': item.get('format', [''])[0] if item.get('format') else '',
-                    'status': 'official',  # Discogs default
-                    'year': str(item.get('year', '')),
-                    'country': item.get('country', ''),
-                    'format': formats_str,
-                    'is_reissue': is_reissue or format_based_reissue or comments_suggest_reissue,
-                    'format_details': ' '.join(format_details),
-                    'special_flags': special_flags,
-                    'score': 0,
-                }
-
-                if release_data['year']:
-                    release_data['score'] = self._score_original_release(release_data, artist, album)
-                    scored_releases.append(release_data)
-
-            # Sort by score
+            # --- Final Sorting and Logging ---
             scored_releases.sort(key=lambda x: x['score'], reverse=True)
 
-            # Log top results
+            self.console_logger.info(f"Found {len(scored_releases)} scored releases from MusicBrainz for '{artist_norm} - {album_norm}'")
             for i, r in enumerate(scored_releases[:3]):
                 self.console_logger.info(
-                    f"Discogs #{i+1}: {r['title']} ({r['year']}) - "
-                    + f"Country: {r.get('country', 'Unknown')}, "
-                    + f"Format: {r.get('format', 'Unknown')}, "
-                    + f"Is Reissue: {r.get('is_reissue')}, "
-                    + f"Score: {r['score']}"
+                    f"  MB #{i+1}: {r['title']} ({r['year']}) - Type: {r['type']}, Status: {r['status']}, "
+                    f"Score: {r['score']} (RG First Date: {r.get('releasegroup_first_date')})"
                 )
 
-            self.console_logger.info(f"Scored {len(scored_releases)} results from Discogs")
             return scored_releases
 
         except Exception as e:
-            self.error_logger.error(f"Error retrieving year from Discogs for '{artist} - {album}': {e}")
+            self.error_logger.exception(f"Error retrieving/scoring from MusicBrainz for '{artist_norm} - {album_norm}': {e}")
             return []
 
-    async def _get_year_from_lastfm(self, artist: str, album: str) -> Dict[str, Any]:
+    # `_get_scored_releases_from_discogs` remains the same as provided in the previous response.
+    async def _get_scored_releases_from_discogs(self, artist_norm: str, album_norm: str, artist_region: Optional[str]) -> List[Dict[str, Any]]:
         """
-        Retrieve album release year from Last.fm API.
-
-        This method queries the Last.fm API for album information and extracts
-        release year data from various sources within the response (wiki, tags, etc.)
+        Retrieve and score releases from Discogs.
+        Uses a combined query parameter 'q' and includes basic result validation.
+        Fixes Flake8 warnings F841 and E501.
 
         Args:
-            artist: Artist name
-            album: Album name
+            artist_norm (str): Normalized artist name.
+            album_norm (str): Normalized album name.
+            artist_region (Optional[str]): Artist's region code for scoring.
 
         Returns:
-            Dictionary with year and metadata about the source/confidence
-
-        Example:
-            >>> result = await service._get_year_from_lastfm("Septicflesh", "Sumerian Daemons")
-            >>> print(f"Year: {result.get('year')}, Source: {result.get('source')}")
+            List[Dict[str, Any]]: List of scored release dictionaries, sorted by score descending.
         """
-        if not self.lastfm_api_key:
-            return {}
-
+        scored_releases: List[Dict[str, Any]] = []
         try:
-            self.console_logger.info(f"Searching Last.fm for album year: '{artist} - {album}'")
+            # Use combined query parameter 'q'
+            search_query = f"{artist_norm} {album_norm}"
+            params = {"q": search_query, "type": "release", "per_page": "25"}
+            search_url = "https://api.discogs.com/database/search"
 
-            # Get permission from rate limiter (this will wait if needed)
-            wait_time = await self.rate_limiters['lastfm'].acquire()
-            if wait_time > 0.5:
-                self.console_logger.debug(f"Waited {wait_time:.2f}s for Last.fm rate limiting")
+            log_discogs_url = search_url + "?" + urllib.parse.urlencode(params, safe=':/')
+            self.console_logger.debug(f"[discogs] Search URL: {log_discogs_url}")
 
-            # Track request count
-            self.request_counts['lastfm'] = self.request_counts.get('lastfm', 0) + 1
+            data = await self._make_api_request('discogs', search_url, params=params)
 
-            url = "http://ws.audioscrobbler.com/2.0/"
-            params = {
-                "method": "album.getInfo",
-                "artist": artist,
-                "album": album,
-                "api_key": self.lastfm_api_key,
-                "format": "json",
-            }
+            # --- ADDED DEBUG LOGGING ---
+            self.console_logger.debug(f"[discogs] Data received from _make_api_request: Type={type(data)}")
+            if isinstance(data, dict):
+                # Log keys and maybe first part of results if present
+                self.console_logger.debug(f"[discogs] Received data keys: {list(data.keys())}")
+                results_preview = data.get('results', 'N/A')
+                if isinstance(results_preview, list):
+                    self.console_logger.debug(
+                        f"[discogs] Received {len(results_preview)} results. First result preview: {str(results_preview[:1])[:300]}"
+                    )
+                else:
+                    self.console_logger.debug("[discogs] 'results' key not found or not a list.")
+            elif data is None:
+                self.console_logger.debug("[discogs] _make_api_request returned None.")
+            # ---------------------------
 
-            async with self.session.get(url, params=params) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    self.console_logger.warning(f"Last.fm API error: {response.status} - {error_text[:200]}")
-                    return {}
+            # --- Process Discogs Results (logic remains the same) ---
+            if not data or "results" not in data:  # This check remains
+                self.console_logger.warning(f"[discogs] Search failed or no results key in data for query: '{search_query}'")
+                return []
 
-                data = await response.json()
+            if not data or "results" not in data:
+                self.console_logger.warning(f"[discogs] Search failed or no results for query: '{search_query}'")
+                return []
 
-                if "error" in data:
-                    self.console_logger.warning(f"Last.fm API error: {data.get('message', 'Unknown error')}")
-                    return {}
+            results = data.get('results', [])
+            if not results:
+                self.console_logger.info(f"[discogs] No results found for query: '{search_query}'")
+                return []
 
-                return self._extract_year_from_lastfm_data(data, artist, album)
+            self.console_logger.debug(f"Found {len(results)} potential Discogs matches for query: '{search_query}'")
+
+            scoring_cfg = self.scoring_config if isinstance(self.scoring_config, dict) else {}
+            reissue_keywords = scoring_cfg.get('reissue_keywords', [])
+
+            for item in results:
+                year_str = str(item.get('year', ''))
+                release_title_full = item.get('title', '')
+                title_parts = release_title_full.split(' - ', 1)
+                release_artist = self._normalize_name(title_parts[0].strip()) if len(title_parts) > 1 else artist_norm
+                actual_release_title = (
+                    self._normalize_name(title_parts[1].strip()) if len(title_parts) > 1 else self._normalize_name(release_title_full)
+                )
+
+                # --- Stricter validation after broad search ---
+                # Removed unused threshold variables
+                artist_matches = artist_norm.lower() in release_artist.lower() or release_artist.lower() in artist_norm.lower()
+                # Require high album title similarity or perfect artist match for less strict title check
+                # Using simple containment check for now
+                album_matches = album_norm.lower() in actual_release_title.lower() or actual_release_title.lower() in album_norm.lower()
+
+                # Break long condition into multiple lines for readability (E501 fix)
+                artist_mismatch_skip = not artist_matches
+                album_mismatch_skip = not album_matches and (release_artist.lower() != artist_norm.lower())
+
+                if artist_mismatch_skip:
+                    self.console_logger.debug(
+                        f"[discogs] Skipping result '{release_title_full}' due to artist mismatch " f"('{release_artist}' vs search '{artist_norm}')"
+                    )
+                    continue
+                if album_mismatch_skip:
+                    self.console_logger.debug(
+                        f"[discogs] Skipping result '{release_title_full}' due to album mismatch "
+                        f"('{actual_release_title}' vs search '{album_norm}') and imperfect artist match"
+                    )
+                    continue
+                # ----------------------------------------------------
+
+                formats = item.get('formats', [])
+                format_names: List[str] = []
+                format_descriptions: List[str] = []
+                if isinstance(formats, list):
+                    for fmt in formats:
+                        if isinstance(fmt, dict):
+                            if fmt.get('name'):
+                                format_names.append(fmt['name'])
+                            if fmt.get('descriptions'):
+                                descriptions = fmt['descriptions']
+                                if isinstance(descriptions, list):
+                                    format_descriptions.extend(descriptions)
+
+                format_details_str = ", ".join(format_names + format_descriptions)
+
+                is_reissue = False
+                title_lower = actual_release_title.lower()
+                desc_lower = " ".join(format_descriptions).lower()
+                if any(kw.lower() in title_lower for kw in reissue_keywords):
+                    is_reissue = True
+                if not is_reissue and any(kw.lower() in desc_lower for kw in reissue_keywords):
+                    is_reissue = True
+                if not is_reissue and any(d.lower() in ['reissue', 'remastered', 'repress', 'remaster'] for d in format_descriptions):
+                    is_reissue = True
+
+                release_type = "Album"
+                format_names_lower = [fn.lower() for fn in format_names]
+                desc_lower_list = [d.lower() for d in format_descriptions]
+                if any(ft in format_names_lower for ft in ['lp', 'album']) or 'album' in desc_lower_list:
+                    release_type = "Album"
+                elif any(ft in format_names_lower for ft in ['ep']) or 'ep' in desc_lower_list:
+                    release_type = "EP"
+                elif any(ft in format_names_lower for ft in ['single']) or 'single' in desc_lower_list:
+                    release_type = "Single"
+                elif any(ft in format_names_lower for ft in ['compilation']) or 'compilation' in desc_lower_list:
+                    release_type = "Compilation"
+
+                release_info = {
+                    'source': 'discogs',
+                    'id': item.get('id'),
+                    'title': actual_release_title,
+                    'artist': release_artist,
+                    'year': year_str,
+                    'type': release_type,
+                    'status': 'Official',
+                    'country': item.get('country', '').lower(),
+                    'format_details': format_details_str,
+                    'is_reissue': is_reissue,
+                    'score': 0,
+                }
+
+                if self._is_valid_year(release_info['year']):
+                    release_info['score'] = self._score_original_release(release_info, artist_norm, album_norm, artist_region)
+                    min_score = scoring_cfg.get('discogs_min_broad_score', 20)
+                    if release_info['score'] > min_score:
+                        scored_releases.append(release_info)
+
+            scored_releases.sort(key=lambda x: x['score'], reverse=True)
+
+            self.console_logger.info(f"Found {len(scored_releases)} scored releases from Discogs for query: '{search_query}'")
+            for i, r in enumerate(scored_releases[:3]):
+                # Break long log line (E501 fix)
+                self.console_logger.info(
+                    f"  Discogs #{i+1}: {r.get('title', '')} ({r.get('year', '')}) - "
+                    f"Type: {r.get('type', '')}, Reissue: {r.get('is_reissue')}, "
+                    f"Score: {r.get('score')}"
+                )
+
+            return scored_releases
 
         except Exception as e:
-            self.error_logger.error(f"Error getting year from Last.fm for '{artist} - {album}': {e}")
-            return {}
-        finally:
-            # Always release the rate limiter semaphore
-            if 'lastfm' in self.rate_limiters:
-                self.rate_limiters['lastfm'].release()
+            self.error_logger.exception(f"Error retrieving/scoring from Discogs for '{artist_norm} - {album_norm}': {e}")
+            return []
 
-    def _extract_year_from_lastfm_data(self, data: Dict[str, Any], artist: str, album: str) -> Dict[str, Any]:
+    # `_get_scored_releases_from_lastfm` remains the same as provided in the previous response.
+    async def _get_scored_releases_from_lastfm(self, artist_norm: str, album_norm: str) -> List[Dict[str, Any]]:
         """
-        Extract year from Last.fm API response.
-
-        Examines multiple potential sources of information in the API:
-        1. Wiki text (most reliable)
-        2. Tags (moderately reliable)
-        3. Wiki published date (less reliable)
+        Retrieve album release year from Last.fm and return a scored release dictionary.
 
         Args:
-            data: Last.fm API response data
-            artist: Artist name (for logging)
-            album: Album name (for logging)
+            artist_norm (str): Normalized artist name.
+            album_norm (str): Normalized album name.
 
         Returns:
-            Dictionary with year and metadata
-
-        Example:
-            >>> lastfm_data = await session.get(url).json()
-            >>> year_info = service._extract_year_from_lastfm_data(lastfm_data, "Septicflesh", "Sumerian Daemons")
-            >>> if year_info.get('year') == "2003":
-            >>>     print("Correct year found!")
+            List[Dict[str, Any]]: List containing zero or one scored release dictionary.
+                                    Last.fm typically provides only one primary result per lookup.
         """
-        result = {}
-        confidence = 0
-        source = "Unknown"
+        scored_releases: List[Dict[str, Any]] = []
+        if not self.use_lastfm:
+            return []  # Skip if Last.fm is disabled
 
-        # If there's no "album" key - no data
-        if "album" not in data:
-            self.console_logger.warning(f"No album data found in Last.fm response for '{artist} - {album}'")
-            return {}
+        try:
+            self.console_logger.debug(f"Searching Last.fm for: '{artist_norm} - {album_norm}'")
 
-        album_data = data["album"]
+            # Prepare API request parameters
+            url = "https://ws.audioscrobbler.com/2.0/"
+            params = {
+                "method": "album.getInfo",
+                "artist": artist_norm,  # Use normalized names for lookup consistency
+                "album": album_norm,
+                "api_key": self.lastfm_api_key,
+                "format": "json",
+                "autocorrect": "1",  # Enable Last.fm autocorrection
+            }
 
-        # Attempt 1: Check wiki content - with proper type checks
-        if "wiki" in album_data and isinstance(album_data["wiki"], dict) and "content" in album_data["wiki"]:
+            # Make the API request
+            data = await self._make_api_request('lastfm', url, params=params)
 
-            wiki_content = album_data["wiki"]["content"]
-            year_from_wiki = self._extract_year_from_text(wiki_content)
+            # Validate response
+            if not data:
+                self.console_logger.warning(f"Last.fm getInfo failed (no data) for '{artist_norm} - {album_norm}'")
+                return []
+            if "error" in data:  # Check for Last.fm specific errors
+                self.console_logger.warning(f"Last.fm API error {data.get('error')}: {data.get('message', 'Unknown Last.fm error')}")
+                return []
+            if "album" not in data or not isinstance(data["album"], dict):
+                # Ensure the main 'album' object exists
+                self.console_logger.warning(f"Last.fm response missing 'album' object for '{artist_norm} - {album_norm}'")
+                return []
 
-            if year_from_wiki:
-                result["year"] = year_from_wiki
-                result["confidence"] = 70  # High confidence for wiki data
-                result["source"] = "wiki"
-                self.console_logger.info(f"Found year {year_from_wiki} in Last.fm wiki for '{artist} - {album}'")
-                return result
+            # Extract year information from the album data
+            album_data = data["album"]
+            year_info = self._extract_year_from_lastfm_data(album_data)  # Use helper function
 
-        # Attempt 2: Check tags for release year - with proper type checks
-        if "tags" in album_data and isinstance(album_data["tags"], dict) and "tag" in album_data["tags"]:
+            if year_info and year_info.get('year'):
+                year = year_info['year']
+                source_detail = year_info.get('source_detail', 'unknown')
 
-            # Tags can be either a single dict or a list of dicts
-            tags_data = album_data["tags"]["tag"]
+                # Basic assumptions for Last.fm data (less detailed than MB/Discogs)
+                release_type = "Album"  # Assume Album unless tags suggest otherwise (complex to implement reliably)
+                status = "Official"  # Assume Official
 
-            # Convert to list if it's a single dict
-            if isinstance(tags_data, dict):
-                tags_data = [tags_data]
+                # Prepare data structure for scoring
+                release_info = {
+                    'source': 'lastfm',
+                    'id': album_data.get('mbid'),  # MusicBrainz ID from Last.fm, if available
+                    'title': album_data.get('name', album_norm),  # Use name from response
+                    'artist': album_data.get('artist', artist_norm),  # Use artist from response
+                    'year': year,
+                    'type': release_type,
+                    'status': status,
+                    'country': '',  # Not provided by Last.fm getInfo
+                    'format_details': '',  # Not provided
+                    'is_reissue': False,  # Difficult to determine reliably
+                    'source_detail': source_detail,  # Where the year came from (wiki, date, tags)
+                    'score': 0,
+                }
 
-            if isinstance(tags_data, list):
-                year_tags = []
+                # Score this single result (passing None for artist_region)
+                if self._is_valid_year(release_info['year']):
+                    release_info['score'] = self._score_original_release(release_info, artist_norm, album_norm, None)
+                    scored_releases.append(release_info)
+                    self.console_logger.info(
+                        f"Scored LastFM Release: '{release_info['title']}' ({release_info['year']}) "
+                        f"Source: {source_detail}, Score: {release_info['score']}"
+                    )
 
-                for tag in tags_data:
-                    if isinstance(tag, dict) and "name" in tag:
-                        tag_name = tag["name"].lower()
-                        # Look for tags that look like years (1990-2030)
-                        year_match = re.search(r"\b(19[89]\d|20[0-2]\d)\b", tag_name)
-                        if year_match:
-                            potential_year = year_match.group(1)
-                            year_tags.append(potential_year)
+        except Exception as e:
+            # Catch any unexpected errors during the process
+            self.error_logger.exception(f"Error retrieving/scoring from Last.fm for '{artist_norm} - {album_norm}': {e}")
 
-                if year_tags:
-                    # Use the most popular year in tags
-                    year_counts = {}
-                    for year in year_tags:
-                        year_counts[year] = year_counts.get(year, 0) + 1
+        # Return the list (usually empty or with one scored item)
+        return scored_releases
 
-                    # Sort by count, then by year (earlier years take priority)
-                    sorted_years = sorted(year_counts.items(), key=lambda x: (-x[1], x[0]))
-                    best_year = sorted_years[0][0]
-
-                    result["year"] = best_year
-                    result["confidence"] = 60  # Medium confidence for tag data
-                    result["source"] = "tags"
-                    self.console_logger.info(f"Found year {best_year} in Last.fm tags for '{artist} - {album}'")
-                    return result
-
-        # Attempt 3: Check wiki published date - with proper type checks
-        if "wiki" in album_data and isinstance(album_data["wiki"], dict) and "published" in album_data["wiki"]:
-
-            published = album_data["wiki"]["published"]
-            # Wiki published date can be a rough indicator of when the album already existed
-            year_match = re.search(r"\b(19[89]\d|20[0-2]\d)\b", published)
-            if year_match:
-                wiki_year = year_match.group(1)
-                result["year"] = wiki_year
-                result["confidence"] = 40  # Low confidence for published date
-                result["source"] = "wiki_published"
-                self.console_logger.info(f"Found year {wiki_year} from Last.fm wiki published date for '{artist} - {album}'")
-                return result
-
-        # Attempt 4: Check for release date attribute directly
-        if "releasedate" in album_data and album_data["releasedate"]:
-            date_text = album_data["releasedate"]
-            year_match = re.search(r"\b(19[89]\d|20[0-2]\d)\b", date_text)
-            if year_match:
-                release_year = year_match.group(1)
-                result["year"] = release_year
-                result["confidence"] = 75  # High confidence for direct release date
-                result["source"] = "releasedate"
-                self.console_logger.info(f"Found year {release_year} from Last.fm direct release date for '{artist} - {album}'")
-                return result
-
-        # Nothing found
-        self.console_logger.warning(f"No year information found in Last.fm data for '{artist} - {album}'")
-        return {}
-
-    def _extract_year_from_text(self, text: str) -> Optional[str]:
+    # `_extract_year_from_lastfm_data` remains the same as provided in the previous response.
+    def _extract_year_from_lastfm_data(self, album_data: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
-        Extract release year from text by looking for common date patterns.
+        Extract the most likely year from the Last.fm album data structure.
+
+        Prioritizes explicit release date, then wiki content patterns, then tags.
 
         Args:
-            text: Text to search for year
+            album_data (Dict[str, Any]): The 'album' object from the Last.fm API response.
 
         Returns:
-            Year as string or None if not found
-
-        Example:
-            >>> year = service._extract_year_from_text("The album was released in 2003 via...")
-            >>> print(year)  # "2003"
+            Optional[Dict[str, str]]: A dictionary {'year': YYYY, 'source_detail': 'source'} or None if no year found.
         """
-        # Pattern 1: "released in YYYY" or "released on DD Month YYYY"
-        release_match = re.search(r"released\s+(?:in|on)?\s+(?:\d+\s+\w+\s+)?(\d{4})", text, re.IGNORECASE)
-        if release_match:
-            return release_match.group(1)
+        year: Optional[str] = None
+        source_detail: str = "unknown"
 
-        # Pattern 2: "YYYY release" or "a YYYY album"
-        release_match_2 = re.search(r"\b(19[89]\d|20[0-2]\d)\s+(?:release|album)\b", text, re.IGNORECASE)
-        if release_match_2:
-            return release_match_2.group(1)
+        # --- Priority 1: Explicit 'releasedate' field ---
+        release_date_str = album_data.get("releasedate", "").strip()
+        if release_date_str:
+            # Extract year (YYYY) using regex, handles various date formats
+            year_match = re.search(r'\b(\d{4})\b', release_date_str)
+            if year_match:
+                potential_year = year_match.group(1)
+                # Validate the extracted year
+                if self._is_valid_year(potential_year):
+                    year = potential_year
+                    source_detail = "releasedate"
+                    self.console_logger.debug(f"LastFM Year: {year} from 'releasedate' field")
+                    return {'year': year, 'source_detail': source_detail}
 
-        # Pattern 3: date in "DD Month YYYY" or "Month YYYY" format
-        date_match = re.search(
-            r"\b(?:\d{1,2}\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\b",
-            text,
-            re.IGNORECASE,
+        # --- Priority 2: Wiki Content ---
+        wiki = album_data.get("wiki")
+        # Check if wiki exists and is a dictionary with 'content'
+        if wiki and isinstance(wiki, dict) and isinstance(wiki.get("content"), str) and wiki["content"].strip():
+            wiki_content = wiki["content"]
+            # Define patterns to search for year information, from more specific to less
+            patterns = [
+                # Specific phrases like "Originally released in/on YYYY"
+                r'(?:originally\s+)?released\s+(?:in|on)\s+(?:(?:\d{1,2}\s+)?'
+                r'(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|'
+                r'Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+)?(\d{4})',
+                # Phrases like "YYYY release" or "a YYYY album"
+                r'\b(19\d{2}|20\d{2})\s+(?:release|album)\b',
+                # Common date formats like "Month DD, YYYY" or "DD Month YYYY"
+                r'\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|'
+                r'Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+(\d{4})\b',
+                r'\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|'
+                r'Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b',
+                # Year in parentheses (less reliable, lower priority)
+                # r'\((\d{4})\)' # Commented out - too prone to errors (e.g., (C) 2005)
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, wiki_content, re.IGNORECASE)
+                if match:
+                    # Find the actual year group (could be group 1 or 2 depending on pattern)
+                    potential_year = next((g for g in match.groups() if g is not None), None)
+                    if self._is_valid_year(potential_year):
+                        year = potential_year
+                        source_detail = "wiki_content"
+                        self.console_logger.debug(f"LastFM Year: {year} from wiki content (pattern: '{pattern}')")
+                        return {'year': year, 'source_detail': source_detail}
+
+        # --- Priority 3: Tags ---
+        tags_container = album_data.get("tags")  # First, we get the value for 'tags'
+        tags_data = []  # By default - an empty list
+
+        # Check if tags_container is a dictionary before calling .get('tag')
+        if isinstance(tags_container, dict):
+            # If it's a dictionary, try to get 'tag', otherwise - an empty list
+            tags_data = tags_container.get("tag", [])
+        # If it's a list, we can use it directly
+        elif isinstance(tags_container, list):
+            tags_data = tags_container
+
+        # Make sure that tags_data is a list (in case 'tag' contains a single dictionary, not a list)
+        if isinstance(tags_data, dict):
+            tags_data = [tags_data]
+        elif not isinstance(tags_data, list):  # If it's still not a list, reset to empty
+            tags_data = []
+
+        if tags_data and isinstance(tags_data, list):
+            year_tags = defaultdict(int)  # Count frequency of year tags
+            for tag in tags_data:
+                if isinstance(tag, dict) and 'name' in tag:
+                    tag_name = tag['name']
+                    # Check if tag is a 4-digit string representing a valid year
+                    if len(tag_name) == 4 and tag_name.isdigit():
+                        if self._is_valid_year(tag_name):
+                            year_tags[tag_name] += 1
+
+            if year_tags:
+                # Choose the most frequent year tag
+                # If tied, could optionally prefer earlier year, but most frequent is simpler
+                best_year_tag = max(year_tags, key=year_tags.get)
+                year = best_year_tag
+                source_detail = "tags"
+                self.console_logger.debug(f"LastFM Year: {year} from tags (most frequent)")
+                return {'year': year, 'source_detail': source_detail}
+
+        # --- No valid year found ---
+        self.console_logger.debug(
+            f"No year information extracted from Last.fm data for '{album_data.get('artist', '')} - {album_data.get('name', '')}'"
         )
-        if date_match:
-            return date_match.group(1)
-
-        # Pattern 4: year in parentheses, which often indicates release date
-        year_match = re.search(r"\((\d{4})\)", text)
-        if year_match:
-            return year_match.group(1)
-
-        # No matches
         return None
 
-    def _score_lastfm_result(self, release: Dict[str, Any], artist: str, album: str) -> int:
-        """
-        Calculate score for a Last.fm result based on multiple factors.
-
-        Args:
-            release: Release data from Last.fm
-            artist: Artist name
-            album: Album name
-
-        Returns:
-            Score from 0 to 100
-
-        Example:
-            >>> release_data = {"year": "2003", "confidence": 70, "source": "wiki"}
-            >>> score = service._score_lastfm_result(release_data, "Septicflesh", "Sumerian Daemons")
-            >>> print(f"Last.fm data score: {score}/100")
-        """
-        # Get scoring weights from config
-        scoring_config = self.config.get('year_retrieval', {}).get('scoring', {})
-
-        # Initial score based on confidence from extraction
-        confidence = release.get('confidence', 50)
-        score = confidence
-
-        # Add bonuses or penalties based on data source
-        source = release.get('source_detail', 'Unknown')
-
-        if source == 'wiki':
-            # Wiki is the most reliable source on Last.fm
-            wiki_bonus = scoring_config.get('lastfm_wiki_bonus', 20)
-            score += wiki_bonus
-        elif source == 'tags':
-            # Tags can be less reliable
-            tags_bonus = scoring_config.get('lastfm_tags_bonus', 10)
-            score += tags_bonus
-        elif source == 'wiki_published':
-            # Wiki published date is the least reliable source
-            wiki_date_bonus = scoring_config.get('lastfm_wiki_date_bonus', 5)
-            score += wiki_date_bonus
-
-        # Check year relative to artist's career period
-        year_str = release.get('year', '')
-        if year_str and self.artist_period_context:
-            try:
-                year = int(year_str)
-                start_year = self.artist_period_context.get('start_year')
-
-                # Bonus for years falling within activity period
-                if start_year and start_year <= year:
-                    activity_bonus = scoring_config.get('active_period_bonus', 20)
-                    score += activity_bonus
-
-                    # Extra bonus for early releases
-                    years_after_start = year - start_year
-                    if years_after_start <= 3:
-                        early_release_bonus = scoring_config.get('early_release_bonus', 10)
-                        score += early_release_bonus
-
-                # Penalty for years before career start
-                if start_year and year < start_year:
-                    pre_career_penalty = 15
-                    score -= pre_career_penalty
-
-                # Check plausibility of year
-                current_year = datetime.now().year
-                if year > current_year:
-                    # Future year - impossible for old release
-                    future_penalty = scoring_config.get('future_date_penalty', 50)
-                    score -= future_penalty
-                elif year >= current_year - 2:
-                    # Very recent releases - less reliable
-                    recent_penalty = scoring_config.get('recent_release_penalty', 10)
-                    score -= recent_penalty
-            except ValueError:
-                pass
-
-        # Limit score to 0-100 range
-        return max(0, min(score, 100))
-
+    # `_normalize_name` remains the same as provided in the previous response.
     def _normalize_name(self, name: str) -> str:
         """
         Normalize a name by removing common suffixes and extra characters for better API matching.
@@ -1942,93 +1843,87 @@ class ExternalApiService:
             name (str): The original name.
 
         Returns:
-            str: Normalized name.
-
-        Example:
-            >>> service._normalize_name("Agalloch - The White EP")
-            'Agalloch - The White'
+            str: Normalized name, or empty string if input is empty/None.
         """
-        suffixes = [' - EP', ' - Single', ' EP', ' (Deluxe)', ' (Remastered)']
+        if not name or not isinstance(name, str):
+            return ""
+
+        # Patterns for suffixes/versions to remove (case-insensitive)
+        # More specific patterns first
+        suffixes_to_strip = [
+            # Common Remaster/Edition markers in parens/brackets
+            (
+                r'\s+[\(\[](?:\d{4}\s+)?(?:Remaster(?:ed)?|Deluxe(?: Edition)?|'
+                r'Expanded(?: Edition)?|Legacy Edition|Anniversary Edition|'
+                r'Bonus Tracks?|Digital Version)[\)\]]'
+            ),
+            # Standalone Remaster/Deluxe tags (less common, more risky)
+            # r'\s+-\s+(?:Remastered|Deluxe Edition)$',
+            # EP/Single suffixes
+            r'\s+(?:-\s+)?(?:EP|Single)$',
+            r'\s+[\(\[]EP[\)\]]$',
+            r'\s+[\(\[]Single[\)\]]$',
+        ]
         result = name
-        for suffix in suffixes:
-            if result.endswith(suffix):
-                result = result[: -len(suffix)]
-        result = re.sub(r'[^\w\s]', ' ', result)
+        for suffix_pattern in suffixes_to_strip:
+            # Use re.IGNORECASE for case-insensitive removal
+            result = re.sub(suffix_pattern + r'\s*$', '', result, flags=re.IGNORECASE).strip()
+
+        # General cleanup: remove most punctuation (keep hyphens), normalize whitespace
+        # Keep basic Latin letters, numbers, whitespace, and hyphens
+        result = re.sub(r'[^\w\s\-]', '', result)
         result = re.sub(r'\s+', ' ', result).strip()
-        return result
 
-    async def _get_artist_aliases(self, artist_id: str) -> List[str]:
+        # Avoid returning empty string if original name wasn't empty
+        return result if result else name
+
+    # `_clean_expired_cache` remains the same as provided in the previous response.
+    def _clean_expired_cache(self, cache: dict, ttl_seconds: float, cache_name: str = "Generic"):
         """
-        Get list of aliases (alternative names) for an artist from MusicBrainz.
+        Removes expired entries from a timestamped cache dictionary.
 
         Args:
-            artist_id: MusicBrainz artist ID
-
-        Returns:
-            List of alias names in lowercase
-
-        Example:
-            >>> aliases = await service._get_artist_aliases("123e4567-e89b-12d3-a456-426614174000")
-            >>> print(aliases)  # ["septic flesh", "s.f.", ...]
+            cache (dict): The cache dictionary to clean. Expected format: {key: (value, timestamp)}.
+            ttl_seconds (float): The time-to-live in seconds.
+            cache_name (str): Name of the cache for logging purposes.
         """
-        aliases = []
-        try:
-            url = f"https://musicbrainz.org/ws/2/artist/{artist_id}?inc=aliases&fmt=json"
-            data = await self._make_api_request('musicbrainz', url)
+        if not isinstance(cache, dict):
+            return  # Safety check
 
-            if data and "aliases" in data:
-                for alias in data["aliases"]:
-                    if "name" in alias:
-                        aliases.append(alias["name"].lower())
+        current_time = time.monotonic()
+        # Find keys of expired entries
+        keys_to_delete = [
+            key
+            for key, (_, timestamp) in cache.items()
+            # Ensure timestamp is a number before comparison
+            if isinstance(timestamp, (int, float)) and (current_time - timestamp >= ttl_seconds)
+        ]
 
-            return aliases
-        except Exception as e:
-            self.error_logger.error(f"Error getting aliases for artist {artist_id}: {e}")
-            return []
+        if keys_to_delete:
+            for key in keys_to_delete:
+                try:
+                    del cache[key]
+                except KeyError:
+                    pass  # Ignore if key already removed elsewhere
+            self.console_logger.debug(f"Cleaned {len(keys_to_delete)} expired entries from {cache_name} cache.")
 
-    def _is_valid_year(self, year_str: str, score: int) -> bool:
+    # `_is_valid_year` remains the same as provided in the previous response.
+    def _is_valid_year(self, year_str: Optional[str]) -> bool:
         """
-        Validates whether a given year string represents a sensible release year.
+        Basic check if a string represents a plausible release year (4 digits, within range).
 
         Args:
-            year_str (str): Year as a string.
-            score (int): Confidence score for the year.
+            year_str (Optional[str]): The year string to validate.
 
         Returns:
-            bool: True if valid, False otherwise.
-
-        Example:
-            >>> service._is_valid_year("1999", 80)
-            True
+            bool: True if the string is a valid 4-digit year within the configured range, False otherwise.
         """
+        if not year_str or not isinstance(year_str, str) or not year_str.isdigit() or len(year_str) != 4:
+            return False
         try:
             year = int(year_str)
-            if year < self.min_valid_year or year > self.current_year:
-                return False
-            if score < self.trust_threshold:
-                current_year = datetime.now().year
-                if year < 1950 or year > current_year:
-                    return False
-            return True
-        except (ValueError, TypeError):
+            # Check against configured min year and allow a few years into the future
+            return self.min_valid_year <= year <= (self.current_year + 5)
+        except ValueError:
+            # Should not happen due to isdigit, but included for safety
             return False
-
-
-def _clean_activity_cache(self):
-    """
-    Clean expired entries from the activity cache.
-    """
-    cache_ttl_days = self.config.get('year_retrieval', {}).get('cache_ttl_days', 365)
-    cache_ttl_seconds = cache_ttl_days * 86400
-    current_time = time.time()
-    expired_keys = []
-
-    for key, ((_, _), timestamp) in self.activity_cache.items():
-        if current_time - timestamp > cache_ttl_seconds:
-            expired_keys.append(key)
-
-    for key in expired_keys:
-        del self.activity_cache[key]
-
-    if expired_keys:
-        self.console_logger.info(f"Cleaned {len(expired_keys)} expired entries from activity cache")

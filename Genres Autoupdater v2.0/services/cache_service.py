@@ -24,10 +24,17 @@ import hashlib
 import os
 import time
 
+from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple
 
 
 class CacheService:
+    """
+    Cache Service Class
+    This class provides an in-memory cache with TTL support and a persistent CSV-based cache
+    for album release years.
+    """
+
     def __init__(self, config: dict, console_logger, error_logger):
         """
         Initialize the CacheService with configuration and loggers.
@@ -183,7 +190,7 @@ class CacheService:
                     if a and b and y:
                         key = f"{a}|||{b}"
                         cache_map[key] = y
-        except Exception as e:
+        except (IOError, OSError) as e:
             self.error_logger.error(f"Failed to read album cache CSV: {e}", exc_info=True)
         return cache_map
 
@@ -204,8 +211,32 @@ class CacheService:
                     a, b = key.split("|||", 1)
                     writer.writerow({"artist": a, "album": b, "year": year})
 
-        except Exception as e:
+        except (IOError, OSError) as e:
             self.error_logger.error(f"Failed to write album cache CSV: {e}", exc_info=True)
+
+    async def get_last_run_timestamp(self) -> datetime:
+        """
+        Get the timestamp of the last incremental run.
+
+        Returns:
+            datetime: The timestamp of the last incremental run, or datetime.min if not found
+
+        Example:
+            >>> last_run = await cache_service.get_last_run_timestamp()
+            >>> if (datetime.now() - last_run).total_seconds() > 3600:
+            >>>     print("More than an hour since last run")
+        """
+        last_file = os.path.join(self.config["logs_base_dir"], self.config["logging"]["last_incremental_run_file"])
+        if not os.path.exists(last_file):
+            return datetime.min
+
+        try:
+            with open(last_file, "r", encoding="utf-8") as f:
+                last_run_str = f.read().strip()
+            return datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+        except (ValueError, IOError, OSError) as e:
+            self.error_logger.error(f"Error reading last run timestamp: {e}")
+            return datetime.min
 
     async def get_album_year_from_cache(self, artist: str, album: str) -> Optional[str]:
         """
@@ -278,5 +309,5 @@ class CacheService:
             try:
                 os.remove(self.album_cache_csv)
                 self.console_logger.info("Entire album-year CSV cache removed.")
-            except Exception as e:
+            except (IOError, OSError) as e:
                 self.error_logger.error(f"Failed to remove album-year CSV cache: {e}", exc_info=True)

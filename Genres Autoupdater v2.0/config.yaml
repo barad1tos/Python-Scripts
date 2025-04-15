@@ -26,7 +26,7 @@ max_retries: 3
 retry_delay_seconds: 2
 
 # List of test artists for testing purposes (leave empty to process all)
-test_artists: []
+test_artists: [Abney Park]
 
 # Cleaning settings
 cleaning:
@@ -34,7 +34,6 @@ cleaning:
     - remaster
     - remastered
     - re-recording
-
   album_suffixes_to_remove:
     - " - Single"
     - " — EP"

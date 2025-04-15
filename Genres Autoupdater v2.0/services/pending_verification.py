@@ -47,7 +47,7 @@ class PendingVerificationService:
             error_logger: Logger for error output
 
         Example:
-            service = PendingVerificationService(config, console_logger, error_logger)
+            >>> service = PendingVerificationService(config, console_logger, error_logger)
         """
         self.config = config
         self.console_logger = console_logger
@@ -74,7 +74,7 @@ class PendingVerificationService:
         Load the list of pending albums from the CSV file.
 
         Example:
-            service._load_pending_albums()  # Loads data from CSV into memory
+            >>> service._load_pending_albums()  # Loads data from CSV into memory
         """
         if not os.path.exists(self.pending_file_path):
             self.console_logger.info(f"Pending verification file not found, will create at: {self.pending_file_path}")
@@ -98,7 +98,7 @@ class PendingVerificationService:
                             self.error_logger.warning(f"Invalid timestamp format in pending file: {timestamp_str}")
 
             self.console_logger.info(f"Loaded {len(self.pending_albums)} pending albums for verification")
-        except Exception as e:
+        except (FileNotFoundError, IOError) as e:
             self.error_logger.error(f"Error loading pending verification file: {e}")
 
     def _save_pending_albums(self) -> None:
@@ -106,7 +106,7 @@ class PendingVerificationService:
         Save the current list of pending albums to the CSV file.
 
         Example:
-            service._save_pending_albums()  # Writes pending albums to CSV
+            >>> service._save_pending_albums()  # Writes pending albums to CSV
         """
         try:
             with open(self.pending_file_path, "w", newline="", encoding="utf-8") as f:
@@ -118,7 +118,7 @@ class PendingVerificationService:
                     writer.writerow({"artist": artist, "album": album, "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S")})
 
             self.console_logger.info(f"Saved {len(self.pending_albums)} pending albums for verification")
-        except Exception as e:
+        except (IOError, OSError) as e:
             self.error_logger.error(f"Error saving pending verification file: {e}")
 
     def mark_for_verification(self, artist: str, album: str) -> None:
@@ -130,7 +130,7 @@ class PendingVerificationService:
             album: Album name
 
         Example:
-            service.mark_for_verification("Pink Floyd", "The Dark Side of the Moon")
+            >>> service.mark_for_verification("Pink Floyd", "The Dark Side of the Moon")
         """
         key = f"{artist}|||{album}"
         self.pending_albums[key] = datetime.now()
@@ -149,8 +149,8 @@ class PendingVerificationService:
             True if verification period has elapsed, False otherwise
 
         Example:
-            if service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
-                # Perform verification
+            >>> if service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
+            >>>     # Perform verification
         """
         key = f"{artist}|||{album}"
         if key not in self.pending_albums:
@@ -175,7 +175,7 @@ class PendingVerificationService:
             album: Album name
 
         Example:
-            service.remove_from_pending("Pink Floyd", "The Dark Side of the Moon")
+            >>> service.remove_from_pending("Pink Floyd", "The Dark Side of the Moon")
         """
         key = f"{artist}|||{album}"
         if key in self.pending_albums:
@@ -191,9 +191,9 @@ class PendingVerificationService:
             List of tuples containing (artist, album, timestamp)
 
         Example:
-            pending_list = service.get_all_pending_albums()
-            for artist, album, timestamp in pending_list:
-                print(f"{artist} - {album}: {timestamp}")
+            >>> pending_list = service.get_all_pending_albums()
+            >>> for artist, album, timestamp in pending_list:
+            >>>     print(f"{artist} - {album}: {timestamp}")
         """
         result = []
         for key, timestamp in self.pending_albums.items():
@@ -209,9 +209,9 @@ class PendingVerificationService:
             Set of album keys needing verification
 
         Example:
-            for key in service.get_verified_album_keys():
-                artist, album = key.split("|||", 1)
-                # Perform verification
+            >>> for key in service.get_verified_album_keys():
+            >>>     artist, album = key.split("|||", 1)
+            >>>     # Perform verification
         """
         now = datetime.now()
         verified_keys = set()

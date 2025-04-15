@@ -14,15 +14,17 @@ all potential changes without modifying the actual music library.
 import asyncio
 import csv
 import os
+import subprocess
 import sys
 
 from typing import Dict, List
 
 import yaml
 
-from music_genre_updater import CONFIG_PATH, clean_names, determine_dominant_genre_for_artist
+from music_genre_updater import clean_names, determine_dominant_genre_for_artist
 from services.dependencies_service import DependencyContainer
 from utils.logger import get_full_log_path, get_loggers
+from utils.reports import save_unified_dry_run
 
 # Add path to music_genre_updater and scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -40,7 +42,7 @@ with open(CONFIG_PATH, "r", encoding="utf-8") as f:
 DEPS = DependencyContainer(CONFIG_PATH)
 
 # Loggers (optional, but can be used)
-console_logger, error_logger, analytics_logger = get_loggers(CONFIG)
+console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG)
 
 # Steps to CSV for dry-run (for cleaning and genre)
 DRY_RUN_CLEANING_CSV = get_full_log_path(CONFIG, "dry_run_cleaning_file", "csv/dry_run_cleaning.csv")
@@ -53,20 +55,19 @@ async def fetch_tracks_direct(artist: str = None) -> List[Dict[str, str]]:
 
     This is a simplified version used only in dry_run.py.
     """
-    console_logger.info(f"Direct fetch of tracks for {'all artists' if artist is None else artist}")
+    console_logger.info("Fetching tracks directly using AppleScript %s")
 
     script_path = os.path.join(CONFIG["apple_scripts_dir"], "fetch_tracks.applescript")
 
     if not os.path.exists(script_path):
-        console_logger.error(f"AppleScript file not found: {script_path}")
-        return []
+        console_logger.error("AppleScript file not found: %s", script_path)
 
     cmd = ["osascript", script_path]
     if artist:
         cmd.append(artist)
 
     try:
-        console_logger.info(f"Executing: {' '.join(cmd)}")
+        console_logger.info("Executing AppleScript command: %s", " ".join(cmd))
         process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
 
         # Wait for completion with long timeout
@@ -74,10 +75,10 @@ async def fetch_tracks_direct(artist: str = None) -> List[Dict[str, str]]:
 
         if stderr:
             error_str = stderr.decode('utf-8').strip()
-            console_logger.warning(f"AppleScript stderr: {error_str}")
+            console_logger.warning("AppleScript stderr: %s", error_str)
 
         if process.returncode != 0:
-            console_logger.error(f"AppleScript failed with exit code {process.returncode}")
+            console_logger.error("AppleScript failed with exit code %s", process.returncode)
             return []
 
         raw_data = stdout.decode('utf-8').strip()
@@ -113,14 +114,14 @@ async def fetch_tracks_direct(artist: str = None) -> List[Dict[str, str]]:
 
                 tracks.append(track)
 
-        console_logger.info(f"Successfully parsed {len(tracks)} tracks")
+        console_logger.info("Successfully parsed %s tracks", len(tracks))
         return tracks
 
     except asyncio.TimeoutError:
         console_logger.error("AppleScript execution timed out after 15 minutes")
         return []
-    except Exception as e:
-        console_logger.error(f"Error fetching tracks: {e}")
+    except (subprocess.SubprocessError, OSError, ValueError, IndexError) as e:
+        console_logger.error("Error fetching tracks: %s", e)
         return []
 
 
@@ -141,7 +142,7 @@ async def simulate_cleaning() -> List[Dict[str, str]]:
         console_logger.error("Failed to fetch tracks for dry run simulation!")
         return []
 
-    console_logger.info(f"Simulating cleaning for {len(tracks)} tracks")
+    console_logger.info("Simulating cleaning for %s tracks", len(tracks))
 
     for track in tracks:
         # Skip tracks with prerelease status
@@ -231,17 +232,17 @@ def save_cleaning_csv(changes: List[Dict[str, str]], file_path: str) -> None:
         "cleaned_album",
         "dateAdded",
     ]
-    console_logger.info(f"Saving cleaning update changes to {file_path}")
+    console_logger.info("Saving cleaning update changes to %s", file_path)
     csv_dir = os.path.dirname(file_path)
     if csv_dir and not os.path.exists(csv_dir):
         os.makedirs(csv_dir, exist_ok=True)
 
-    with open(file_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         for row in changes:
             writer.writerow(row)
-    console_logger.info(f"Cleaning changes saved: {len(changes)} rows.")
+    console_logger.info("Cleaning changes saved: %s rows.", len(changes))
 
 
 def save_genre_csv(changes: List[Dict[str, str]], file_path: str) -> None:
@@ -262,17 +263,17 @@ def save_genre_csv(changes: List[Dict[str, str]], file_path: str) -> None:
         "simulated_genre",
         "dateAdded",
     ]
-    console_logger.info(f"Saving genre changes to {file_path}")
+    console_logger.info("Saving genre changes to %s", file_path)
     csv_dir = os.path.dirname(file_path)
     if csv_dir and not os.path.exists(csv_dir):
         os.makedirs(csv_dir, exist_ok=True)
 
-    with open(file_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    with open(file_path, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
         for row in changes:
             writer.writerow(row)
-    console_logger.info(f"Genre update changes saved: {len(changes)} rows.")
+    console_logger.info("Genre update changes saved: %s rows.", len(changes))
 
 
 async def main():
@@ -284,17 +285,13 @@ async def main():
     """
     cleaning_changes, genre_changes = await asyncio.gather(simulate_cleaning(), simulate_genre_update())
 
-    # We use a new feature for a combined report
-    from utils.logger import get_full_log_path  # Import from the correct module
-    from utils.reports import save_unified_dry_run
-
     # We get the path for the combined report from the configuration
     dry_run_report_file = get_full_log_path(CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv")
 
     # We save the combined report
     save_unified_dry_run(cleaning_changes, genre_changes, dry_run_report_file, console_logger, error_logger)
 
-    console_logger.info(f"Dry run simulation completed with {len(cleaning_changes)} cleaning changes and {len(genre_changes)} genre changes.")
+    console_logger.info("Dry run simulation completed with %s cleaning changes and %s genre changes.", len(cleaning_changes), len(genre_changes))
 
 
 if __name__ == "__main__":

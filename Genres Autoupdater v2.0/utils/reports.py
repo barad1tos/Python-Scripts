@@ -28,13 +28,12 @@ Key functions:
 import csv
 import logging
 import os
-import time
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional
 
 from services.cache_service import CacheService
-from utils.logger import ensure_directory, get_full_log_path
+from utils.logger import ensure_directory
 
 # ANSI color codes for console output
 RED = "\033[31m"
@@ -150,9 +149,7 @@ def save_unified_changes_report(
 
         # For year changes, filter to only show where old_year != new_year
         if "year" in changes_by_type:
-            changes_by_type["year"] = [
-                change for change in changes_by_type["year"] if change.get("old_year", "") != change.get("new_year", "")
-            ]
+            changes_by_type["year"] = [change for change in changes_by_type["year"] if change.get("old_year", "") != change.get("new_year", "")]
 
         # Print each change type with its own header
         for change_type, type_changes in changes_by_type.items():
@@ -163,21 +160,9 @@ def save_unified_changes_report(
                 console_logger.info(f"{'Artist':<30} {'Album':<30} {'Track':<30} {'Old → New'}")
                 console_logger.info("-" * 100)
                 for change in type_changes:
-                    artist = (
-                        change.get("artist", "")[:28] + ".."
-                        if len(change.get("artist", "")) > 30
-                        else change.get("artist", "")
-                    )
-                    album = (
-                        change.get("album", "")[:28] + ".."
-                        if len(change.get("album", "")) > 30
-                        else change.get("album", "")
-                    )
-                    track = (
-                        change.get("track_name", "")[:28] + ".."
-                        if len(change.get("track_name", "")) > 30
-                        else change.get("track_name", "")
-                    )
+                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
+                    album = change.get("album", "")[:28] + ".." if len(change.get("album", "")) > 30 else change.get("album", "")
+                    track = change.get("track_name", "")[:28] + ".." if len(change.get("track_name", "")) > 30 else change.get("track_name", "")
                     old_genre = change.get("old_genre", "")
                     new_genre = change.get("new_genre", "")
                     console_logger.info(f"{artist:<30} {album:<30} {track:<30} {old_genre} → {new_genre}")
@@ -187,16 +172,8 @@ def save_unified_changes_report(
                     console_logger.info(f"{'Artist':<30} {'Album':<40} {'Old → New'}")
                     console_logger.info("-" * 80)
                     for change in type_changes:
-                        artist = (
-                            change.get("artist", "")[:28] + ".."
-                            if len(change.get("artist", "")) > 30
-                            else change.get("artist", "")
-                        )
-                        album = (
-                            change.get("album", "")[:38] + ".."
-                            if len(change.get("album", "")) > 40
-                            else change.get("album", "")
-                        )
+                        artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
+                        album = change.get("album", "")[:38] + ".." if len(change.get("album", "")) > 40 else change.get("album", "")
                         old_year = change.get("old_year", "")
                         new_year = change.get("new_year", "")
                         year_display = f"{YELLOW}{old_year} → {new_year}{RESET}"
@@ -208,11 +185,7 @@ def save_unified_changes_report(
                 console_logger.info(f"{'Artist':<30} {'Track/Album':<40} {'Old → New'}")
                 console_logger.info("-" * 80)
                 for change in type_changes:
-                    artist = (
-                        change.get("artist", "")[:28] + ".."
-                        if len(change.get("artist", "")) > 30
-                        else change.get("artist", "")
-                    )
+                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
                     if change.get("old_track_name"):
                         item_type = "Track"
                         old_name = change.get("old_track_name", "")
@@ -229,9 +202,7 @@ def save_unified_changes_report(
             # If we have an unknown change type, show generic info
             else:
                 for change in type_changes:
-                    console_logger.info(
-                        f"Change for {change.get('artist', '')} - {change.get('album', '')} - {change.get('track_name', '')}"
-                    )
+                    console_logger.info(f"Change for {change.get('artist', '')} - {change.get('album', '')} - {change.get('track_name', '')}")
 
         console_logger.info(f"\nTotal: {len(changes)} changes")
         return
@@ -366,9 +337,7 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
     return track_map
 
 
-def load_track_list_with_cache(
-    csv_path: str, cache_path: str, console_logger: logging.Logger
-) -> Dict[str, Dict[str, str]]:
+def load_track_list_with_cache(csv_path: str, cache_path: str, console_logger: logging.Logger) -> Dict[str, Dict[str, str]]:
     """
     Load the track list from CSV and integrate album cache data.
 
@@ -626,9 +595,7 @@ def save_html_report(
         error_logger = logging.getLogger("error_logger")
 
     # Additional logging for diagnostics
-    console_logger.info(
-        f"Starting HTML report generation with {len(events)} events, {len(call_counts)} function counts"
-    )
+    console_logger.info(f"Starting HTML report generation with {len(events)} events, {len(call_counts)} function counts")
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     logs_base_dir = config.get("logs_base_dir", ".")
@@ -644,9 +611,7 @@ def save_html_report(
     console_logger.debug(f"Will save HTML report to: {report_file}")
 
     # Setting colors and thresholds
-    duration_thresholds = config.get("analytics", {}).get(
-        "duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10}
-    )
+    duration_thresholds = config.get("analytics", {}).get("duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10})
     colors = config.get("analytics", {}).get("colors", {"short": "#90EE90", "medium": "#D3D3D3", "long": "#FFB6C1"})
 
     # Check for data availability
@@ -793,7 +758,7 @@ def save_html_report(
         <p><strong>Total events:</strong> {len(events)}</p>
         <p><strong>Success rate:</strong> {sum(success_counts.values())/sum(call_counts.values())*100 if sum(call_counts.values()) else 0:.1f}%</p>
     </div>
-    
+
     <h3>Grouped Short & Successful Calls</h3>
     <table>
         <tr>

@@ -59,7 +59,9 @@ import time
 
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Union
+
+from utils.reports import save_html_report
 
 
 class Analytics:
@@ -196,9 +198,7 @@ class Analytics:
                 decorator_end = time.time()
                 duration = function_end - function_start
                 overhead = decorator_end - decorator_start - duration
-                self._record_function_call(
-                    func_name, event_type, function_start, function_end, duration, success, overhead
-                )
+                self._record_function_call(func_name, event_type, function_start, function_end, duration, success, overhead)
 
         return sync_wrapper
 
@@ -232,9 +232,7 @@ class Analytics:
                 decorator_end = time.time()
                 duration = function_end - function_start
                 overhead = decorator_end - decorator_start - duration
-                self._record_function_call(
-                    func_name, event_type, function_start, function_end, duration, success, overhead
-                )
+                self._record_function_call(func_name, event_type, function_start, function_end, duration, success, overhead)
 
         return async_wrapper
 
@@ -463,9 +461,7 @@ class Analytics:
         stats = self.get_stats()
 
         self.console_logger.info(
-            f"📊 Analytics Summary: {stats['total_calls']} calls, "
-            f"{stats['success_rate']:.1f}% success, "
-            f"avg {stats['avg_duration']:.3f}s"
+            f"📊 Analytics Summary: {stats['total_calls']} calls, " f"{stats['success_rate']:.1f}% success, " f"avg {stats['avg_duration']:.3f}s"
         )
 
         # Log performance categories
@@ -473,10 +469,7 @@ class Analytics:
             dc = stats["duration_counts"]
             total = sum(dc.values())
             self.console_logger.info(
-                f"📊 Performance: "
-                f"⚡ {dc['fast']/total*100:.0f}% | "
-                f"⏱️ {dc['medium']/total*100:.0f}% | "
-                f"🐢 {dc['slow']/total*100:.0f}%"
+                f"📊 Performance: " f"⚡ {dc['fast']/total*100:.0f}% | " f"⏱️ {dc['medium']/total*100:.0f}% | " f"🐢 {dc['slow']/total*100:.0f}%"
             )
 
     def generate_reports(self, force_mode: bool = False) -> None:
@@ -501,9 +494,7 @@ class Analytics:
 
             self.console_logger.info(f"📊 Generating HTML report ({event_count} events, {function_count} functions)")
 
-            # Import here to avoid circular imports
-            from utils.reports import save_html_report
-
+            # Generate HTML report
             save_html_report(
                 self.events,
                 self.call_counts,
@@ -524,6 +515,6 @@ class Analytics:
             if event_count > 5000:
                 gc.collect()
 
-        except Exception as e:
+        except (KeyboardInterrupt, SystemExit) as e:
             self.error_logger.error(f"📊 Failed to generate HTML report: {e}", exc_info=True)
             self.analytics_logger.error(f"📊 Failed to generate HTML report: {e}")

@@ -16,8 +16,26 @@ import yaml
 from services.applescript_client import AppleScriptClient
 from services.cache_service import CacheService
 from services.external_api_service import ExternalApiService
+from services.pending_verification import PendingVerificationService
 from utils.analytics import Analytics
 from utils.logger import get_loggers
+
+_ANALYTICS_INSTANCE = None
+
+
+def get_analytics_instance():
+    """
+    Accessor function for the analytics instance.
+
+    Returns:
+        Analytics: Current analytics instance or None if not initialized.
+
+    Example:
+        >>> analytics = get_analytics_instance()
+        >>> if analytics:
+        >>>     analytics.track_event("user_login")
+    """
+    return _ANALYTICS_INSTANCE
 
 
 class DependencyContainer:
@@ -30,22 +48,26 @@ class DependencyContainer:
         """
         Initializes the DependencyContainer with the configuration file path.
 
-        :param config_path: Path to the configuration YAML file.
+        Args:
+            config_path: Path to the configuration YAML file.
+
+        Example:
+            >>> deps = DependencyContainer("my-config.yaml")
+            >>> client = deps.ap_client
+            >>> client.run_script("fetch_tracks.applescript")
         """
         # Load configuration first
-        from music_genre_updater import load_config
-
-        self.config = load_config(config_path)
+        self.config = self.load_config(config_path)  # Updated to call the method with self
 
         # Initialize loggers
-        self.console_logger, self.error_logger, self.analytics_logger = get_loggers(self.config)
+        self.console_logger, self.error_logger, self.analytics_logger, self.listener = get_loggers(self.config)
 
-        # Initialize analytics - this was missing!
+        # Initialize analytics
         self.analytics = Analytics(self.config, self.console_logger, self.error_logger, self.analytics_logger)
 
         # Make the analytics object available for external use
-        global analytics
-        analytics = self.analytics
+        global _ANALYTICS_INSTANCE
+        _ANALYTICS_INSTANCE = self.analytics
 
         # Initialize the AppleScript client
         self.ap_client = AppleScriptClient(self.config, self.console_logger, self.error_logger)
@@ -57,17 +79,29 @@ class DependencyContainer:
         self.external_api_service = ExternalApiService(self.config, self.console_logger, self.error_logger)
 
         # Initialize the pending verification service
-        from services.pending_verification import PendingVerificationService
-
-        self.pending_verification_service = PendingVerificationService(
-            self.config, self.console_logger, self.error_logger
-        )
+        self.pending_verification_service = PendingVerificationService(self.config, self.console_logger, self.error_logger)
 
         # Initialize API client session
         self.external_api_service.initialize_async = self.external_api_service.initialize
 
     @staticmethod
     def load_config(config_path: str):
+        """
+        Load the configuration from a YAML file.
+
+        Args:
+            config_path: Path to the configuration YAML file.
+
+        Returns:
+            dict: Dictionary containing the configuration.
+
+        Raises:
+            FileNotFoundError: If the config file does not exist.
+
+        Example:
+            >>> config = DependencyContainer.load_config("my-config.yaml")
+            >>> apple_scripts_dir = config.get("apple_scripts_dir")
+        """
         if not os.path.exists(config_path):
             raise FileNotFoundError(f"Config file {config_path} does not exist.")
         with open(config_path, "r", encoding="utf-8") as f:
