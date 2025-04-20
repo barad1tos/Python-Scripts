@@ -1094,13 +1094,13 @@ class ExternalApiService:
         else:
             # Handle variations (e.g., "Album (Deluxe)")
             if comp_release_title.startswith(comp_album_norm) and re.match(
-                r'^[\(\[][^)\]]+[\)\]]$', comp_release_title[len(comp_album_norm) :].strip()
+                r'^[\(\[][^)\]]+[\)\]]$', comp_release_title[len(comp_album_norm) :].strip()  # noqa: E203
             ):
                 title_match_bonus = scoring_cfg.get('album_variation_bonus', 10)
                 score += title_match_bonus
                 score_components.append(f"Album Variation (Suffix): +{title_match_bonus}")
             elif comp_album_norm.startswith(comp_release_title) and re.match(
-                r'^[\(\[][^)\]]+[\)\]]$', comp_album_norm[len(comp_release_title) :].strip()
+                r'^[\(\[][^)\]]+[\)\]]$', comp_album_norm[len(comp_release_title) :].strip()  # noqa: E203
             ):
                 title_match_bonus = scoring_cfg.get('album_variation_bonus', 10)
                 score += title_match_bonus

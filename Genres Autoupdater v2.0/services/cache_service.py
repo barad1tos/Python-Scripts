@@ -57,6 +57,15 @@ class CacheService:
         self.album_cache_csv = os.path.join(logs_base_dir, "csv", "cache_albums.csv")
         os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
 
+        # In-memory album years cache
+        self.album_years_cache = {}  # key: "artist|||album", value: year
+        self.last_cache_sync = time.time()
+        self.cache_dirty = False  # Flag indicating unsaved changes
+        self.sync_interval = config.get("album_cache_sync_interval", 300)  # Sync every 5 minutes by default
+
+        # Load initial album cache
+        self._load_album_years_cache()
+
     def _is_expired(self, expiry_time: float) -> bool:
         """
         Check if the cache entry has expired based on the expiry time.
@@ -159,6 +168,72 @@ class CacheService:
         self.cache.clear()
         self.console_logger.info("All in-memory cache entries cleared.")
 
+    def _load_album_years_cache(self) -> None:
+        """
+        Load album years cache from CSV file into memory.
+        Called during initialization.
+        """
+        try:
+            if os.path.exists(self.album_cache_csv):
+                with open(self.album_cache_csv, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        a = row.get("artist", "").strip().lower()
+                        b = row.get("album", "").strip().lower()
+                        y = row.get("year", "").strip()
+                        if a and b and y:
+                            key = f"{a}|||{b}"
+                            self.album_years_cache[key] = y
+                self.console_logger.info(f"Loaded {len(self.album_years_cache)} album years into memory cache")
+        except Exception as e:
+            self.error_logger.error(f"Error loading album years cache: {e}", exc_info=True)
+
+    async def _sync_cache_if_needed(self, force=False) -> None:
+        """
+        Synchronize cache to disk if needed based on time interval or force flag.
+
+        :param force: If True, force synchronization regardless of time interval
+        """
+        now = time.time()
+        if force or (self.cache_dirty and now - self.last_cache_sync >= self.sync_interval):
+            await self._save_cache_to_disk()
+            self.last_cache_sync = now
+            self.cache_dirty = False
+
+    async def _save_cache_to_disk(self) -> None:
+        """
+        Save the in-memory album years cache to disk.
+        Uses atomic write pattern with temporary file.
+        """
+        temp_file = f"{self.album_cache_csv}.tmp"
+
+        try:
+            os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
+
+            with open(temp_file, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
+                writer.writeheader()
+
+                for key, year in self.album_years_cache.items():
+                    try:
+                        a, b = key.split("|||", 1)
+                        writer.writerow({"artist": a, "album": b, "year": year})
+                    except ValueError:
+                        self.error_logger.warning(f"Invalid key format in album cache: {key}")
+
+            # Atomic rename
+            os.replace(temp_file, self.album_cache_csv)
+            self.console_logger.info(f"Synchronized {len(self.album_years_cache)} album years to disk")
+
+        except Exception as e:
+            self.error_logger.error(f"Error synchronizing cache to disk: {e}", exc_info=True)
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except OSError as e:
+                    # Log the error if removing the temp file fails, but don't raise it
+                    self.error_logger.warning(f"Could not remove temporary cache file {temp_file}: {e}")
+
     async def initialize_album_cache_csv(self) -> None:
         """
         If the album cache CSV file does not exist, create it with the header row.
@@ -170,49 +245,6 @@ class CacheService:
             with open(self.album_cache_csv, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
                 writer.writeheader()
-
-    def _read_album_csv(self) -> Dict[str, str]:
-        """
-        Read the album cache CSV file and return the contents as a dictionary.
-
-        :return: A dictionary mapping artist|||album to year.
-        """
-        cache_map: Dict[str, str] = {}
-        if not os.path.exists(self.album_cache_csv):
-            return cache_map
-        try:
-            with open(self.album_cache_csv, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    a = row.get("artist", "").strip().lower()
-                    b = row.get("album", "").strip().lower()
-                    y = row.get("year", "").strip()
-                    if a and b and y:
-                        key = f"{a}|||{b}"
-                        cache_map[key] = y
-        except (IOError, OSError) as e:
-            self.error_logger.error(f"Failed to read album cache CSV: {e}", exc_info=True)
-        return cache_map
-
-    def _write_album_csv(self, cache_map: Dict[str, str]) -> None:
-        """
-        Write the album cache dictionary to the CSV file.
-
-        :param cache_map: A dictionary mapping artist|||album to year.
-        :return: None
-        """
-        try:
-            with open(self.album_cache_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
-                writer.writeheader()
-                for key, year in cache_map.items():
-                    # key = a|||b
-                    # year = str
-                    a, b = key.split("|||", 1)
-                    writer.writerow({"artist": a, "album": b, "year": year})
-
-        except (IOError, OSError) as e:
-            self.error_logger.error(f"Failed to write album cache CSV: {e}", exc_info=True)
 
     async def get_last_run_timestamp(self) -> datetime:
         """
@@ -240,45 +272,47 @@ class CacheService:
 
     async def get_album_year_from_cache(self, artist: str, album: str) -> Optional[str]:
         """
-        Get album year from the CSV cache for a given artist and album.
+        Get album year from the in-memory cache for a given artist and album.
         If the entry is not found, return None.
 
         :param artist: The artist name.
         :param album: The album name.
         :return: The year of the album as a string, or None if not found.
         """
-        await self.initialize_album_cache_csv()
-
         a_lower = artist.strip().lower()
         b_lower = album.strip().lower()
-        cache_map = self._read_album_csv()
         key = f"{a_lower}|||{b_lower}"
 
-        if key in cache_map:
-            return cache_map[key]
+        # Sync cache if needed
+        await self._sync_cache_if_needed()
+
+        # Return from in-memory cache
+        if key in self.album_years_cache:
+            return self.album_years_cache[key]
         return None
 
     async def store_album_year_in_cache(self, artist: str, album: str, year: str) -> None:
         """
-        Store or update an album year in the CSV cache.
-        If the artist-album entry doesn't exist, it will be added.
-        If it already exists, it will be updated with the new year.
+        Store or update an album year in the in-memory cache and mark it for disk sync.
+        The actual disk write happens based on sync interval or forced sync.
 
         :param artist: The artist name.
         :param album: The album name.
         :param year: The album release year.
         :return: None
         """
-        await self.initialize_album_cache_csv()
-
         a_lower = artist.strip().lower()
         b_lower = album.strip().lower()
-        cache_map = self._read_album_csv()
         key = f"{a_lower}|||{b_lower}"
-        cache_map[key] = year.strip()
 
-        self._write_album_csv(cache_map)
-        self.console_logger.debug(f"Album year stored in CSV cache for '{artist} - {album}': {year}")
+        # Store in in-memory cache
+        self.album_years_cache[key] = year.strip()
+        self.cache_dirty = True
+
+        # Sync with disk if needed
+        await self._sync_cache_if_needed()
+
+        self.console_logger.debug(f"Album year stored in cache for '{artist} - {album}': {year}")
 
     def invalidate_album_cache(self, artist: str, album: str) -> None:
         """
@@ -288,26 +322,29 @@ class CacheService:
         :param album: The album name.
         :return: None
         """
-        if not os.path.exists(self.album_cache_csv):
-            return
         a_lower = artist.strip().lower()
         b_lower = album.strip().lower()
         key = f"{a_lower}|||{b_lower}"
 
-        cache_map = self._read_album_csv()
-        if key in cache_map:
-            del cache_map[key]
-            self._write_album_csv(cache_map)
+        # Remove from in-memory cache
+        if key in self.album_years_cache:
+            del self.album_years_cache[key]
+            self.cache_dirty = True
             self.console_logger.info(f"Invalidated album-year cache for: {artist} - {album}")
 
     def invalidate_all_albums(self) -> None:
         """
         Invalidate the entire album-year cache.
-        If the album-year CSV cache exists, it will be removed.
+        Clears the in-memory cache and marks it for synchronization.
         """
-        if os.path.exists(self.album_cache_csv):
-            try:
-                os.remove(self.album_cache_csv)
-                self.console_logger.info("Entire album-year CSV cache removed.")
-            except (IOError, OSError) as e:
-                self.error_logger.error(f"Failed to remove album-year CSV cache: {e}", exc_info=True)
+        if self.album_years_cache:
+            self.album_years_cache.clear()
+            self.cache_dirty = True
+            self.console_logger.info("Entire album-year cache cleared.")
+
+    async def sync_cache(self) -> None:
+        """
+        Force synchronization of the in-memory album cache to disk.
+        Useful before application shutdown to ensure data persistence.
+        """
+        await self._sync_cache_if_needed(force=True)

@@ -20,6 +20,8 @@ Usage:
 
 import csv
 import os
+import sys
+import time
 
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple
@@ -71,19 +73,23 @@ class PendingVerificationService:
 
     def _load_pending_albums(self) -> None:
         """
-        Load the list of pending albums from the CSV file.
-
-        Example:
-            >>> service._load_pending_albums()  # Loads data from CSV into memory
+        Load the list of pending albums from the CSV file with retry mechanism.
         """
         if not os.path.exists(self.pending_file_path):
             self.console_logger.info(f"Pending verification file not found, will create at: {self.pending_file_path}")
             return
 
-        try:
-            with open(self.pending_file_path, "r", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
+        max_retries = 3
+        retry_delay = 0.5  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                with open(self.pending_file_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    albums_data = list(reader)  # Read all lines at once to minimize file opening time
+
+                # Process data after closing the file
+                for row in albums_data:
                     artist = row.get("artist", "").strip()
                     album = row.get("album", "").strip()
                     timestamp_str = row.get("timestamp", "").strip()
@@ -97,19 +103,30 @@ class PendingVerificationService:
                         except ValueError:
                             self.error_logger.warning(f"Invalid timestamp format in pending file: {timestamp_str}")
 
-            self.console_logger.info(f"Loaded {len(self.pending_albums)} pending albums for verification")
-        except (FileNotFoundError, IOError) as e:
-            self.error_logger.error(f"Error loading pending verification file: {e}")
+                self.console_logger.info(f"Loaded {len(self.pending_albums)} pending albums for verification")
+                return  # Successfully loaded, exit the function
+
+            except (FileNotFoundError, IOError, OSError) as e:
+                if attempt < max_retries - 1:
+                    self.console_logger.warning(f"Error reading pending file (attempt {attempt+1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    self.error_logger.error(f"Error loading pending verification file after {max_retries} attempts: {e}")
 
     def _save_pending_albums(self) -> None:
         """
-        Save the current list of pending albums to the CSV file.
-
-        Example:
-            >>> service._save_pending_albums()  # Writes pending albums to CSV
+        Save the current list of pending albums to the CSV file with resilient approach.
         """
+        # First, write to a temporary file
+        temp_file = f"{self.pending_file_path}.tmp"
+
         try:
-            with open(self.pending_file_path, "w", newline="", encoding="utf-8") as f:
+            # Create directories if they do not exist
+            os.makedirs(os.path.dirname(self.pending_file_path), exist_ok=True)
+
+            # Write to a temporary file
+            with open(temp_file, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=["artist", "album", "timestamp"])
                 writer.writeheader()
 
@@ -117,9 +134,24 @@ class PendingVerificationService:
                     artist, album = key.split("|||", 1)
                     writer.writerow({"artist": artist, "album": album, "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S")})
 
+            # Rename the temporary file (atomic operation)
+            # If on Windows, you may need to delete the target file before renaming it
+            if os.path.exists(self.pending_file_path):
+                if sys.platform == 'win32':
+                    os.replace(temp_file, self.pending_file_path)  # Windows: atomic rename with replacement
+                else:
+                    os.rename(temp_file, self.pending_file_path)  # POSIX: atomic rename
+            else:
+                os.rename(temp_file, self.pending_file_path)
+
             self.console_logger.info(f"Saved {len(self.pending_albums)} pending albums for verification")
         except (IOError, OSError) as e:
             self.error_logger.error(f"Error saving pending verification file: {e}")
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)  # Remove temporary file in case of error
+                except OSError:
+                    pass
 
     def mark_for_verification(self, artist: str, album: str) -> None:
         """

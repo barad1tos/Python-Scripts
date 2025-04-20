@@ -4,54 +4,71 @@
 Music Genre Updater Script v2.0
 
 This script automatically manages your Music.app library by updating genres, cleaning track/album names,
-and retrieving album years. It operates asynchronously for improved performance and uses caching to
-minimize AppleScript calls.
+retrieving album years, and verifying the integrity of its track database. It operates asynchronously
+for improved performance and uses caching to minimize AppleScript calls and API usage.
 
 Key Features:
-    - Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases
-    - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles
-    - Album year retrieval: Fetches and updates year information from external music databases
-    - Database verification: Checks and removes tracks that no longer exist in Music.app
-    - Incremental processing: Efficiently updates only tracks added since the last run
-    - Analytics tracking: Monitors performance and operations with detailed logging
-    - Pending verification system: Tracks album years that need additional verification
+    - Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases.
+    - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles based on configurable rules.
+    - Album year retrieval: Fetches and updates year information from external music databases (e.g., MusicBrainz) with caching and rate limiting.
+    - Database verification: Checks the script's internal track list (CSV) against Music.app and removes entries for tracks that no longer exist.
+    - Incremental processing: Efficiently updates only tracks added since the last run, respecting a configurable interval.
+    - Analytics tracking: Monitors performance and operations with detailed logging and reports.
+    - Pending verification system: Tracks album years from APIs that might need re-verification after a set period (e.g., N days) to improve accuracy.
+    - Test mode: Allows limiting processing to specific artists defined in the configuration for easier testing.
+    - Dry run mode: Simulates all operations without making any actual changes to the Music library or files.
 
 Commands:
-    - Default (no arguments): Run incremental update of genres and clean names
-    - clean_artist: Process only tracks by a specific artist
-    - update_years: Update album years from external APIs
-    - verify_database: Check for and remove tracks that no longer exist in Music.app
+    - Default (no arguments): Runs the main processing pipeline (clean names, update genres, update years). Operates incrementally unless forced.
+    - clean_artist: Cleans track/album names only for tracks by a specific artist.
+    - update_years: Updates album years from external APIs, optionally filtered by artist.
+    - verify_database: Checks the internal track database (CSV) against Music.app and removes non-existent tracks. Respects interval unless forced.
+    - verify_pending: (Experimental/Specific Use) Triggers verification for all albums marked as pending, regardless of their individual timers.
 
 Options:
-    - --force: Override incremental interval checks and force processing
-    - --dry-run: Simulate changes without modifying the Music library
-    - --artist: Specify target artist (with clean_artist or update_years commands)
+    - --force: Overrides incremental interval checks, forces cache refresh for fetches, database verification, and processing of all relevant items.
+    - --dry-run: Simulates changes without modifying the Music library or saving reports/CSV updates.
+    - --artist: Specify target artist (used with `clean_artist` or `update_years` commands).
 
-The script uses a dependency container to manage services:
-    - AppleScriptClient: For interactions with Music.app
-    - CacheService: For storing retrieved data between runs
-    - ExternalAPIService: For querying album years from music databases
-    - PendingVerificationService: For tracking album years that need verification
-    - Analytics: For tracking performance and operation metrics
+The script uses a dependency container (`DependencyContainer`) to manage services:
+    - AppleScriptClient: For interactions with Music.app via `osascript`.
+    - CacheService: For storing fetched track data, album years, and run timestamps between executions.
+    - ExternalAPIService: For querying album years from external music databases.
+    - PendingVerificationService: For tracking album years that require future re-verification.
+    - Analytics: For tracking performance metrics and operation counts.
 
-Configuration (my-config.yaml) includes:
-    - music_library_path: Path to the Music library
-    - apple_scripts_dir: Directory containing AppleScripts
-    - logs_base_dir: Base directory for logs and reports
-    - year_retrieval: Settings for album year updates (API limits, batch sizes, adaptive delays)
-    - cleaning: Rules for cleaning track and album names (remaster_keywords, album_suffixes_to_remove)
-    - incremental_interval_minutes: Time between incremental runs
-    - batch_size: Number of tracks to process in parallel
-    - verify_database: Settings for database verification
-    - exceptions: Special handling rules for specific artists/albums
-    - test_artists: Optional list of artists to limit processing for testing
+Configuration (`my-config.yaml`) includes settings for:
+    - Paths: `music_library_path`, `apple_scripts_dir`, `logs_base_dir`.
+    - Year Retrieval: `year_retrieval` (API limits, batch sizes, adaptive delays, enabling/disabling).
+    - Cleaning: `cleaning` (remaster_keywords, album_suffixes_to_remove).
+    - Incremental Updates: `incremental_interval_minutes`.
+    - Batching: `batch_size` (general), specific batch sizes within modules.
+    - Database Verification: `database_verification` (auto_verify_days, batch_size).
+    - Exceptions: `exceptions` (rules to skip cleaning for specific artists/albums).
+    - Development: `development` (`test_artists` list to limit processing scope).
+    - Logging: Log file paths and levels.
 
 Example usage:
+    # Run standard incremental update
     python3 music_genre_updater.py
+
+    # Force a full run, ignoring incremental interval and cache
     python3 music_genre_updater.py --force
-    python3 music_genre_updater.py clean_artist --artist "Metallica"
+
+    # Clean names only for a specific artist
+    python3 music_genre_updater.py clean_artist --artist "Artist Name"
+
+    # Update album years for all artists (incrementally)
     python3 music_genre_updater.py update_years
+
+    # Force update album years for a specific artist
+    python3 music_genre_updater.py update_years --artist "Another Artist" --force
+
+    # Verify the database, forcing check even if within interval
     python3 music_genre_updater.py verify_database --force
+
+    # Run in simulation mode
+    python3 music_genre_updater.py --dry-run
 """
 
 import argparse
@@ -491,21 +508,25 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
 
 
 @get_decorator("Process Album Years")
-async def process_album_years(tracks: List[Dict[str, str]], force: bool = False) -> Optional[tuple[list[Any], list[Any]]]:
+async def process_album_years(
+    tracks: List[Dict[str, str]], last_run_time: datetime = datetime.min, force: bool = False
+) -> Optional[tuple[list[Any], list[Any]]]:
     """
     Manages album year updates for all tracks using external music databases.
 
     This function orchestrates the album year update process by:
-    1. Filtering out prerelease and unavailable tracks
-    2. Calling the external API service to retrieve accurate album years
-    3. Updating tracks in the Music library with the retrieved years
-    4. Persisting changes to CSV files and generating change reports
+    1. Filtering tracks based on the last run time (for incremental updates)
+    2. Filtering out prerelease and unavailable tracks
+    3. Calling the external API service to retrieve accurate album years
+    4. Updating tracks in the Music library with the retrieved years
+    5. Persisting changes to CSV files and generating change reports
 
     The function respects the configuration settings for year retrieval and
     properly handles API rate limits and service connections.
 
     :param tracks: List of track dictionaries to process for year updates
-    :param force: If True, updates years even if they already exist
+    :param last_run_time: The timestamp of the last incremental update (datetime.min for full runs)
+    :param force: If True, updates years even if they already exist and ignores last_run_time
     :return: Tuple of (updated_tracks, changes_log)
     """
     if not CONFIG.get("year_retrieval", {}).get("enabled", False):
@@ -532,11 +553,25 @@ async def process_album_years(tracks: List[Dict[str, str]], force: bool = False)
             filtered_tracks.append(track)
 
     console_logger.info("Using %d/%d tracks (skipped prerelease/unavailable)", len(filtered_tracks), len(tracks))
-    tracks = filtered_tracks
+
+    # Filter by last_run_time for incremental updates if not forced
+    if last_run_time and last_run_time != datetime.min and not force:
+        console_logger.info("Filtering tracks added after %s for album year updates", last_run_time)
+        filtered_tracks = [
+            track
+            for track in filtered_tracks
+            if datetime.strptime(track.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S") > last_run_time
+        ]
+        console_logger.info("Found %d tracks added since last run for album year updates", len(filtered_tracks))
+
+    # If no tracks remain after filtering, return early
+    if not filtered_tracks:
+        console_logger.info("No tracks to process for album year updates after filtering.")
+        return [], []
 
     try:
         await DEPS.external_api_service.initialize()
-        updated_y, changes_y = await update_album_years_async(tracks, force=force)
+        updated_y, changes_y = await update_album_years_async(filtered_tracks, force=force)
 
         if updated_y:
             await sync_track_list_with_current(
@@ -876,34 +911,62 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
 @get_decorator("Can Run Incremental")
 def can_run_incremental(force_run: bool = False) -> bool:
     """
-    Checks if the incremental interval has passed since the last run.
+    Checks if the incremental interval has passed since the last run with improved resilience.
 
     :param force_run: True to force the run, False to check the interval.
     :return: True if the script can run, False otherwise.
     """
     if force_run:
         return True
+
     last_file = os.path.join(CONFIG["logs_base_dir"], CONFIG["logging"]["last_incremental_run_file"])
     interval = CONFIG.get("incremental_interval_minutes", 60)
+
+    # If the file does not exist, allow it to run
     if not os.path.exists(last_file):
         console_logger.info("Last incremental run file not found. Proceeding.")
         return True
-    with open(last_file, "r", encoding="utf-8") as f:
-        last_run_str = f.read().strip()
-    try:
-        last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        error_logger.error("Invalid date in %s. Proceeding with execution.", last_file)
-        return True
-    next_run_time = last_run_time + timedelta(minutes=interval)
-    now = datetime.now()
-    if now >= next_run_time:
-        return True
-    else:
-        diff = next_run_time - now
-        minutes_remaining = diff.seconds // 60
-        console_logger.info("Last run: %s. Next run in %d mins.", last_run_time.strftime('%Y-%m-%d %H:%M'), minutes_remaining)
-        return False
+
+    # Trying to read a file with repeated attempts
+    max_retries = 3
+    retry_delay = 0.5  # seconds
+
+    for attempt in range(max_retries):
+        try:
+            # Trying to read a file with rollback on failure
+            with open(last_file, "r", encoding="utf-8") as f:
+                last_run_str = f.read().strip()
+
+            try:
+                last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                error_logger.error("Invalid date in %s. Proceeding with execution.", last_file)
+                return True
+
+            next_run_time = last_run_time + timedelta(minutes=interval)
+            now = datetime.now()
+
+            if now >= next_run_time:
+                return True
+            else:
+                diff = next_run_time - now
+                minutes_remaining = diff.seconds // 60
+                console_logger.info("Last run: %s. Next run in %d mins.", last_run_time.strftime('%Y-%m-%d %H:%M'), minutes_remaining)
+                return False
+
+        except (OSError, IOError) as e:
+            if attempt < max_retries - 1:
+                # If this is not the last attempt, we wait and try again
+                console_logger.warning(f"Error reading last run file (attempt {attempt+1}/{max_retries}): {e}. Retrying in {retry_delay}s...")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential increase in latency
+            else:
+                # If all attempts fail, log and allow launch
+                error_logger.error(f"Error accessing last run file after {max_retries} attempts: {e}")
+                return True
+
+    # This code should not be reached, but for security:
+    return True
 
 
 @get_decorator("Update Last Incremental Run")
@@ -1375,13 +1438,12 @@ async def main_async(args: argparse.Namespace) -> None:
             # Note: verify_database now handles its own exit in main(), so this return might not be reached if called from main()
             return
 
-        # --- REMOVED: Unconditional database verification on --force ---
-        # # Run database verification in force mode
-        # if force_run:
-        #     console_logger.info("Force flag detected, verifying track database...")
-        #     removed_count = await verify_and_clean_track_database(force=True)
-        #     if removed_count > 0:
-        #         console_logger.info("Database cleanup removed %d non-existent tracks", removed_count)
+        # Run database verification in force mode
+        if force_run:
+            console_logger.info("Force flag detected, verifying track database...")
+            removed_count = await verify_and_clean_track_database(force=True)
+            if removed_count > 0:
+                console_logger.info("Database cleanup removed %d non-existent tracks", removed_count)
 
         if args.command == "clean_artist":
             # Specific command to clean tracks for one artist
@@ -1419,30 +1481,32 @@ async def main_async(args: argparse.Namespace) -> None:
 
                 # If changes exist, attempt to update via AppleScript
                 if new_tn or new_an:
-                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                        # If update successful, modify track dict and log changes
-                        if new_tn:
-                            track["name"] = cleaned_nm
-                        if new_an:
-                            track["album"] = cleaned_al
-                        changes_log.append(
-                            {  # Log the change details
-                                "change_type": "name",
-                                "artist": artist_name,
-                                "album": track.get("album", "Unknown"),
-                                "track_name": orig_name,
-                                "old_track_name": orig_name,
-                                "new_track_name": cleaned_nm,
-                                "old_album_name": orig_album,
-                                "new_album_name": cleaned_al,
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            }
-                        )
-                        updated_tracks.append(track)
+                    track_status = track.get("trackStatus", "").lower()
+                    if track_status in ("subscription", "downloaded"):
+                        if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                            # If update successful, modify track dict and log changes
+                            if new_tn:
+                                track["name"] = cleaned_nm
+                            if new_an:
+                                track["album"] = cleaned_al
+                            changes_log.append(
+                                {  # Log the change details
+                                    "change_type": "name",
+                                    "artist": artist_name,
+                                    "album": track.get("album", "Unknown"),
+                                    "track_name": orig_name,
+                                    "old_track_name": orig_name,
+                                    "new_track_name": cleaned_nm,
+                                    "old_album_name": orig_album,
+                                    "new_album_name": cleaned_al,
+                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                }
+                            )
+                            updated_tracks.append(track)
+                        else:
+                            error_logger.error("Failed to apply cleaning update for track ID %s", track_id)
                     else:
-                        error_logger.error("Failed to apply cleaning update for track ID %s", track_id)
-                # else: # Log if no cleaning needed? Can be verbose.
-                #    console_logger.debug("No cleaning needed for track '%s'", orig_name)
+                        console_logger.debug(f"Skipping track update for '{orig_name}' (ID: {track_id}) due to status '{track_status}'")
 
             # Run cleaning tasks concurrently
             clean_tasks = [asyncio.create_task(clean_track(t)) for t in all_tracks]
@@ -1489,8 +1553,20 @@ async def main_async(args: argparse.Namespace) -> None:
                 console_logger.warning(f"No tracks found{artist_msg}.")
                 return
 
-            # Process album years, passing the specific force flag
-            updated_y, changes_y = await process_album_years(tracks, force=force_year_update)
+            # Determine whether to use incremental or full processing
+            if force_year_update:
+                # Force mode - process all tracks
+                updated_y, changes_y = await process_album_years(tracks, datetime.min, force=force_year_update)
+            else:
+                # Incremental mode - only process tracks added since last run
+                try:
+                    last_run_time = await deps.cache_service.get_last_run_timestamp()
+                    console_logger.info("Last incremental run timestamp: %s", last_run_time if last_run_time != datetime.min else "Never or Failed")
+                except Exception as e:
+                    error_logger.warning(f"Could not get last run timestamp from cache service: {e}. Assuming full run.")
+                    last_run_time = datetime.min
+
+                updated_y, changes_y = await process_album_years(tracks, last_run_time, force=force_year_update)
 
             # Save results if updates occurred
             if updated_y:
@@ -1501,17 +1577,17 @@ async def main_async(args: argparse.Namespace) -> None:
                     deps.cache_service,
                     console_logger,
                     error_logger,
-                    partial_sync=True,  # Partial sync is usually correct after year updates
+                    partial_sync=True,
                 )
                 # Save a report of the year changes
-                save_changes_report(  # Using the older function name here, assuming it calls the unified one
+                save_changes_report(
                     changes_y,
                     get_full_log_path(CONFIG, "changes_report_file", "csv/changes_report.csv"),
                     console_logger,
                     error_logger,
-                    force_mode=force_year_update,  # Use force_mode for console output
+                    force_mode=force_year_update,
                 )
-                # Update last run time only if not forcing? Or always update? Let's update always for simplicity.
+                # Update last run time
                 update_last_incremental_run()
 
         else:
@@ -1595,29 +1671,32 @@ async def main_async(args: argparse.Namespace) -> None:
                 new_an = cleaned_al if cleaned_al != orig_album else None
 
                 if new_tn or new_an:
-                    if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
-                        if new_tn:
-                            track["name"] = cleaned_nm
-                        if new_an:
-                            track["album"] = cleaned_al
-                        changes_log_cleaning.append(
-                            {
-                                "change_type": "name",
-                                "artist": artist_name,
-                                "album": track.get("album", "Unknown"),
-                                "track_name": orig_name,
-                                "old_track_name": orig_name,
-                                "new_track_name": cleaned_nm,
-                                "old_album_name": orig_album,
-                                "new_album_name": cleaned_al,
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            }
-                        )
-                        # Use a separate list to track which ones were updated *by cleaning*
-                        updated_tracks_cleaning.append(track)  # Appending the modified track dict
+                    track_status = track.get("trackStatus", "").lower()
+                    if track_status in ("subscription", "downloaded"):
+                        if await update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                            if new_tn:
+                                track["name"] = cleaned_nm
+                            if new_an:
+                                track["album"] = cleaned_al
+                            changes_log_cleaning.append(
+                                {
+                                    "change_type": "name",
+                                    "artist": artist_name,
+                                    "album": track.get("album", "Unknown"),
+                                    "track_name": orig_name,
+                                    "old_track_name": orig_name,
+                                    "new_track_name": cleaned_nm,
+                                    "old_album_name": orig_album,
+                                    "new_album_name": cleaned_al,
+                                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                }
+                            )
+                            # Use a separate list to track which ones were updated *by cleaning*
+                            updated_tracks_cleaning.append(track)  # Appending the modified track dict
+                        else:
+                            error_logger.error("Failed to apply cleaning update for track ID %s", track_id)
                     else:
-                        error_logger.error("Failed to apply cleaning update for track ID %s", track_id)
-                # else: console_logger.debug("No cleaning needed for track '%s'", orig_name)
+                        console_logger.debug(f"Skipping track update for '{orig_name}' (ID: {track_id}) due to status '{track_status}'")
 
             clean_tasks_default = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
             await asyncio.gather(*clean_tasks_default)
@@ -1639,8 +1718,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
             # --- Step 3: Update Album Years ---
             console_logger.info("Starting album year update process...")
-            # process_album_years also modifies tracks in-place and returns lists
-            updated_y, changes_y = await process_album_years(all_tracks, force=force_run)
+            # process_album_years also needs last_run_time for incremental updates
+            effective_last_run = datetime.min if force_run else last_run_time
+            updated_y, changes_y = await process_album_years(all_tracks, effective_last_run, force=force_run)
             if updated_y:
                 console_logger.info("Updated years for %d tracks.", len(updated_y))
             else:
@@ -1676,6 +1756,54 @@ async def main_async(args: argparse.Namespace) -> None:
             if not force_run:
                 update_last_incremental_run()
 
+            # --- Step 4: Verify Pending Albums (after 30 days) ---
+            if hasattr(deps, 'pending_verification_service') and deps.pending_verification_service:
+                console_logger.info("Checking for albums that need verification...")
+                albums_to_verify = deps.pending_verification_service.get_verified_album_keys()
+
+                if albums_to_verify:
+                    console_logger.info("Found %d albums that need verification", len(albums_to_verify))
+                    verification_updated_tracks = []
+                    verification_changes = []
+
+                    # Process each album that needs verification
+                    for album_key in albums_to_verify:
+                        try:
+                            artist, album = album_key.split("|||", 1)
+                            console_logger.info("Verifying album '%s - %s' after 30-day interval", artist, album)
+
+                            # Find tracks for this album
+                            album_tracks = [t for t in all_tracks if t.get("artist") == artist and t.get("album") == album]
+
+                            if album_tracks:
+                                # Force verification regardless of current year values
+                                verified_tracks, verified_changes = await process_album_years(album_tracks, datetime.min, force=True)
+
+                                if verified_tracks:
+                                    verification_updated_tracks.extend(verified_tracks)
+                                    verification_changes.extend(verified_changes)
+                                    # Remove from pending verification as we've processed it
+                                    deps.pending_verification_service.remove_from_pending(artist, album)
+                                    console_logger.info("Successfully verified and updated album '%s - %s'", artist, album)
+                                else:
+                                    console_logger.warning("Verification didn't result in updates for '%s - %s'", artist, album)
+                            else:
+                                console_logger.warning("No tracks found for album '%s - %s' needing verification", artist, album)
+                                # If no tracks found, still remove from verification list to avoid endless processing
+                                deps.pending_verification_service.remove_from_pending(artist, album)
+                        except Exception as e:
+                            error_logger.error(f"Error verifying album {album_key}: {e}", exc_info=True)
+
+                    # Add verification results to other changes
+                    if verification_updated_tracks:
+                        console_logger.info("Verified and updated %d tracks from %d albums", len(verification_updated_tracks), len(albums_to_verify))
+                        all_tracks.extend([t for t in verification_updated_tracks if t.get("id") not in {x.get("id") for x in all_tracks}])
+                        all_changes.extend(verification_changes)
+                    else:
+                        console_logger.info("No updates resulted from album verification process")
+                else:
+                    console_logger.info("No albums currently need verification")
+
     except KeyboardInterrupt:
         # Handle user interruption gracefully
         console_logger.info("Script interrupted by user. Cancelling pending tasks...")
@@ -1704,16 +1832,70 @@ async def main_async(args: argparse.Namespace) -> None:
             except Exception as close_err:
                 error_logger.error(f"Error closing external API service: {close_err}")
 
-        # Generate analytics report *once* at the end of successful/failed async execution
-        if deps and hasattr(deps, 'analytics'):
+        # Force sync album cache to disk before exit
+        if deps is not None and hasattr(deps, 'cache_service') and deps.cache_service:
             try:
-                deps.analytics.generate_reports(force_mode=force_run)
-            except Exception as report_err:
-                error_logger.error(f"Error generating analytics report in main_async finally: {report_err}", exc_info=True)
+                await deps.cache_service.sync_cache()
+                console_logger.info("Album cache synchronized to disk before exit")
+            except Exception as cache_err:
+                error_logger.error(f"Error synchronizing cache before exit: {cache_err}")
 
         end_all = time.time()
         console_logger.info("main_async execution time: %.2f seconds", end_all - start_all)
         # DO NOT call update_last_incremental_run() here if called earlier based on logic
+
+        # --- Step 4: Verify Pending Albums (after 30 days) ---
+        if hasattr(deps, 'pending_verification_service') and deps.pending_verification_service:
+            console_logger.info("Checking for albums that need verification...")
+            albums_to_verify = deps.pending_verification_service.get_verified_album_keys()
+
+            if albums_to_verify:
+                console_logger.info("Found %d albums that need verification", len(albums_to_verify))
+                verification_updated_tracks = []
+                verification_changes = []
+
+                # Process each album that needs verification
+                for album_key in albums_to_verify:
+                    try:
+                        artist, album = album_key.split("|||", 1)
+                        console_logger.info("Verifying album '%s - %s' after 30-day interval", artist, album)
+
+                        # Find tracks for this album
+                        album_tracks = [t for t in all_tracks if t.get("artist") == artist and t.get("album") == album]
+
+                        if album_tracks:
+                            # Force verification regardless of current year values
+                            verified_tracks, verified_changes = await process_album_years(album_tracks, datetime.min, force=True)
+
+                            if verified_tracks:
+                                verification_updated_tracks.extend(verified_tracks)
+                                verification_changes.extend(verified_changes)
+                                # Remove from pending verification as we've processed it
+                                deps.pending_verification_service.remove_from_pending(artist, album)
+                                console_logger.info("Successfully verified and updated album '%s - %s'", artist, album)
+                            else:
+                                console_logger.warning("Verification didn't result in updates for '%s - %s'", artist, album)
+                        else:
+                            console_logger.warning("No tracks found for album '%s - %s' needing verification", artist, album)
+                            # If no tracks found, still remove from verification list to avoid endless processing
+                            deps.pending_verification_service.remove_from_pending(artist, album)
+                    except Exception as e:
+                        error_logger.error(f"Error verifying album {album_key}: {e}", exc_info=True)
+
+                # Add verification results to other changes
+                if verification_updated_tracks:
+                    console_logger.info("Verified and updated %d tracks from %d albums", len(verification_updated_tracks), len(albums_to_verify))
+                    # Add to shared tracks and changes
+                    updated_tracks = []
+                    changes_log = []
+                    updated_tracks.extend(verification_updated_tracks)
+                    changes_log.extend(verification_changes)
+
+                    console_logger.info("Updated tracks and changes logged.")
+                else:
+                    console_logger.info("No updates resulted from album verification process")
+            else:
+                console_logger.info("No albums currently need verification")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -1732,6 +1914,8 @@ def parse_arguments() -> argparse.Namespace:
     update_years_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
     verify_db_parser = subparsers.add_parser("verify_database", help="Verify and clean the track database")
     verify_db_parser.add_argument("--force", action="store_true", help="Force database check even if recently performed")
+    verify_pending_parser = subparsers.add_parser("verify_pending", help="Verify all pending albums regardless of timeframe")
+    verify_pending_parser.add_argument("--force", action="store_true", help="Force, bypassing incremental checks")
     args = parser.parse_args()
     return args
 
