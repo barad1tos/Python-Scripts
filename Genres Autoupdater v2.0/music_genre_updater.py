@@ -391,7 +391,7 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
             # Find which pairs to remove based on keywords
             to_remove = set()
             for start, end in pairs:
-                content = current_name[start + 1 : end]
+                content = current_name[start + 1 : end]  # noqa: E203
                 if any(keyword.lower() in content.lower() for keyword in keyword_set):
                     to_remove.add((start, end))
 
@@ -401,7 +401,7 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
 
             # Remove brackets (from right to left to maintain indices)
             for start, end in sorted(to_remove, reverse=True):
-                current_name = current_name[:start] + current_name[end + 1 :]
+                current_name = current_name[:start] + current_name[end + 1 :]  # noqa: E203
 
         # Clean up multiple spaces
         result = re.sub(r"\s+", " ", current_name).strip()
@@ -453,7 +453,7 @@ async def update_album_tracks_bulk_async(track_ids: List[str], year: str) -> boo
         batch_size = min(20, CONFIG.get("batch_size", 20))
 
         for i in range(0, len(filtered_track_ids), batch_size):
-            batch = filtered_track_ids[i : i + batch_size]
+            batch = filtered_track_ids[i : i + batch_size]  # noqa: E203
             tasks = []
 
             for track_id in batch:
@@ -827,7 +827,7 @@ async def update_album_years_async(tracks: List[Dict[str, str]], force: bool = F
 
         # Process albums in batches
         for i in range(0, len(album_items), batch_size):
-            batch = album_items[i : i + batch_size]
+            batch = album_items[i : i + batch_size]  # noqa: E203
             batch_tasks = []
 
             # Create tasks for each album in the batch
@@ -1035,7 +1035,7 @@ async def verify_and_clean_track_database(force: bool = False) -> int:
         console_logger.info("Checking tracks in batches of %d...", batch_size)
 
         for i in range(0, len(track_ids_to_check), batch_size):
-            batch_ids = track_ids_to_check[i : i + batch_size]
+            batch_ids = track_ids_to_check[i : i + batch_size]  # noqa: E203
             # Create tasks for the current batch
             tasks = [verify_track_exists(track_id) for track_id in batch_ids]
             # Run tasks concurrently and get results (True if exists, False otherwise/error)
@@ -1221,7 +1221,7 @@ async def update_genres_by_artist_async(tracks: List[Dict[str, str]], last_run_t
 
         async def process_tasks_in_batches(tasks: List[asyncio.Task], batch_size: int = 1000) -> None:
             for i in range(0, len(tasks), batch_size):
-                batch = tasks[i : i + batch_size]
+                batch = tasks[i : i + batch_size]  # noqa: E203
                 await asyncio.gather(*batch, return_exceptions=True)
 
         tasks = []
