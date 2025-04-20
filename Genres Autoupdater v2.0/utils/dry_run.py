@@ -26,7 +26,6 @@ from services.dependencies_service import DependencyContainer
 from utils.logger import get_full_log_path, get_loggers
 from utils.reports import save_unified_dry_run
 
-# Add path to music_genre_updater and scripts
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.join(current_dir, "..")
 if parent_dir not in sys.path:

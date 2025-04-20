@@ -501,7 +501,7 @@ class ExternalApiService:
                         if api_name == 'discogs':
                             raw_text = await response.text(encoding='utf-8', errors='ignore')
                             response_text_snippet = raw_text[:500]  # Log more characters for Discogs
-                            self.console_logger.debug(f"====== DISCORS RAW RESPONSE (Status: {response_status}) ======")
+                            self.console_logger.debug(f"====== DISCOGS RAW RESPONSE (Status: {response_status}) ======")
                             self.console_logger.debug(response_text_snippet)
                             self.console_logger.debug("====== END DISCORS RAW RESPONSE ====== ")
                         else:
@@ -1514,10 +1514,6 @@ class ExternalApiService:
             # ---------------------------
 
             # --- Process Discogs Results (logic remains the same) ---
-            if not data or "results" not in data:  # This check remains
-                self.console_logger.warning(f"[discogs] Search failed or no results key in data for query: '{search_query}'")
-                return []
-
             if not data or "results" not in data:
                 self.console_logger.warning(f"[discogs] Search failed or no results for query: '{search_query}'")
                 return []

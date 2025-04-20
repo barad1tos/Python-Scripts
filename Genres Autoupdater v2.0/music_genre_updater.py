@@ -1067,15 +1067,17 @@ async def verify_and_clean_track_database(force: bool = False) -> int:
             tell application "Music"
                 try
                     # Efficiently check existence by trying to get a property
-                    # Getting 'id' itself might be faster than 'first track whose id is...'
                     get id of track id {track_id} of library playlist 1
                     return "exists"
-                on error number -1728 # Error code for "item not found"
-                    return "not_found"
-                on error err_msg number err_num
-                    # Log other errors but treat as potentially existing to avoid wrongful deletion
-                    log "Error verifying track {track_id}: " & err_num & " " & err_msg
-                    return "error_assume_exists"
+                on error errMsg number errNum
+                    if errNum is -1728 then
+                        # Error code for "item not found"
+                        return "not_found"
+                    else
+                        # Log other errors but treat as potentially existing
+                        log "Error verifying track {track_id}: " & errNum & " " & errMsg
+                        return "error_assume_exists"
+                    end if
                 end try
             end tell
             '''
