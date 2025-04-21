@@ -14,53 +14,24 @@ Key Features:
 - **Sophisticated Scoring:** Employs a detailed scoring algorithm (`_score_original_release`) to evaluate
     potential releases and determine the most likely original release year, considering factors like release type,
     status, region, artist activity period, and MusicBrainz Release Group data.
-- **Artist Context:** Utilizes artist activity period and region (fetched from MusicBrainz and cached) to
-    improve scoring accuracy.
+- **Artist Context:** Utilizes artist activity period and region (fetched from MusicBrainz and cached via CacheService)
+    to improve scoring accuracy.
 - **Data Aggregation:** Combines results from multiple APIs for a more robust determination.
 - **Normalization & Validation:** Normalizes artist/album names for better matching and validates years.
 - **Error Handling & Retries:** Implements robust error handling and retry logic for API requests.
-- **Caching:** Caches artist activity period and region to reduce redundant API calls.
+- **Dependency Injection:** Uses injected services for caching and verification tracking rather than
+    managing these concerns internally.
 - **Statistics & Logging:** Tracks API usage statistics and provides detailed logging for diagnostics.
 - **Prerelease Handling:** Includes logic (`should_update_album_year`) to avoid updating years for albums
-    marked as prerelease in the user's library, potentially marking them for future verification.
+    marked as prerelease in the user's library, marking them for future verification.
 
 Classes:
 - `EnhancedRateLimiter`: A standalone rate limiter class.
 - `ExternalApiService`: The main service class orchestrating API interactions and year determination.
 
-Example Usage:
-        >>> import asyncio
-        >>> import logging
-        >>> from services.external_api_service import ExternalApiService
-        >>>
-        >>> # Assume config is loaded and loggers are configured
-        >>> # config = load_my_config()
-        >>> # console_logger = logging.getLogger('console')
-        >>> # error_logger = logging.getLogger('error')
-        >>> # service = ExternalApiService(config, console_logger, error_logger)
-        >>>
-        >>> async def main():
-        ...     # await service.initialize() # Initialize the HTTP session
-        ...     # try:
-        ...     #     # Example: Get year for a well-known album
-        ...     #     artist = "Example Artist"
-        ...     #     album = "Example Album"
-        ...     #     current_year = "1999" # Optional: provide current library year
-        ...     #     # pending_service = PendingVerificationService(...) # Optional
-        ...     #
-        ...     #     year, is_definitive = await service.get_album_year(
-        ...     #         artist, album, current_year #, pending_service
-        ...     #     )
-        ...     #
-        ...     #     if year:
-        ...     #         print(f"Determined year for '{artist} - {album}': {year} (Definitive: {is_definitive})")
-        ...     #     else:
-        ...     #         print(f"Could not determine year for '{artist} - {album}'.")
-        ...     #
-        ...     # finally:
-        ...     #     await service.close() # Close the session and log stats
-        >>>
-        >>> # asyncio.run(main())
+Dependencies:
+- `CacheService`: Provides caching functionality for artist metadata.
+- `PendingVerificationService`: Tracks albums that need future verification.
 """
 
 import asyncio
@@ -76,21 +47,16 @@ from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import aiohttp
 
+# Import necessary dependencies for the constructor
+from services.cache_service import CacheService
+from services.pending_verification import PendingVerificationService
+
 
 class EnhancedRateLimiter:
     """
     Advanced rate limiter using a moving window approach.
 
     This ensures maximum throughput while strictly adhering to API rate limits.
-
-    Attributes:
-        requests_per_window (int): Maximum requests allowed in the time window
-        window_size (float): Time window in seconds
-        request_timestamps (List[float]): Timestamps of recent requests
-        semaphore (asyncio.Semaphore): Controls concurrent access
-        logger (logging.Logger): Logger for rate limiting events
-        total_requests (int): Counter for total requests made through this limiter.
-        total_wait_time (float): Cumulative wait time due to rate limiting.
     """
 
     def __init__(
@@ -102,18 +68,6 @@ class EnhancedRateLimiter:
     ):
         """
         Initialize the rate limiter.
-
-        Args:
-            requests_per_window (int): Maximum requests allowed in the time window. Must be > 0.
-            window_size (float): Time window in seconds. Must be > 0.
-            max_concurrent (int): Maximum concurrent requests allowed. Must be > 0.
-            logger (Optional[logging.Logger]): Logger for rate limiting events. Defaults to module logger.
-
-        Raises:
-            ValueError: If parameters are not positive numbers/integers.
-
-        Example:
-            >>> limiter = EnhancedRateLimiter(60, 60.0, 5)  # 60 requests/minute, max 5 concurrent
         """
         if not isinstance(requests_per_window, int) or requests_per_window <= 0:
             raise ValueError("requests_per_window must be a positive integer")
@@ -134,14 +88,6 @@ class EnhancedRateLimiter:
     async def acquire(self) -> float:
         """
         Acquire permission to make a request, waiting if necessary due to rate limits or concurrency limits.
-
-        Returns:
-            float: The wait time in seconds (0 if no wait was needed for rate limiting).
-
-        Example:
-            >>> wait_time = await limiter.acquire()
-            >>> if wait_time > 0:
-            >>>     print(f"Waited {wait_time:.3f}s for rate limiting")
         """
         # Wait for rate limit first
         rate_limit_wait_time = await self._wait_if_needed()
@@ -156,23 +102,12 @@ class EnhancedRateLimiter:
     def release(self) -> None:
         """
         Release the concurrency semaphore after the request is completed or failed.
-
-        Example:
-            >>> try:
-            ...    # make request
-            ... finally:
-            ...    limiter.release()
         """
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
         """
         Internal method to check rate limits and wait if necessary.
-
-        Uses a monotonic clock for accurate time interval calculations.
-
-        Returns:
-            float: Wait time in seconds (0 if no wait needed).
         """
         now = time.monotonic()  # Use monotonic clock for interval timing
 
@@ -210,18 +145,6 @@ class EnhancedRateLimiter:
     def get_stats(self) -> Dict[str, Any]:
         """
         Get statistics about rate limiter usage.
-
-        Returns:
-            Dict[str, Any]: Dictionary with statistics including:
-                - total_requests (int): Total requests processed by this limiter.
-                - total_wait_time (float): Total seconds spent waiting due to rate limits.
-                - avg_wait_time (float): Average wait time per request.
-                - current_window_usage (int): Number of requests in the current time window.
-                - max_requests_per_window (int): Configured limit for the window.
-
-        Example:
-            >>> stats = limiter.get_stats()
-            >>> print(f"Made {stats['total_requests']} requests with {stats['avg_wait_time']:.3f}s average wait")
         """
         # Ensure current window usage is up-to-date by cleaning expired timestamps
         now = time.monotonic()
@@ -244,23 +167,28 @@ class ExternalApiService:
     and includes artist context (activity period, region) for better accuracy.
     """
 
-    def __init__(self, config: Dict[str, Any], console_logger: logging.Logger, error_logger: logging.Logger):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        console_logger: logging.Logger,
+        error_logger: logging.Logger,
+        # >>> Added dependencies as constructor arguments
+        cache_service: CacheService,
+        pending_verification_service: PendingVerificationService,
+        # <<< End added arguments
+    ):
         """
-        Initialize the API service with configuration and loggers.
-        Correctly reads nested configuration parameters.
-
-        Args:
-            config (Dict[str, Any]): Application configuration dictionary.
-            console_logger (logging.Logger): Logger for console messages.
-            error_logger (logging.Logger): Logger for error messages.
-
-        Raises:
-            ValueError: If essential configuration sections or keys are missing or invalid.
+        Initialize the API service with configuration, loggers, and dependencies.
         """
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.session: Optional[aiohttp.ClientSession] = None
+
+        # >>> Stored dependencies as instance attributes
+        self.cache_service = cache_service
+        self.pending_verification_service = pending_verification_service
+        # <<< End storing attributes
 
         # --- Configuration Extraction ---
         year_config = config.get("year_retrieval", {})
@@ -279,12 +207,8 @@ class ExternalApiService:
         self.musicbrainz_app_name = api_auth_config.get('musicbrainz_app_name', "MusicGenreUpdater/UnknownVersion")
         self.contact_email = api_auth_config.get('contact_email')  # Required for MB
         self.lastfm_api_key = api_auth_config.get('lastfm_api_key')
-        self.use_lastfm = bool(self.lastfm_api_key) and api_auth_config.get(
-            "use_lastfm", True
-        )  # Check use_lastfm within api_auth too? Or keep top level? Let's check top level year_config for this toggle.
-        self.use_lastfm = bool(self.lastfm_api_key) and year_config.get(
-            "use_lastfm", True
-        )  # Corrected: use_lastfm toggle remains directly under year_retrieval
+        # Corrected: use_lastfm toggle remains directly under year_retrieval
+        self.use_lastfm = bool(self.lastfm_api_key) and year_config.get("use_lastfm", True)
 
         # User-Agent setup
         if not self.contact_email:
@@ -338,8 +262,10 @@ class ExternalApiService:
         # ----------------------------------
 
         # --- Caching ---
-        self.activity_cache: Dict[str, Tuple[Tuple[Optional[int], Optional[int]], float]] = {}
-        self.region_cache: Dict[str, Tuple[Optional[str], float]] = {}
+        # Removed activity_cache and region_cache from here.
+        # ExternalApiService will now use methods from the injected CacheService
+        # self.activity_cache: Dict[str, Tuple[Tuple[Optional[int], Optional[int]], float]] = {}
+        # self.region_cache: Dict[str, Tuple[Optional[str], float]] = {}
         self.cache_ttl_days = processing_config.get("cache_ttl_days", 30)  # Read from processing subsection
         self.artist_period_context: Optional[Dict[str, Optional[int]]] = None
         # ----------------------------------
@@ -354,15 +280,12 @@ class ExternalApiService:
             self.console_logger.warning("Scoring configuration missing or invalid, using default scores.")
             self.scoring_config = {}
 
+        # Removed this line - initialize_async is a method, not an attribute to be reassigned
+        # self.external_api_service.initialize_async = self.external_api_service.initialize
+
     async def initialize(self, force: bool = False) -> None:
         """
         Initialize the aiohttp ClientSession.
-
-        Creates a new session if one doesn't exist, is closed, or if `force` is True.
-        Sets default User-Agent and Accept headers.
-
-        Args:
-            force (bool): If True, close the existing session and create a new one.
         """
         if force and self.session and not self.session.closed:
             await self.session.close()
@@ -423,7 +346,7 @@ class ExternalApiService:
         self,
         api_name: str,
         url: str,
-        params: Optional[Dict[str, Union[str, int]]] = None,  # Allow int params
+        params: Optional[Dict[str, Union[str, int]]] = None,
         headers_override: Optional[Dict[str, str]] = None,
         max_retries: int = 3,
         base_delay: float = 1.0,
@@ -431,24 +354,11 @@ class ExternalApiService:
     ) -> Optional[Dict[str, Any]]:
         """
         Make an API request with rate limiting, error handling, and retry logic.
-        Includes enhanced logging for diagnosing failures.
-
-        Args:
-            api_name (str): API name ('musicbrainz', 'discogs', 'lastfm').
-            url (str): Full URL to request.
-            params (Optional[Dict[str, Union[str, int]]]): Optional query parameters.
-            headers_override (Optional[Dict[str, str]]): Headers to override session defaults.
-            max_retries (int): Max retry attempts for 5xx/429/timeouts.
-            base_delay (float): Base delay for exponential backoff.
-            timeout_override (Optional[int]): Specific total timeout for this request.
-
-        Returns:
-            Optional[Dict[str, Any]]: Parsed JSON response or None on failure.
         """
         if not self.session or self.session.closed:
-            await self.initialize()
-        if not self.session or self.session.closed:
-            self.error_logger.error(f"[{api_name}] Session not available for request to {url}")
+            # The calling code should ensure the session is initialized.
+            # If we reach here without a session, it's a logic error.
+            self.error_logger.error(f"[{api_name}] Session not available for request to {url}. Initialize method was not called or failed.")
             return None
 
         request_headers = self.session.headers.copy()
@@ -487,13 +397,9 @@ class ExternalApiService:
                     response_status = response.status
                     self.api_call_durations[api_name].append(elapsed)
 
-                    # --- ADDED: Log headers being sent for Discogs ---
-                    # Note: Logging headers here, after the request is sent but before processing response.
-                    # If logging *before* sending is desired, move this block before the `async with`.
+                    # Log headers being sent for Discogs
                     if api_name == 'discogs':
-                        # Log only relevant headers for security/brevity if needed, but let's log all for now
                         self.console_logger.debug(f"[discogs] Sending Headers: {request_headers}")
-                    # ------------------------------------------------
 
                     response_text_snippet = "[Could not read text]"
                     try:
@@ -501,9 +407,11 @@ class ExternalApiService:
                         if api_name == 'discogs':
                             raw_text = await response.text(encoding='utf-8', errors='ignore')
                             response_text_snippet = raw_text[:500]  # Log more characters for Discogs
+                            # Fixed typo in log message
                             self.console_logger.debug(f"====== DISCOGS RAW RESPONSE (Status: {response_status}) ======")
                             self.console_logger.debug(response_text_snippet)
-                            self.console_logger.debug("====== END DISCORS RAW RESPONSE ====== ")
+                            # Fixed typo in log message
+                            self.console_logger.debug("====== END DISCOGS RAW RESPONSE ====== ")
                         else:
                             # Keep shorter snippet for other APIs unless needed
                             response_text_snippet = await response.text(encoding='utf-8', errors='ignore')
@@ -557,9 +465,6 @@ class ExternalApiService:
                     # Success (2xx) - Try to parse JSON
                     try:
                         if 'application/json' in response.headers.get('Content-Type', ''):
-                            # Use the already read text if possible, otherwise re-read with response.json()
-                            # This avoids reading twice but requires care if response_text_snippet was truncated
-                            # Let's stick to response.json() for safety unless performance is critical
                             return await response.json()
                         else:
                             self.error_logger.warning(
@@ -567,7 +472,7 @@ class ExternalApiService:
                                 f"Content-Type: {response.headers.get('Content-Type')}. Snippet: {response_text_snippet}"
                             )
                             return None
-                    except (aiohttp.ContentTypeError, ValueError, Exception) as json_error:  # Broader catch for json issues
+                    except (aiohttp.ContentTypeError, ValueError, Exception) as json_error:
                         self.error_logger.error(
                             f"[{api_name}] Error parsing JSON response from {url}: {json_error}. Snippet: {response_text_snippet}"
                         )
@@ -609,34 +514,23 @@ class ExternalApiService:
                 if limiter:
                     limiter.release()
 
-        # Should not be reached
+        # Should not be reached in normal flow if retries are exhausted
         self.error_logger.error(f"[{api_name}] Request loop ended without returning for URL: {url}. Last exception: {last_exception}")
         return None
 
-    # `should_update_album_year` remains the same as provided in the previous response.
-    # Ensure it gets `pending_verification_service` passed correctly.
     def should_update_album_year(
         self,
         tracks: List[Dict[str, str]],
         artist: str = "",
         album: str = "",
         current_library_year: str = "",
-        pending_verification_service=None,  # Pass the service instance
+        # Removed pending_verification_service from here, use self.pending_verification_service
+        # pending_verification_service=None,
     ) -> bool:
         """
         Determines whether to update the year for an album based on the status of its tracks.
-
-        Args:
-            tracks (List[Dict[str, str]]): List of track dictionaries for the album.
-            artist (str): Artist name (for logging).
-            album (str): Album name (for logging).
-            current_library_year (str): Current year value in the library.
-            pending_verification_service: Instance of PendingVerificationService or None.
-
-        Returns:
-            bool: True if the year can be updated based on track status, False otherwise.
         """
-        if not tracks:  # If no tracks provided, assume update is ok (or handle as error?)
+        if not tracks:
             return True
 
         prerelease_count = sum(1 for track in tracks if track.get("trackStatus", "").lower() == "prerelease")
@@ -652,11 +546,11 @@ class ExternalApiService:
                     f"Keeping current year: {current_library_year or 'N/A'}"
                 )
 
-                # Mark for future verification if service is available
-                if pending_verification_service:
+                # Mark for future verification using the instance attribute
+                if self.pending_verification_service:
                     try:
                         # Use original artist/album names for consistency if available, else normalized
-                        pending_verification_service.mark_for_verification(artist, album)
+                        self.pending_verification_service.mark_for_verification(artist, album)
                     except Exception as e_pvs:
                         self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
 
@@ -664,27 +558,16 @@ class ExternalApiService:
 
         return True  # OK to update year based on track status
 
-    # `get_album_year` remains the same as provided in the previous response (using the revised logic).
     async def get_album_year(
-        self, artist: str, album: str, current_library_year: Optional[str] = None, pending_verification_service=None
+        self,
+        artist: str,
+        album: str,
+        current_library_year: Optional[str] = None,
+        # Removed pending_verification_service from here, use self.pending_verification_service
+        # pending_verification_service=None
     ) -> Tuple[Optional[str], bool]:
         """
         Determine the original release year for an album using optimized API calls and revised scoring.
-
-        This REVISED method prioritizes MusicBrainz release group dates, uses an improved
-        scoring system across MusicBrainz, Discogs, and Last.fm, and avoids biasing
-        towards the current library year.
-
-        Args:
-            artist (str): Artist name.
-            album (str): Album name.
-            current_library_year (Optional[str]): Year currently in the library (used for context only).
-            pending_verification_service: Instance of PendingVerificationService or None.
-
-        Returns:
-            Tuple[Optional[str], bool]: (determined_year, is_definitive)
-            - determined_year: The determined original release year as a string, or None if not found/determined.
-            - is_definitive: True if the result is considered highly confident based on scoring thresholds.
         """
         # Normalize inputs for API matching but keep original for logging/reporting
         artist_norm = self._normalize_name(artist)
@@ -700,12 +583,14 @@ class ExternalApiService:
         artist_region: Optional[str] = None
         try:
             # 1. Get artist's activity period for context (cached)
+            # Use self.cache_service
             start_year, end_year = await self.get_artist_activity_period(artist_norm)
             self.artist_period_context = {'start_year': start_year, 'end_year': end_year}  # Set context for this run
             activity_log = f"({start_year or '?'} - {end_year or 'present'})" if start_year or end_year else "(activity period unknown)"
             self.console_logger.info(f"Artist activity period context: {activity_log}")
 
             # 2. Get artist's likely region for scoring context (cached)
+            # Use self.cache_service
             artist_region = await self._get_artist_region(artist_norm)
             if artist_region:
                 self.console_logger.info(f"Artist region context: {artist_region.upper()}")
@@ -747,9 +632,10 @@ class ExternalApiService:
             if not all_releases:
                 self.console_logger.warning(f"No release data found from any API for '{log_artist} - {log_album}'")
                 # Mark for verification only if we have a potential year to keep
-                if pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
+                # Use self.pending_verification_service
+                if self.pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
                     try:
-                        pending_verification_service.mark_for_verification(artist, album)
+                        self.pending_verification_service.mark_for_verification(artist, album)
                         self.console_logger.info(
                             f"Marked '{log_artist} - {log_album}' for future verification (no API data). Using current year: {current_library_year}"
                         )
@@ -772,13 +658,14 @@ class ExternalApiService:
                     year_scores[year].append(score)
                     valid_years_found.add(year)
                 # else: # Optional: log discarded invalid years
-                #     self.console_logger.debug(f"Discarding release with invalid year: {release.get('title')} ({year})")
+                #    self.console_logger.debug(f"Discarding release with invalid year: {release.get('title')} ({year})")
 
             if not year_scores:
                 self.console_logger.warning(f"No valid years found after processing API results for '{log_artist} - {log_album}'")
-                if pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
+                # Use self.pending_verification_service
+                if self.pending_verification_service and current_library_year and self._is_valid_year(current_library_year):
                     try:
-                        pending_verification_service.mark_for_verification(artist, album)
+                        self.pending_verification_service.mark_for_verification(artist, album)
                     except Exception as e_pvs:
                         self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
                     return current_library_year, False
@@ -791,9 +678,7 @@ class ExternalApiService:
             final_year_scores: Dict[str, int] = {year: max(scores) for year, scores in year_scores.items()}
 
             # Sort years: primarily by score (desc), secondarily by year (asc - prefer earlier for ties)
-            sorted_years = sorted(
-                final_year_scores.items(), key=lambda item: (-item[1], int(item[0]))  # Note: int(item[0]) assumes year is numeric string
-            )
+            sorted_years = sorted(final_year_scores.items(), key=lambda item: (-item[1], int(item[0])))
 
             # Log the ranked years and their highest scores
             log_scores = ", ".join([f"{y}:{s}" for y, s in sorted_years[:5]])  # Log top 5 for brevity
@@ -825,9 +710,10 @@ class ExternalApiService:
             )
 
             # If not definitive, mark for potential future verification
-            if not is_definitive and pending_verification_service:
+            # Use self.pending_verification_service
+            if not is_definitive and self.pending_verification_service:
                 try:
-                    pending_verification_service.mark_for_verification(artist, album)
+                    self.pending_verification_service.mark_for_verification(artist, album)
                     self.console_logger.info(f"Result for '{log_artist} - {log_album}' is not definitive. Marked for future verification.")
                 except Exception as e_pvs:
                     self.error_logger.error(f"Failed to mark '{artist} - {album}' for verification: {e_pvs}")
@@ -847,37 +733,23 @@ class ExternalApiService:
             # Crucial: Clear the context after the function finishes or errors out
             self.artist_period_context = None
 
-    # `get_artist_activity_period` remains the same as provided in the previous response.
     async def get_artist_activity_period(self, artist_norm: str) -> Tuple[Optional[int], Optional[int]]:
         """
         Retrieve the period of activity for an artist from MusicBrainz, with caching.
-
-        Args:
-            artist_norm (str): The normalized artist's name.
-
-        Returns:
-            Tuple[Optional[int], Optional[int]]: (start_year, end_year).
-            If end_year is None, the artist is likely still active. Returns (None, None) on failure.
         """
         cache_key = f"activity_{artist_norm}"
         cache_ttl_seconds = self.cache_ttl_days * 86400
-        current_time = time.monotonic()
 
-        # Check cache first
-        if cache_key in self.activity_cache:
-            (start_year, end_year), timestamp = self.activity_cache[cache_key]
-            if current_time - timestamp < cache_ttl_seconds:
-                self.console_logger.debug(f"Using cached activity period for '{artist_norm}': {start_year or '?'} - {end_year or 'present'}")
-                return start_year, end_year
-            else:
-                self.console_logger.debug(f"Activity cache expired for '{artist_norm}'")
-                del self.activity_cache[cache_key]  # Remove expired entry
+        # Check cache first using self.cache_service
+        # CacheService.get_async handles the TTL check internally
+        cached_data = await self.cache_service.get_async(cache_key)
+        if cached_data:
+            start_year, end_year = cached_data
+            self.console_logger.debug(f"Using cached activity period for '{artist_norm}': {start_year or '?'} - {end_year or 'present'}")
+            return start_year, end_year
+        else:
+            self.console_logger.debug(f"Activity cache miss for '{artist_norm}', fetching from MusicBrainz.")
 
-        # Clean cache periodically if it grows too large (simple strategy)
-        if len(self.activity_cache) > 500:  # Example threshold
-            self._clean_expired_cache(self.activity_cache, cache_ttl_seconds, "activity")
-
-        self.console_logger.debug(f"Fetching activity period for artist: {artist_norm}")
         start_year_result: Optional[int] = None
         end_year_result: Optional[int] = None
 
@@ -889,13 +761,11 @@ class ExternalApiService:
 
             if not data or "artists" not in data or not data["artists"]:
                 self.console_logger.warning(f"Cannot determine activity period for '{artist_norm}': Artist not found in MusicBrainz.")
-                # Cache the negative result
-                self.activity_cache[cache_key] = ((None, None), current_time)
+                # Cache the negative result using self.cache_service
+                await self.cache_service.set_async(cache_key, (None, None), ttl=3600)  # Cache negative result for 1 hour
                 return None, None
 
             # --- Find the best matching artist ---
-            # Simple approach: use the first result if its name matches closely enough.
-            # More complex logic could compare aliases, types (Person/Group), disambiguation, score etc.
             best_match_artist = data["artists"][0]
             artist_name_found = best_match_artist.get("name", "Unknown")
             artist_id = best_match_artist.get("id")
@@ -943,45 +813,38 @@ class ExternalApiService:
                     self.console_logger.debug(f"Artist '{artist_name_found}' marked as ended but no end date found in life-span.")
                     end_year_result = None  # Treat as still active or recently ended
 
-            # Store result (even if None) in cache
-            self.activity_cache[cache_key] = ((start_year_result, end_year_result), current_time)
+            # Store result (even if None) in cache using self.cache_service
+            # Cache positive results with the configured TTL, negative/partial results with shorter TTL
+            if start_year_result is not None or end_year_result is not None:
+                await self.cache_service.set_async(cache_key, (start_year_result, end_year_result), ttl=cache_ttl_seconds)
+            else:
+                await self.cache_service.set_async(cache_key, (None, None), ttl=3600)  # Cache absence of result for 1 hour
+
             self.console_logger.debug(f"Determined activity period for '{artist_norm}': {start_year_result or '?'} - {end_year_result or 'present'}")
             return start_year_result, end_year_result
 
         except Exception as e:
             self.error_logger.exception(f"Error determining activity period for '{artist_norm}': {e}")
-            # Cache failure case
-            self.activity_cache[cache_key] = ((None, None), current_time)
+            # Cache failure case using self.cache_service
+            await self.cache_service.set_async(cache_key, (None, None), ttl=3600)  # Cache failure for 1 hour
             return None, None
 
-    # `_get_artist_region` remains the same as provided in the previous response.
     async def _get_artist_region(self, artist_norm: str) -> Optional[str]:
         """
         Determine the region (country) of an artist using MusicBrainz API, with caching.
-
-        Args:
-            artist_norm (str): Normalized artist name.
-
-        Returns:
-            Optional[str]: Lowercase ISO 3166-1 alpha-2 country code (e.g., "us", "gb", "jp") or None if unknown.
         """
         cache_key = f"region_{artist_norm}"
         cache_ttl_seconds = self.cache_ttl_days * 86400  # Use same TTL as activity period
-        current_time = time.monotonic()
 
-        # Check cache first
-        if cache_key in self.region_cache:
-            region, timestamp = self.region_cache[cache_key]
-            if current_time - timestamp < cache_ttl_seconds:
-                self.console_logger.debug(f"Using cached region '{region}' for artist '{artist_norm}'")
-                return region
-            else:
-                self.console_logger.debug(f"Region cache expired for '{artist_norm}'")
-                del self.region_cache[cache_key]
-
-        # Clean cache periodically
-        if len(self.region_cache) > 500:
-            self._clean_expired_cache(self.region_cache, cache_ttl_seconds, "region")
+        # Check cache first using self.cache_service
+        # CacheService.get_async handles the TTL check internally
+        cached_data = await self.cache_service.get_async(cache_key)
+        if cached_data:
+            region = cached_data
+            self.console_logger.debug(f"Using cached region '{region}' for artist '{artist_norm}'")
+            return region
+        else:
+            self.console_logger.debug(f"Region cache miss for '{artist_norm}', fetching from MusicBrainz.")
 
         region_result: Optional[str] = None
         try:
@@ -1010,13 +873,6 @@ class ExternalApiService:
                                 # Use the first ISO code found
                                 region_result = iso_codes[0].lower()
                                 self.console_logger.debug(f"Found region '{region_result}' via area ISO codes for '{artist_norm}'")
-                            # else: # Optional: Could try parsing area.name, but less reliable
-                            #     self.console_logger.debug(f"Area found for '{artist_norm}' but no ISO code: {area.get('name')}")
-                        # else: # Area is not a country (e.g., city, subdivision) - ignore for region
-                        #    self.console_logger.debug(
-                        #        f"Area found for '{artist_norm}' is not a country: {area.get('name')} "
-                        #        f"(Type: {area.get('type')})"
-                        #    )
             else:
                 # Artist not found in MusicBrainz
                 self.console_logger.debug(f"No artist found in MusicBrainz to determine region for '{artist_norm}'")
@@ -1025,30 +881,13 @@ class ExternalApiService:
             # Log errors during API request or processing
             self.error_logger.warning(f"Error retrieving artist region for '{artist_norm}': {e}")
 
-        # Cache the result (even if it's None) before returning
-        self.region_cache[cache_key] = (region_result, current_time)
+        # Cache the result (even if it's None) before returning using self.cache_service
+        await self.cache_service.set_async(cache_key, region_result, ttl=cache_ttl_seconds)
         return region_result
 
-    # `_score_original_release` remains the same as provided in the previous response.
-    # file: services/external_api_service.py
-
-    # Replace the existing _score_original_release function with this one:
     def _score_original_release(self, release: Dict[str, Any], artist_norm: str, album_norm: str, artist_region: Optional[str]) -> int:
         """
         REVISED scoring function prioritizing original release indicators (v3).
-
-        Assigns a score based on how likely the `release` dictionary represents
-        the original release of the album defined by `artist_norm` and `album_norm`.
-        Prioritizes MusicBrainz Release Group date and penalizes later releases more heavily.
-
-        Args:
-            release (Dict[str, Any]): Release data dictionary from API processing functions.
-            artist_norm (str): Normalized artist name being searched.
-            album_norm (str): Normalized album name being searched.
-            artist_region (Optional[str]): Lowercase country code of the artist (if known).
-
-        Returns:
-            int: Score (typically 0-100+, higher is better).
         """
         # Ensure scoring_config is a dict, fallback to empty if not found or invalid
         scoring_cfg = self.scoring_config if isinstance(self.scoring_config, dict) else {}
@@ -1214,7 +1053,7 @@ class ExternalApiService:
                         score += scoring_cfg.get('year_near_start_bonus', 20)
                         score_components.append(f"Year Near Start: +{scoring_cfg.get('year_near_start_bonus', 20)}")
 
-                # *** NEW: Penalty based on difference from RG First Year ***
+                # NEW: Penalty based on difference from RG First Year
                 if rg_first_year and year > rg_first_year + 1:  # If release year is >1yr after RG first year
                     year_diff = year - rg_first_year
                     # Apply a scaling penalty, e.g., -5 points per year difference after the first year
@@ -1230,7 +1069,9 @@ class ExternalApiService:
             if release_country == artist_region:
                 score += scoring_cfg.get('country_artist_match_bonus', 10)
                 score_components.append(
-                    f"Country Matches Artist Region ({artist_region.upper()}): +{scoring_cfg.get('country_artist_match_bonus', 10)}"
+                    (
+                        f"Country Matches Artist Region ({artist_region.upper()}): " f"+{scoring_cfg.get('country_artist_match_match_bonus', 10)}"
+                    )  # Fixed typo
                 )
             elif release_country in scoring_cfg.get(
                 'major_market_codes', ['us', 'gb', 'uk', 'de', 'jp', 'fr']
@@ -1264,19 +1105,10 @@ class ExternalApiService:
 
         return final_score
 
-    # `_get_scored_releases_from_musicbrainz` remains the same as provided in the previous response.
     async def _get_scored_releases_from_musicbrainz(self, artist_norm: str, album_norm: str, artist_region: Optional[str]) -> List[Dict[str, Any]]:
         """
         Retrieve and score releases from MusicBrainz, prioritizing Release Group search.
         Includes fallback search strategies if the initial precise query fails.
-
-        Args:
-            artist_norm (str): Normalized artist name.
-            album_norm (str): Normalized album name.
-            artist_region (Optional[str]): Artist's region code for scoring.
-
-        Returns:
-            List[Dict[str, Any]]: List of scored releases, sorted descending by score.
         """
         scored_releases: List[Dict[str, Any]] = []
         release_groups = []  # Initialize list to store found release groups
@@ -1340,19 +1172,20 @@ class ExternalApiService:
                         return []  # Return empty list if all searches fail
 
             # --- Filter Results if Broader Search Was Used ---
-            # We need to ensure the artist credit matches "Abney Park" if we used fallback searches
+            # We need to ensure the artist credit matches the search artist if we used fallback searches
             filtered_release_groups = []
-            if not (rg_data1 and rg_data1.get("count", 0) > 0):  # If primary search failed, filter results from fallback
+            # Check if primary search failed (meaning we used fallbacks)
+            if not (rg_data1 and rg_data1.get("count", 0) > 0):
                 self.console_logger.debug(f"Filtering {len(release_groups)} fallback results for artist '{artist_norm}'...")
                 for rg in release_groups:
                     artist_credit = rg.get("artist-credit", [])
                     if artist_credit and isinstance(artist_credit, list):
                         # Check if the first artist name in the credit matches closely
-                        # Using a simple lowercase comparison for now
+                        # Using a simple lowercase comparison for now. This could be improved.
                         first_artist = artist_credit[0]
                         if isinstance(first_artist, dict) and first_artist.get("name", "").lower() == artist_norm.lower():
                             filtered_release_groups.append(rg)
-                        else:  # Log skipped groups?
+                        else:
                             skipped_artist = first_artist.get("name", "Unknown") if isinstance(first_artist, dict) else "Unknown"
                             self.console_logger.debug(
                                 f"Skipping RG '{rg.get('title')}' due to artist mismatch ('{skipped_artist}' != '{artist_norm}')"
@@ -1370,12 +1203,14 @@ class ExternalApiService:
             MAX_GROUPS_TO_PROCESS = 3  # Limit processing if multiple groups found
             groups_to_process = release_groups[:MAX_GROUPS_TO_PROCESS]
             release_fetch_tasks = []
-            rg_info_map = {idx: groups_to_process[idx] for idx in range(len(groups_to_process))}  # Map index to RG data
+            # Map index to RG data to retrieve full info after fetching releases
+            rg_info_map = {idx: groups_to_process[idx] for idx in range(len(groups_to_process))}
 
             for idx, rg in enumerate(groups_to_process):
                 rg_id = rg.get("id")
                 if not rg_id:
                     continue
+                # Use release search endpoint to get individual releases within the release group
                 release_params = {"release-group": rg_id, "inc": "media", "fmt": "json", "limit": "50"}
                 release_search_url = "https://musicbrainz.org/ws/2/release/"
                 release_fetch_tasks.append(self._make_api_request('musicbrainz', release_search_url, params=release_params))
@@ -1384,10 +1219,11 @@ class ExternalApiService:
 
             # --- Score Fetched Releases ---
             for idx, result in enumerate(release_results):
-                rg_info_full = rg_info_map.get(idx)  # Get full RG data using the index map
+                # Get full RG data using the index map to access RG-level info for scoring
+                rg_info_full = rg_info_map.get(idx)
                 if not rg_info_full:
                     continue
-                rg_id = rg_info_full["rg_id"] = rg_info_full.get("id")  # Store ID in mapped dict too
+                rg_id = rg_info_full.get("id")  # Get RG ID
 
                 # Extract details needed for scoring/processing from rg_info_full
                 rg_first_date = rg_info_full.get("first-release-date")
@@ -1403,7 +1239,7 @@ class ExternalApiService:
                     self.error_logger.warning(f"Failed to fetch releases for MB RG ID {rg_id}: {result}")
                     continue
                 if not result or "releases" not in result:
-                    if result is not None:
+                    if result is not None:  # Log only if the API call itself didn't return None
                         self.console_logger.warning(f"No release data found for MB RG ID {rg_id}")
                     continue
 
@@ -1421,18 +1257,30 @@ class ExternalApiService:
                         if year_match:
                             year = year_match.group(1)
 
-                    status_val = release.get("status")  # Getting the value, can be None
-                    status = status_val.lower() if isinstance(status_val, str) else ""  # We translate to lowercase only if it is a string
+                    status_val = release.get("status")
+                    status = status_val.lower() if isinstance(status_val, str) else ""
 
-                    country_val = release.get("country")  # Getting the value, can be None
-                    country = country_val.lower() if isinstance(country_val, str) else ""  # Convert to lowercase only if it is a string
+                    country_val = release.get("country")
+                    country = country_val.lower() if isinstance(country_val, str) else ""
 
-                    release_title = release.get("title", "")
                     release_title = release.get("title", "")
                     media = release.get("media", [])
                     format_details = media[0].get("format", "") if media and isinstance(media, list) else ""
+
+                    # Use reissue keywords from scoring config
                     reissue_keywords = self.scoring_config.get('reissue_keywords', []) if isinstance(self.scoring_config, dict) else []
                     is_reissue = any(kw.lower() in release_title.lower() for kw in reissue_keywords)
+                    # Also check format descriptions for reissue keywords
+                    format_desc_lower = " ".join(
+                        [
+                            d.lower()
+                            for fmt in media
+                            if isinstance(fmt, dict) and isinstance(fmt.get('descriptions'), list)
+                            for d in fmt['descriptions']
+                        ]
+                    )
+                    if not is_reissue and any(kw.lower() in format_desc_lower for kw in reissue_keywords):
+                        is_reissue = True
 
                     release_info = {
                         'source': 'musicbrainz',
@@ -1470,20 +1318,10 @@ class ExternalApiService:
             self.error_logger.exception(f"Error retrieving/scoring from MusicBrainz for '{artist_norm} - {album_norm}': {e}")
             return []
 
-    # `_get_scored_releases_from_discogs` remains the same as provided in the previous response.
     async def _get_scored_releases_from_discogs(self, artist_norm: str, album_norm: str, artist_region: Optional[str]) -> List[Dict[str, Any]]:
         """
         Retrieve and score releases from Discogs.
         Uses a combined query parameter 'q' and includes basic result validation.
-        Fixes Flake8 warnings F841 and E501.
-
-        Args:
-            artist_norm (str): Normalized artist name.
-            album_norm (str): Normalized album name.
-            artist_region (Optional[str]): Artist's region code for scoring.
-
-        Returns:
-            List[Dict[str, Any]]: List of scored release dictionaries, sorted by score descending.
         """
         scored_releases: List[Dict[str, Any]] = []
         try:
@@ -1513,9 +1351,10 @@ class ExternalApiService:
                 self.console_logger.debug("[discogs] _make_api_request returned None.")
             # ---------------------------
 
-            # --- Process Discogs Results (logic remains the same) ---
+            # --- Process Discogs Results ---
+            # Removed duplicate check
             if not data or "results" not in data:
-                self.console_logger.warning(f"[discogs] Search failed or no results for query: '{search_query}'")
+                self.console_logger.warning(f"[discogs] Search failed or no results key in data for query: '{search_query}'")
                 return []
 
             results = data.get('results', [])
@@ -1538,13 +1377,12 @@ class ExternalApiService:
                 )
 
                 # --- Stricter validation after broad search ---
-                # Removed unused threshold variables
                 artist_matches = artist_norm.lower() in release_artist.lower() or release_artist.lower() in artist_norm.lower()
                 # Require high album title similarity or perfect artist match for less strict title check
                 # Using simple containment check for now
                 album_matches = album_norm.lower() in actual_release_title.lower() or actual_release_title.lower() in album_norm.lower()
 
-                # Break long condition into multiple lines for readability (E501 fix)
+                # Break long condition into multiple lines for readability
                 artist_mismatch_skip = not artist_matches
                 album_mismatch_skip = not album_matches and (release_artist.lower() != artist_norm.lower())
 
@@ -1622,7 +1460,7 @@ class ExternalApiService:
 
             self.console_logger.info(f"Found {len(scored_releases)} scored releases from Discogs for query: '{search_query}'")
             for i, r in enumerate(scored_releases[:3]):
-                # Break long log line (E501 fix)
+                # Break long log line
                 self.console_logger.info(
                     f"  Discogs #{i+1}: {r.get('title', '')} ({r.get('year', '')}) - "
                     f"Type: {r.get('type', '')}, Reissue: {r.get('is_reissue')}, "
@@ -1635,18 +1473,9 @@ class ExternalApiService:
             self.error_logger.exception(f"Error retrieving/scoring from Discogs for '{artist_norm} - {album_norm}': {e}")
             return []
 
-    # `_get_scored_releases_from_lastfm` remains the same as provided in the previous response.
     async def _get_scored_releases_from_lastfm(self, artist_norm: str, album_norm: str) -> List[Dict[str, Any]]:
         """
         Retrieve album release year from Last.fm and return a scored release dictionary.
-
-        Args:
-            artist_norm (str): Normalized artist name.
-            album_norm (str): Normalized album name.
-
-        Returns:
-            List[Dict[str, Any]]: List containing zero or one scored release dictionary.
-                                    Last.fm typically provides only one primary result per lookup.
         """
         scored_releases: List[Dict[str, Any]] = []
         if not self.use_lastfm:
@@ -1725,18 +1554,11 @@ class ExternalApiService:
         # Return the list (usually empty or with one scored item)
         return scored_releases
 
-    # `_extract_year_from_lastfm_data` remains the same as provided in the previous response.
     def _extract_year_from_lastfm_data(self, album_data: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
         Extract the most likely year from the Last.fm album data structure.
 
         Prioritizes explicit release date, then wiki content patterns, then tags.
-
-        Args:
-            album_data (Dict[str, Any]): The 'album' object from the Last.fm API response.
-
-        Returns:
-            Optional[Dict[str, str]]: A dictionary {'year': YYYY, 'source_detail': 'source'} or None if no year found.
         """
         year: Optional[str] = None
         source_detail: str = "unknown"
@@ -1830,16 +1652,9 @@ class ExternalApiService:
         )
         return None
 
-    # `_normalize_name` remains the same as provided in the previous response.
     def _normalize_name(self, name: str) -> str:
         """
         Normalize a name by removing common suffixes and extra characters for better API matching.
-
-        Args:
-            name (str): The original name.
-
-        Returns:
-            str: Normalized name, or empty string if input is empty/None.
         """
         if not name or not isinstance(name, str):
             return ""
@@ -1873,15 +1688,12 @@ class ExternalApiService:
         # Avoid returning empty string if original name wasn't empty
         return result if result else name
 
-    # `_clean_expired_cache` remains the same as provided in the previous response.
     def _clean_expired_cache(self, cache: dict, ttl_seconds: float, cache_name: str = "Generic"):
         """
         Removes expired entries from a timestamped cache dictionary.
-
-        Args:
-            cache (dict): The cache dictionary to clean. Expected format: {key: (value, timestamp)}.
-            ttl_seconds (float): The time-to-live in seconds.
-            cache_name (str): Name of the cache for logging purposes.
+        This method is no longer strictly necessary for activity/region cache
+        as CacheService.get_async handles TTL, but kept for potential other uses
+        or if the cache structure changes.
         """
         if not isinstance(cache, dict):
             return  # Safety check
@@ -1903,16 +1715,9 @@ class ExternalApiService:
                     pass  # Ignore if key already removed elsewhere
             self.console_logger.debug(f"Cleaned {len(keys_to_delete)} expired entries from {cache_name} cache.")
 
-    # `_is_valid_year` remains the same as provided in the previous response.
     def _is_valid_year(self, year_str: Optional[str]) -> bool:
         """
         Basic check if a string represents a plausible release year (4 digits, within range).
-
-        Args:
-            year_str (Optional[str]): The year string to validate.
-
-        Returns:
-            bool: True if the string is a valid 4-digit year within the configured range, False otherwise.
         """
         if not year_str or not isinstance(year_str, str) or not year_str.isdigit() or len(year_str) != 4:
             return False

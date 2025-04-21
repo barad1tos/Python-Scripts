@@ -12,27 +12,35 @@ Features:
     - Special handling for key="ALL" to return all valid cached track objects
     - CSV cache: stores album year information persistently with artist/album lookup
     - Both caches support invalidation (individual entries or complete cache)
+    - Uses SHA256 hash for album keys to avoid separator issues
+    - Automatic cache synchronization to disk based on time interval
+    - Atomic file writes for data safety
+    - Tracking of last incremental run timestamp
 
 Usage:
     - For general data caching: get_async/set_async with optional TTL
     - For album-year caching: get_album_year_from_cache/store_album_year_in_cache
+    - Force disk synchronization with sync_cache() before shutdown
 """
 
 import asyncio
 import csv
 import hashlib
 import os
+import sys
 import time
 
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple
+
+from utils.logger import get_full_log_path
 
 
 class CacheService:
     """
     Cache Service Class
     This class provides an in-memory cache with TTL support and a persistent CSV-based cache
-    for album release years.
+    for album release years. Uses hash-based keys for album data.
     """
 
     def __init__(self, config: dict, console_logger, error_logger):
@@ -49,7 +57,7 @@ class CacheService:
 
         # In-memory cache settings
         self.default_ttl = config.get("cache_ttl_seconds", 900)
-        self.cache: Dict[str, Tuple[Any, float]] = {}  # key -> (value, expiry_time)
+        self.cache: Dict[str, Tuple[Any, float]] = {}  # key (hash) -> (value, expiry_time)
 
         # CSV cache settings
         logs_base_dir = self.config.get("logs_base_dir", ".")
@@ -58,13 +66,27 @@ class CacheService:
         os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
 
         # In-memory album years cache
-        self.album_years_cache = {}  # key: "artist|||album", value: year
+        # key: hash of "artist|album", value: (year, artist, album)
+        self.album_years_cache: Dict[str, Tuple[str, str, str]] = {}
         self.last_cache_sync = time.time()
         self.cache_dirty = False  # Flag indicating unsaved changes
         self.sync_interval = config.get("album_cache_sync_interval", 300)  # Sync every 5 minutes by default
 
         # Load initial album cache
         self._load_album_years_cache()
+
+    def _generate_album_key(self, artist: str, album: str) -> str:
+        """
+        Generates a unique hash key for an album based on artist and album names.
+        Uses SHA256 to avoid issues with separator characters in names.
+
+        :param artist: The artist name.
+        :param album: The album name.
+        :return: A SHA256 hash string.
+        """
+        # Combine artist and album names (normalized) and hash them
+        normalized_names = f"{artist.strip().lower()}|{album.strip().lower()}"
+        return hashlib.sha256(normalized_names.encode('utf-8')).hexdigest()
 
     def _is_expired(self, expiry_time: float) -> bool:
         """
@@ -77,15 +99,20 @@ class CacheService:
 
     def _hash_key(self, key_data: Any) -> str:
         """
-        Save the value to the in-memory cache with specified TTL (or default).
+        Generates a SHA256 hash for a general cache key.
+        Used for the generic in-memory cache.
 
         :param key_data: The key data to hash (can be a tuple or any hashable object).
         :return: The hashed key string.
         """
-        if isinstance(key_data, tuple):
-            key_str = '|'.join(str(item) for item in key_data)
-        else:
+        # Ensure key_data is hashable or convert it to a consistent string representation
+        try:
             key_str = str(key_data)
+        except Exception as e:
+            self.error_logger.error(f"Failed to convert key_data to string for hashing: {e}")
+            # Fallback to a default or raise an error, depending on desired behavior
+            key_str = "unhashable_key"  # Or raise TypeError("Unhashable key data")
+
         return hashlib.sha256(key_str.encode('utf-8')).hexdigest()
 
     def set(self, key_data: Any, value: Any, ttl: Optional[int] = None) -> None:
@@ -119,13 +146,14 @@ class CacheService:
         if key_data == "ALL":
             tracks = []
             now_ts = time.time()
-            for _, (val, expiry) in self.cache.items():
-                # Filter out only non-expired track objects
+            # Iterate through values, which are (value, expiry_time) tuples
+            for val, expiry in self.cache.values():
+                # Filter out only non-expired track objects (assuming tracks are dicts with 'id')
                 if now_ts < expiry and isinstance(val, dict) and "id" in val:
                     tracks.append(val)
             return tracks
 
-        # Otherwise standard logic
+        # Otherwise standard logic for a specific key
         key = self._hash_key(key_data)
         if key in self.cache:
             value, expiry_time = self.cache[key]
@@ -152,39 +180,47 @@ class CacheService:
         :param key_data: The key data to invalidate or "ALL" to clear all entries.
         """
         if key_data == "ALL":
-            # Clear all
+            # Clear all generic cache entries
             self.cache.clear()
-            self.console_logger.info("Invalidated ALL in-memory cache entries.")
+            self.console_logger.info("Invalidated ALL in-memory generic cache entries.")
             return
         key = self._hash_key(key_data)
         if key in self.cache:
             del self.cache[key]
-            self.console_logger.info(f"In-memory cache invalidated for key: {key_data}")
+            self.console_logger.info(f"In-memory generic cache invalidated for key: {key_data}")
 
     def clear(self) -> None:
         """
-        Clear the entire in-memory cache.
+        Clear the entire in-memory generic cache.
         """
         self.cache.clear()
-        self.console_logger.info("All in-memory cache entries cleared.")
+        self.console_logger.info("All in-memory generic cache entries cleared.")
 
     def _load_album_years_cache(self) -> None:
         """
         Load album years cache from CSV file into memory.
         Called during initialization.
+        Reads artist, album, and year from CSV and stores using hash keys.
         """
+        self.album_years_cache.clear()  # Clear existing cache before loading
         try:
             if os.path.exists(self.album_cache_csv):
                 with open(self.album_cache_csv, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        a = row.get("artist", "").strip().lower()
-                        b = row.get("album", "").strip().lower()
+                        # Read artist, album, and year from CSV columns
+                        a = row.get("artist", "").strip()
+                        b = row.get("album", "").strip()
                         y = row.get("year", "").strip()
                         if a and b and y:
-                            key = f"{a}|||{b}"
-                            self.album_years_cache[key] = y
+                            # Generate hash key from artist and album
+                            key_hash = self._generate_album_key(a, b)
+                            # Store year, original artist, and original album in the in-memory cache value
+                            self.album_years_cache[key_hash] = (y, a, b)
                 self.console_logger.info(f"Loaded {len(self.album_years_cache)} album years into memory cache")
+            else:
+                self.console_logger.info(f"Album-year cache file not found, will create at: {self.album_cache_csv}")
+
         except Exception as e:
             self.error_logger.error(f"Error loading album years cache: {e}", exc_info=True)
 
@@ -204,6 +240,7 @@ class CacheService:
         """
         Save the in-memory album years cache to disk.
         Uses atomic write pattern with temporary file.
+        Writes artist, album, and year columns.
         """
         temp_file = f"{self.album_cache_csv}.tmp"
 
@@ -211,18 +248,25 @@ class CacheService:
             os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
 
             with open(temp_file, "w", newline="", encoding="utf-8") as f:
+                # Define fieldnames for the CSV file
                 writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
                 writer.writeheader()
 
-                for key, year in self.album_years_cache.items():
-                    try:
-                        a, b = key.split("|||", 1)
-                        writer.writerow({"artist": a, "album": b, "year": year})
-                    except ValueError:
-                        self.error_logger.warning(f"Invalid key format in album cache: {key}")
+                # Iterate through values in the in-memory cache (which are (year, artist, album) tuples)
+                for year, artist, album in self.album_years_cache.values():
+                    # Write artist, album, and year as separate columns
+                    writer.writerow({"artist": artist, "album": album, "year": year})
 
             # Atomic rename
-            os.replace(temp_file, self.album_cache_csv)
+            # If on Windows, you may need to delete the target file before renaming it
+            if os.path.exists(self.album_cache_csv):
+                if sys.platform == 'win32':
+                    os.replace(temp_file, self.album_cache_csv)  # Windows: atomic rename with replacement
+                else:
+                    os.rename(temp_file, self.album_cache_csv)  # POSIX: atomic rename
+            else:
+                os.rename(temp_file, self.album_cache_csv)
+
             self.console_logger.info(f"Synchronized {len(self.album_years_cache)} album years to disk")
 
         except Exception as e:
@@ -237,11 +281,13 @@ class CacheService:
     async def initialize_album_cache_csv(self) -> None:
         """
         If the album cache CSV file does not exist, create it with the header row.
+        Ensures the CSV has 'artist', 'album', 'year' columns.
 
         :return: None
         """
         if not os.path.exists(self.album_cache_csv):
             self.console_logger.info(f"Creating album-year CSV cache: {self.album_cache_csv}")
+            # Define fieldnames for the CSV file
             with open(self.album_cache_csv, "w", newline="", encoding="utf-8") as f:
                 writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
                 writer.writeheader()
@@ -258,7 +304,17 @@ class CacheService:
             >>> if (datetime.now() - last_run).total_seconds() > 3600:
             >>>     print("More than an hour since last run")
         """
-        last_file = os.path.join(self.config["logs_base_dir"], self.config["logging"]["last_incremental_run_file"])
+        # Ensure the logging config section and key exist before accessing
+        logging_config = self.config.get("logging", {})
+        last_file_key = logging_config.get("last_incremental_run_file")
+
+        if not last_file_key:
+            self.error_logger.warning("Config key 'logging.last_incremental_run_file' is missing.")
+            return datetime.min  # Return min datetime if config key is missing
+
+        # Use get_full_log_path to get the file path
+        last_file = get_full_log_path(self.config, "last_incremental_run_file", "last_incremental_run.log", self.error_logger)
+
         if not os.path.exists(last_file):
             return datetime.min
 
@@ -267,46 +323,48 @@ class CacheService:
                 last_run_str = f.read().strip()
             return datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
         except (ValueError, IOError, OSError) as e:
-            self.error_logger.error(f"Error reading last run timestamp: {e}")
+            self.error_logger.error(f"Error reading last run timestamp from {last_file}: {e}")
             return datetime.min
 
     async def get_album_year_from_cache(self, artist: str, album: str) -> Optional[str]:
         """
         Get album year from the in-memory cache for a given artist and album.
-        If the entry is not found, return None.
+        Uses the hash key for lookup. Returns the year if found, None otherwise.
 
         :param artist: The artist name.
         :param album: The album name.
         :return: The year of the album as a string, or None if not found.
         """
-        a_lower = artist.strip().lower()
-        b_lower = album.strip().lower()
-        key = f"{a_lower}|||{b_lower}"
+        # Generate the hash key for the album
+        key_hash = self._generate_album_key(artist, album)
 
-        # Sync cache if needed
-        await self._sync_cache_if_needed()
+        # Sync cache if needed (this will load from disk if not already loaded)
+        await self._sync_cache_if_needed()  # Note: _sync_cache_if_needed saves, doesn't load. Loading is in __init__
 
-        # Return from in-memory cache
-        if key in self.album_years_cache:
-            return self.album_years_cache[key]
+        # Check if the hash key exists in the in-memory cache
+        if key_hash in self.album_years_cache:
+            # The value is a tuple (year, artist, album)
+            year, _, _ = self.album_years_cache[key_hash]
+            self.console_logger.debug(f"Album year cache hit for '{artist} - {album}': {year}")
+            return year
+        self.console_logger.debug(f"Album year cache miss for '{artist} - {album}'")
         return None
 
     async def store_album_year_in_cache(self, artist: str, album: str, year: str) -> None:
         """
         Store or update an album year in the in-memory cache and mark it for disk sync.
-        The actual disk write happens based on sync interval or forced sync.
+        Uses the hash key for storage. The actual disk write happens based on sync interval or forced sync.
 
         :param artist: The artist name.
         :param album: The album name.
         :param year: The album release year.
         :return: None
         """
-        a_lower = artist.strip().lower()
-        b_lower = album.strip().lower()
-        key = f"{a_lower}|||{b_lower}"
+        # Generate the hash key for the album
+        key_hash = self._generate_album_key(artist, album)
 
-        # Store in in-memory cache
-        self.album_years_cache[key] = year.strip()
+        # Store the year, original artist, and original album in the in-memory cache value
+        self.album_years_cache[key_hash] = (year.strip(), artist.strip(), album.strip())
         self.cache_dirty = True
 
         # Sync with disk if needed
@@ -317,20 +375,21 @@ class CacheService:
     def invalidate_album_cache(self, artist: str, album: str) -> None:
         """
         Invalidate the album-year cache for a given artist and album.
+        Removes the entry from the in-memory cache using the hash key.
 
         :param artist: The artist name.
         :param album: The album name.
         :return: None
         """
-        a_lower = artist.strip().lower()
-        b_lower = album.strip().lower()
-        key = f"{a_lower}|||{b_lower}"
+        # Generate the hash key for the album
+        key_hash = self._generate_album_key(artist, album)
 
-        # Remove from in-memory cache
-        if key in self.album_years_cache:
-            del self.album_years_cache[key]
+        # Remove from in-memory cache if the hash key exists
+        if key_hash in self.album_years_cache:
+            del self.album_years_cache[key_hash]
             self.cache_dirty = True
             self.console_logger.info(f"Invalidated album-year cache for: {artist} - {album}")
+            # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
 
     def invalidate_all_albums(self) -> None:
         """
@@ -341,6 +400,7 @@ class CacheService:
             self.album_years_cache.clear()
             self.cache_dirty = True
             self.console_logger.info("Entire album-year cache cleared.")
+            # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
 
     async def sync_cache(self) -> None:
         """
