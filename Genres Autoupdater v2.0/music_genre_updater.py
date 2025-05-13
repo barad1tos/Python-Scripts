@@ -3,92 +3,75 @@
 """
 Music Genre Updater Script v3.0
 
-This script automatically manages your Music.app library by updating genres, cleaning track/album names,
-retrieving album years, and verifying the integrity of its track database. It operates asynchronously
-for improved performance and uses caching to minimize AppleScript calls and API usage.
+This script automatically manages your Music.app library by updating genres, cleaning track/album names, retrieving album years,
+and verifying track database integrity. It uses dependency injection and asynchronous operations for improved performance.
 
 Key Features:
-    - Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases.
-    - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles based on configurable rules.
-    - Album year retrieval: Fetches and updates year information from external music databases (e.g., MusicBrainz) with caching and rate limiting.
-    - Database verification: Checks the script's internal track list (CSV) against Music.app and removes entries for tracks that no longer exist.
-    - Incremental processing: Efficiently updates only tracks added since the last run, respecting a configurable interval.
-    - Analytics tracking: Monitors performance and operations with detailed logging and reports.
-    - Pending verification system: Tracks album years from APIs that might need re-verification after a set period (e.g., N days) to improve accuracy.
-    - Test mode: Allows limiting processing to specific artists defined in the configuration for easier testing.
-    - Dry run mode: Simulates all operations without modifying the Music library or saving reports/CSV updates.
+- Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases
+- Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles
+- Album year retrieval: Fetches and updates year information from external music databases with caching and rate limiting
+- Database verification: Checks the internal track database against Music.app and removes entries for non-existent tracks
+- Incremental processing: Updates only tracks added since the last run, respecting a configurable interval
+- Analytics tracking: Monitors performance and operations with detailed logging
+- Pending verification: Re-checks album years after a set period to improve accuracy
 
 Architecture:
-    - MusicUpdater class: Orchestrates the music library, including cleaning names, updating genres, retrieving years, and database verification.
-    - DependencyContainer: Manages service instances and dependencies, ensuring proper initialization and resource management.
-    - Utility functions: Handle parsing tracks, cleaning names, determining genres, and other helper operations.
+- MusicUpdater: Core orchestrator class that manages all library updates through injected dependencies
+- DependencyContainer: Manages service instances and their lifecycle
+- Services: AppleScriptClient, CacheService, ExternalApiService, PendingVerificationService
+- Utility functions: For parsing tracks, cleaning names, determining genres, and handling reports
 
 Commands:
-    - Default (no arguments): Runs the main processing pipeline (clean names, update genres, update years). Operates incrementally unless forced.
-    - clean_artist: Cleans track/album names only for tracks by a specific artist.
-    - update_years: Updates album years from external APIs, optionally filtered by artist.
-    - verify_database: Checks the internal track database (CSV) and removes entries for tracks that no longer exist. Respects interval unless forced.
-    - verify_pending: Triggers verification for all albums marked as pending, regardless of their individual timers.
+- Default: Runs the main pipeline (clean, genres, years)
+- clean_artist: Cleans names for a specific artist's tracks
+- update_years: Updates album years, optionally filtered by artist
+- verify_database: Validates the CSV database against Music.app
+- verify_pending: Triggers verification for albums marked as pending
 
 Options:
-    - --force: Overrides incremental interval checks, forces cache refresh for fetches, database verification, and processing of all relevant items.
-    - --dry-run: Simulates changes without modifying the Music library or saving reports/CSV updates.
-    - --artist: Specify target artist (used with `clean_artist` or `update_years` commands).
+- --force: Overrides incremental checks and forces cache refresh
+- --dry-run: Simulates changes without modifying the library
+- --artist: Specifies target artist (for certain commands)
 
-Services injected via DependencyContainer:
-    - AppleScriptClient: For interactions with Music.app via `osascript`.
-    - CacheService: For storing fetched track data, album years, and run timestamps between executions.
-    - ExternalAPIService: For querying album years from external music databases.
-    - PendingVerificationService: For tracking album years that require future re-verification.
-    - Analytics: For tracking performance metrics and operation counts.
-
-Configuration (`my-config.yaml`) includes settings for:
-    - Paths: `music_library_path`, `apple_scripts_dir`, `logs_base_dir`.
-    - Year Retrieval: `year_retrieval` (API limits, batch sizes, adaptive delays, enabling/disabling).
-    - Cleaning: `cleaning` (remaster_keywords, album_suffixes_to_remove).
-    - Incremental Updates: `incremental_interval_minutes`.
-    - Batching: `batch_size` (general), specific batch sizes within modules.
-    - Database Verification: `database_verification` (auto_verify_days, batch_size).
-    - Exceptions: `exceptions` (rules to skip cleaning for specific artists/albums).
-    - Development: `development` (`test_artists` list to limit processing scope).
-    - Logging: Log file paths and levels.
-
-Example usage:
-    python music_genre_updater.py --force --dry-run
-    python music_genre_updater.py clean_artist --artist "Artist Name"
-    python music_genre_updater.py update_years --artist "Artist Name"
-    python music_genre_updater.py verify_database
-    python music_genre_updater.py verify_pending
+Configuration in my-config.yaml controls paths, API limits, cleaning rules, intervals, and logging preferences.
 """
 
 import argparse
 import asyncio
 import logging
 import os
-import re
-import subprocess
 import sys
 import time
 
 from collections import defaultdict
 from datetime import datetime, timedelta
+
+# Import Optional explicitly if used for type hinting at module level
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-# Import necessary services and utilities that are NOT part of the dependency cycle
-# DependencyContainer is imported inside main()
+import yaml
+
+# Import necessary services and utilities
 from utils import dry_run  # dry_run will be refactored later
-from utils.analytics import Analytics  # Analytics is imported here as it's used in method decorators
+from utils.analytics import Analytics  # Analytics is used in method decorators
 from utils.config import load_config
-from utils.logger import get_full_log_path, get_loggers
-from utils.reports import save_changes_report  # This function might be removed or refactored later
-from utils.reports import (
-    load_track_list,
-    save_to_csv,
-    save_unified_changes_report,
-    sync_track_list_with_current,
+
+# Import get_full_log_path from logger for use in main/methods, but NOT get_loggers here
+from utils.logger import get_full_log_path, get_loggers  # get_loggers is only called in main
+
+# Import utility functions from the metadata_helpers module
+from utils.metadata import (
+    clean_names,
+    determine_dominant_genre_for_artist,
+    group_tracks_by_artist,
+    is_music_app_running,
+    parse_tracks,
 )
 
-# Use TYPE_CHECKING to avoid circular import issues during runtime for type hints
+# Import the DependencyContainer for service management
+from utils.reports import load_track_list, save_to_csv, save_unified_changes_report, sync_track_list_with_current
+
+# Use TYPE_CHECKING for services imported for type hints in method signatures/class definition
 if TYPE_CHECKING:
     from services.applescript_client import AppleScriptClient
     from services.cache_service import CacheService
@@ -96,17 +79,21 @@ if TYPE_CHECKING:
     from services.pending_verification import PendingVerificationService
 
 
-# Load configuration from YAML early
+# Load CONFIG at the module level (needed by get_loggers in main, and potentially other module-level logic if any)
+# Define SCRIPT_DIR near the top
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
+CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")  # Use SCRIPT_DIR
 
-# Global variable for config - kept for functions that still need it before full refactor
-# or for utility functions that don't belong to a class instance.
-# This should be reviewed later.
-CONFIG = load_config(CONFIG_PATH)
+# Load CONFIG
+try:
+    CONFIG = load_config(CONFIG_PATH)
+except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
+    # Fallback print if CONFIG loading fails before loggers are ready
+    print(f"FATAL ERROR: Failed to load or validate configuration at module level: {e}", file=sys.stderr)
+    sys.exit(1)  # Exit if config fails
 
 
-# Check essential paths early
+# --- Utility functions (check_paths definition remains) ---
 def check_paths(paths: List[str], logger: logging.Logger) -> None:
     """
     Check if the specified paths exist and are readable.
@@ -120,351 +107,7 @@ def check_paths(paths: List[str], logger: logging.Logger) -> None:
             raise PermissionError(f"No read access to {path}.")
 
 
-# Initialize loggers early
-# The listener needs to be started and stopped in the main execution block
-console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG)
-
-# Perform path checks after loggers are initialized
-try:
-    check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], error_logger)
-except (FileNotFoundError, PermissionError) as e:
-    error_logger.critical(f"Initial path check failed: {e}. Exiting.")
-    # In a real application, you might exit here or handle differently
-    # For this refactoring, we'll let the main execution handle potential exits.
-    pass  # Allow script to continue for now, main() will handle exit
-
-# --- Utility Functions (can remain here or be moved to a separate utils module) ---
-# These functions do not need access to self or injected services
-
-
-# Logic moved from old parse_tracks
-# Logic moved from old parse_tracks
-def parse_tracks(raw_data: str) -> List[Dict[str, str]]:
-    """
-    Parses the raw data from AppleScript into a list of track dictionaries.
-    Uses the Record Separator (U+001E) as the field delimiter.
-    """
-    # Note: This function no longer uses self.error_logger directly
-    # If detailed error logging is needed here, consider passing a logger instance
-    # or relying on exceptions being caught by the caller.
-    # For now, basic print to stderr or using a module-level logger fallback is implied
-    # if called in a context without the main loggers being fully set up.
-
-    # Define the new field separator (Record Separator U+001E)
-    field_separator = '\x1e'
-
-    if not raw_data:
-        # Use module-level error_logger if available, otherwise print
-        if 'error_logger' in globals() and error_logger:
-            error_logger.error("No data fetched from AppleScript.")
-        else:
-            print("ERROR: No data fetched from AppleScript.", file=sys.stderr)
-        return []
-
-    tracks = []
-    # Split raw data into rows using newline character
-    rows = raw_data.strip().split("\n")
-    for row in rows:
-        # Skip empty rows that might result from trailing newline
-        if not row:
-            continue
-
-        # Split each row into fields using the new field separator
-        fields = row.split(field_separator)
-
-        # The AppleScript is assumed to output 9 fields:
-        # id, name, artist, album, genre, dateAdded, trackStatus, standardYear, empty_field
-        # The Python parsing logic expects up to 9 fields, mapping index 7 to old_year
-        # and index 8 to new_year.
-        # We need at least 7 fields for the standard properties.
-        if len(fields) >= 7:
-            track = {
-                "id": fields[0].strip(),
-                "name": fields[1].strip(),
-                "artist": fields[2].strip(),
-                "album": fields[3].strip(),
-                "genre": fields[4].strip(),
-                "dateAdded": fields[5].strip(),
-                "trackStatus": fields[6].strip(),
-            }
-            # Adding old_year and new_year fields based on the structure
-            # provided in the original code, assuming they are read from fields 7 and 8.
-            # The AppleScript now outputs standardYear at index 7 and an empty string at index 8.
-            if len(fields) > 7:  # Check if field at index 7 exists (the 8th field)
-                # Assuming the 8th field from AppleScript is the standard year
-                # and it should potentially be treated as old_year initially
-                track["old_year"] = fields[7].strip()
-            else:
-                track["old_year"] = ""  # Default to empty if field is missing
-
-            if len(fields) > 8:  # Check if field at index 8 exists (the 9th field)
-                # Assuming the 9th field from AppleScript is intended for new_year
-                track["new_year"] = fields[8].strip()
-            else:
-                track["new_year"] = ""  # Initialize as an empty string if not present
-
-            tracks.append(track)
-        else:
-            # Log malformed row for debugging
-            # Use module-level error_logger if available, otherwise print
-            if 'error_logger' in globals() and error_logger:
-                error_logger.warning("Malformed track data row skipped: %s", row)
-            else:
-                print(f"WARNING: Malformed track data row skipped: {row}", file=sys.stderr)
-
-    return tracks
-
-
-# Logic moved from old group_tracks_by_artist
-def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Group tracks by artist name into a dictionary for efficient processing.
-    Uses standard Python collections, no injected services needed.
-    """
-    # Use defaultdict for efficient grouping without checking for key existence
-    artists = defaultdict(list)
-    for track in tracks:
-        # Ensure artist key exists, default to "Unknown" if missing
-        artist = track.get("artist", "Unknown")
-        artists[artist].append(track)
-    # Return defaultdict directly without converting to dict for better performance
-    return artists
-
-
-# Logic moved from old determine_dominant_genre_for_artist
-def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]]) -> str:
-    """
-    Determine the dominant genre for an artist based on the earliest genre of their track.
-    Does not require injected services.
-    """
-    if not artist_tracks:
-        return "Unknown"
-    try:
-        # Find the earliest track for each album
-        album_earliest: Dict[str, Dict[str, str]] = {}
-        for track in artist_tracks:
-            # Ensure album and dateAdded keys exist
-            album = track.get("album", "Unknown")
-            date_added_str = track.get("dateAdded", "1900-01-01 00:00:00")  # Provide a default date string
-            try:
-                track_date = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                # Handle cases with invalid date format by using a very old date
-                track_date = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
-                # Optionally log a warning here, but requires a logger instance
-
-            if album not in album_earliest:
-                album_earliest[album] = track
-            else:
-                existing_date_str = album_earliest[album].get("dateAdded", "1900-01-01 00:00:00")
-                try:
-                    existing_date = datetime.strptime(existing_date_str, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    existing_date = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
-
-                if track_date < existing_date:
-                    album_earliest[album] = track
-
-        # From these tracks, find the earliest album (by the date of addition of its earliest track)
-        # Ensure album_earliest is not empty before finding min
-        if not album_earliest:
-            return "Unknown"
-
-        earliest_album_track_in_album_earliest = min(
-            album_earliest.values(),
-            key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"),
-        )
-
-        # In the earliest album, find the earliest track (should be the same as earliest_album_track_in_album_earliest)
-        # This step is redundant if we already found the earliest track across all albums via album_earliest
-        # Let's simplify and just take the genre from the earliest track found in the album_earliest step
-        dominant_genre = earliest_album_track_in_album_earliest.get("genre")
-
-        return dominant_genre or "Unknown"  # Return genre or "Unknown" if genre is None/empty
-    except Exception as e:  # Catch broader exceptions during processing
-        # Use module-level error_logger if available, otherwise print
-        if 'error_logger' in globals() and error_logger:
-            error_logger.error("Error in determine_dominant_genre_for_artist: %s", e, exc_info=True)
-        else:
-            print(f"Error in determine_dominant_genre_for_artist: {e}", file=sys.stderr)
-        return "Unknown"
-
-
-# Logic moved from old remove_parentheses_with_keywords
-def remove_parentheses_with_keywords(name: str, keywords: List[str]) -> str:
-    """
-    Remove parentheses and their content if they contain any of the specified keywords.
-    Handles nested parentheses correctly. Does not require injected services.
-    """
-    try:
-        # Use module-level console_logger if available, otherwise print
-        if 'console_logger' in globals() and console_logger:
-            console_logger.debug("remove_parentheses_with_keywords called with name='%s' and keywords=%s", name, keywords)
-        else:
-            print(f"DEBUG: remove_parentheses_with_keywords called with name='{name}' and keywords={keywords}", file=sys.stderr)
-
-        if not name or not keywords:
-            return name
-
-        # Convert keywords to lowercase for case-insensitive comparison
-        keyword_set = set(k.lower() for k in keywords)
-
-        # Iteratively clean brackets until no more matches are found
-        prev_name = ""
-        current_name = name
-
-        while prev_name != current_name:
-            prev_name = current_name
-
-            # Find all bracket pairs in the current version of the string
-            stack = []
-            pairs = []
-
-            for i, char in enumerate(current_name):
-                if char in "([":
-                    stack.append((char, i))
-                elif char in ")]":
-                    if stack:
-                        start_char, start_idx = stack.pop()
-                        if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
-                            pairs.append((start_idx, i))
-                        # Handle mismatched brackets by clearing stack if top doesn't match
-                        elif (start_char == "(" and char == "]") or (start_char == "[" and char == ")"):
-                            stack.clear()  # Clear stack on mismatch to avoid incorrect pairing
-
-            # Sort pairs by start index
-            pairs.sort()
-
-            # Find which pairs to remove based on keywords
-            to_remove = set()
-            for start, end in pairs:
-                content = current_name[start + 1 : end]  # noqa: ignore=E203
-                if any(keyword.lower() in content.lower() for keyword in keyword_set):
-                    to_remove.add((start, end))
-
-            # If nothing found to remove, we're done
-            if not to_remove:
-                break
-
-            # Remove brackets (from right to left to maintain indices)
-            # Convert set to list and sort in reverse order of end index
-            sorted_to_remove = sorted(list(to_remove), key=lambda item: item[1], reverse=True)
-            for start, end in sorted_to_remove:
-                # Ensure start and end are valid indices for current_name
-                if 0 <= start < end < len(current_name):
-                    current_name = current_name[:start] + current_name[end + 1 :]  # noqa: ignore=E203
-                else:
-                    # Should not happen with correct pair finding, but safety check
-                    if 'error_logger' in globals() and error_logger:
-                        error_logger.warning(f"Invalid indices ({start}, {end}) found during bracket removal for '{prev_name}'")
-                    else:
-                        print(f"WARNING: Invalid indices ({start}, {end}) found during bracket removal for '{prev_name}'", file=sys.stderr)
-
-        # Clean up multiple spaces
-        result = re.sub(r"\s+", " ", current_name).strip()
-
-        # Use module-level console_logger if available, otherwise print
-        if 'console_logger' in globals() and console_logger:
-            console_logger.debug("Cleaned result: '%s'", result)
-        else:
-            print(f"DEBUG: Cleaned result: '{result}'", file=sys.stderr)
-
-        return result
-
-    except Exception as e:  # Catch broader exceptions during processing
-        # Use module-level error_logger if available, otherwise print
-        if 'error_logger' in globals() and error_logger:
-            error_logger.error("Error in remove_parentheses_with_keywords: %s", e, exc_info=True)
-        else:
-            print(f"Error in remove_parentheses_with_keywords: {e}", file=sys.stderr)
-        return name  # Return original name on error
-
-
-# Logic moved from old clean_names
-def clean_names(artist: str, track_name: str, album_name: str, config: Dict[str, Any]) -> Tuple[str, str]:
-    """
-    Cleans the track name and album name based on the configuration settings.
-    Requires config, does not require other injected services directly.
-    """
-    # Use module-level console_logger if available, otherwise print
-    if 'console_logger' in globals() and console_logger:
-        console_logger.info("clean_names called with: artist='%s', track_name='%s', album_name='%s'", artist, track_name, album_name)
-    else:
-        print(f"INFO: clean_names called with: artist='{artist}', track_name='{track_name}', album_name='{album_name}'", file=sys.stderr)
-
-    # Use config passed as argument
-    exceptions = config.get("exceptions", {}).get("track_cleaning", [])
-    # Check if the current artist/album pair is in the exceptions list
-    is_exception = any(exc.get("artist", "").lower() == artist.lower() and exc.get("album", "").lower() == album_name.lower() for exc in exceptions)
-
-    if is_exception:
-        if 'console_logger' in globals() and console_logger:
-            console_logger.info("No cleaning applied due to exceptions for artist '%s', album '%s'.", artist, album_name)
-        else:
-            print(f"INFO: No cleaning applied due to exceptions for artist '{artist}', album '{album_name}'.", file=sys.stderr)
-        return track_name.strip(), album_name.strip()  # Return original names, stripped
-
-    # Get cleaning config
-    cleaning_config = config.get("cleaning", {})
-    remaster_keywords = cleaning_config.get("remaster_keywords", ["remaster", "remastered"])
-    album_suffixes = set(cleaning_config.get("album_suffixes_to_remove", []))
-
-    # Helper function for cleaning strings using remove_parentheses_with_keywords
-    def clean_string(val: str, keywords: List[str]) -> str:
-        # Use the utility function defined above
-        new_val = remove_parentheses_with_keywords(val, keywords)
-        # Clean up multiple spaces and strip whitespace
-        new_val = re.sub(r"\s+", " ", new_val).strip()
-        return new_val if new_val else ""  # Return empty string if result is empty after cleaning
-
-    original_track = track_name
-    original_album = album_name
-
-    # Apply cleaning to track name and album name
-    cleaned_track = clean_string(track_name, remaster_keywords)
-    cleaned_album = clean_string(album_name, remaster_keywords)
-
-    # Remove specified album suffixes
-    for suffix in album_suffixes:
-        if cleaned_album.endswith(suffix):
-            cleaned_album = cleaned_album[: -len(suffix)].strip()
-            # Log the removal
-            if 'console_logger' in globals() and console_logger:
-                console_logger.info("Removed suffix '%s' from album. New album name: '%s'", suffix, cleaned_album)
-            else:
-                print(f"INFO: Removed suffix '{suffix}' from album. New album name: '{cleaned_album}'", file=sys.stderr)
-
-    # Log the cleaning results
-    if 'console_logger' in globals() and console_logger:
-        console_logger.info("Original track name: '%s' -> '%s'", original_track, cleaned_track)
-        console_logger.info("Original album name: '%s' -> '%s'", original_album, cleaned_album)
-    else:
-        print(f"INFO: Original track name: '{original_track}' -> '{cleaned_track}'", file=sys.stderr)
-        print(f"INFO: Original album name: '{original_album}' -> '{cleaned_album}'", file=sys.stderr)
-
-    return cleaned_track, cleaned_album
-
-
-# Logic moved from old is_music_app_running
-def is_music_app_running() -> bool:
-    """
-    Checks if the Music.app is currently running.
-    Uses subprocess, no injected services needed.
-    """
-    try:
-        # Use module-level error_logger if available, otherwise print
-        script = 'tell application "System Events" to (name of processes) contains "Music"'
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=False)
-        return result.stdout.strip().lower() == "true"
-    except (subprocess.SubprocessError, OSError) as e:
-        if 'error_logger' in globals() and error_logger:
-            error_logger.error("Unable to check Music.app status: %s", e, exc_info=True)
-        else:
-            print(f"ERROR: Unable to check Music.app status: {e}", file=sys.stderr)
-        return False  # Assume not running on error
-
-
-# --- New MusicUpdater Class (Orchestrator) ---
+# --- MusicUpdater Class (Orchestrator) ---
 # This class will contain the core logic previously in top-level async functions
 class MusicUpdater:
     """
@@ -477,10 +120,10 @@ class MusicUpdater:
         console_logger: logging.Logger,
         error_logger: logging.Logger,
         analytics: Analytics,
-        ap_client: 'AppleScriptClient',  # Use forward reference as AppleScriptClient is imported by DependencyContainer
-        cache_service: 'CacheService',  # Use forward reference
-        external_api_service: 'ExternalApiService',  # Use forward reference
-        pending_verification_service: 'PendingVerificationService',  # Use forward reference
+        ap_client: 'AppleScriptClient',
+        cache_service: 'CacheService',
+        external_api_service: 'ExternalApiService',
+        pending_verification_service: 'PendingVerificationService',
         # Add other services here if needed in the future
     ):
         """
@@ -495,34 +138,33 @@ class MusicUpdater:
         self.external_api_service = external_api_service
         self.pending_verification_service = pending_verification_service
 
-        # Store utility functions or move their logic into methods if appropriate
-        # For now, we will assume clean_names and determine_dominant_genre_for_artist
-        # are either imported or their logic is moved into this class.
-        # If they are moved into this class, they might need access to self.config etc.
-        # If they are imported from a utils module, they don't need self.
-
-    # --- Methods containing logic moved from old top-level async functions ---
+        # The utility functions are now imported from metadata_helpers.py
+        # They do not need to be stored as instance attributes unless specifically wrapped/modified
 
     # Logic moved from old fetch_tracks_async
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Fetch Tracks Async")
     async def fetch_tracks_async(self, artist: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, str]]:
-        """
-        Fetches tracks asynchronously from Music.app via AppleScript and manages caching.
-        Uses injected AppleScriptClient and CacheService.
-        """
+        self.console_logger.debug(f"fetch_tracks_async: Start. self.cache_service is {type(self.cache_service)}: {self.cache_service}")
+
         try:
             cache_key = artist if artist else "ALL"
             self.console_logger.info("Fetching tracks with cache_key='%s', force_refresh=%s", cache_key, force_refresh)
 
             # is_music_app_running is a simple check, can remain a utility or be moved
-            # For now, let's assume it's a utility function available in the module scope.
-            if not is_music_app_running():
+            # Pass the error logger from the instance
+            error_logger_for_music_app_check = self.error_logger
+            if not is_music_app_running(error_logger_for_music_app_check):
                 self.console_logger.error("Music app is not running! Please start Music.app before running this script.")
                 return []
 
             if not force_refresh:
                 # Use injected cache_service
+                if self.cache_service is None:
+                    self.error_logger.critical("fetch_tracks_async: ERROR: self.cache_service is None before get_async!")
+                    return []
+
+                self.console_logger.debug("fetch_tracks_async: Calling cache_service.get_async...")
                 cached_tracks = await self.cache_service.get_async(cache_key)
                 if cached_tracks:
                     self.console_logger.info("Using cached data for %s, found %d tracks", cache_key, len(cached_tracks))
@@ -532,7 +174,14 @@ class MusicUpdater:
             elif force_refresh:
                 self.console_logger.info("Force refresh requested, ignoring cache for %s", cache_key)
                 # Use injected cache_service
-                await self.cache_service.invalidate(cache_key)
+
+                # Added a validation block from the previous step
+                if self.cache_service is None:
+                    self.error_logger.critical("fetch_tracks_async: ERROR: self.cache_service is None before invalidate!")
+                    return []
+
+                self.console_logger.debug("fetch_tracks_async: Calling cache_service.invalidate...")
+                self.cache_service.invalidate(cache_key)
 
             script_name = "fetch_tracks.applescript"
             script_args = [artist] if artist else []
@@ -544,14 +193,18 @@ class MusicUpdater:
             raw_data = await self.ap_client.run_script(script_name, script_args, timeout=timeout)
 
             if raw_data:
+                self.console_logger.debug(f"fetch_tracks_async: Raw AppleScript output (first 500 chars): {raw_data[:500]}...")
                 lines_count = raw_data.count('\n') + 1
-                self.console_logger.info("AppleScript returned data: %d bytes, approximately %d lines", len(raw_data), lines_count)
+                self.console_logger.info(
+                    "AppleScript returned data: %d bytes, approximately %d lines", len(raw_data.encode('utf-8')), lines_count
+                )  # Use byte length
             else:
                 self.error_logger.error("Empty response from AppleScript %s. Possible script error.", script_name)
                 return []
 
             # parse_tracks is a simple parsing function, can remain a utility
-            tracks = parse_tracks(raw_data)
+            # Pass the error logger from the instance
+            tracks = parse_tracks(raw_data, self.error_logger)
             self.console_logger.info("Successfully parsed %d tracks from Music.app", len(tracks))
 
             if tracks:
@@ -784,7 +437,9 @@ class MusicUpdater:
                     partial_sync=True,
                 )
                 # Use injected console_logger, error_logger
-                save_changes_report(
+                # Ensure changes_y contains only "year" change_type for save_changes_report if needed,
+                # although save_unified_changes_report handles this. Let's pass all changes_y.
+                save_unified_changes_report(
                     changes_y,
                     changes_report_file_path,
                     self.console_logger,
@@ -815,10 +470,17 @@ class MusicUpdater:
         year_changes_log_file = get_full_log_path(self.config, "year_changes_log_file", "main/year_changes.log")
         os.makedirs(os.path.dirname(year_changes_log_file), exist_ok=True)
         year_logger = logging.getLogger("year_updates")
-        if not year_logger.handlers:  # Configure only once
+        # Check if handler is already added to year_logger to prevent duplicates
+        if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename == year_changes_log_file for handler in year_logger.handlers):
             fh = logging.FileHandler(year_changes_log_file)
-            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            # Use the same formatter as other file logs for consistency if possible,
+            # but the RunTrackingHandler/Queue setup complicates direct FileHandler formatting here.
+            # Sticking to a basic formatter for now, might need refactoring later.
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s'))  # Added %(name)s
             year_logger.addHandler(fh)
+        # Ensure logger level is set from config if it's not already set by QueueListener setup
+        year_updates_file_level = logging.getLevelName(self.config.get("logging", {}).get("levels", {}).get("year_updates_file", "INFO").upper())
+        year_logger.setLevel(year_updates_file_level)
 
         self.console_logger.info("Starting album year update logic for %d tracks", len(tracks))
         # Group tracks by album to reduce API calls (logic remains the same)
@@ -854,7 +516,7 @@ class MusicUpdater:
             # Check if this album is pending verification using injected service
             should_verify = False
             if self.pending_verification_service:
-                should_verify = self.pending_verification_service.is_verification_needed(artist, album)
+                should_verify = await self.pending_verification_service.is_verification_needed(artist, album)  # is_verification_needed is now async
                 if should_verify:
                     self.console_logger.info("Album '%s - %s' is due for verification", artist, album)
 
@@ -867,6 +529,7 @@ class MusicUpdater:
                 # Bypass cache when forcing or verification is due
                 year_logger.info("Fetching year for '%s - %s' from external API (force=%s, verify=%s)", artist, album, force, should_verify)
                 # Use injected external_api_service and pending_verification_service
+                # get_album_year might mark for pending verification internally
                 year, is_definitive = await self.external_api_service.get_album_year(
                     artist, album, current_library_year  # pending_verification_service is now an instance attribute
                 )
@@ -879,7 +542,7 @@ class MusicUpdater:
 
                     # Remove from pending if we got a definitive result using injected service
                     if self.pending_verification_service:
-                        self.pending_verification_service.remove_from_pending(artist, album)
+                        await self.pending_verification_service.remove_from_pending(artist, album)  # remove_from_pending is now async
                 # If not definitive, get_album_year already marked it for pending verification
 
             else:
@@ -974,10 +637,14 @@ class MusicUpdater:
             return api_call_made  # Indicate if API call was made
 
         # Fetch optimal batch parameters from config using self.config
-        batch_size = self.config.get("year_retrieval", {}).get("batch_size", 20)
-        delay_between_batches = self.config.get("year_retrieval", {}).get("delay_between_batches", 30)
-        concurrent_limit = self.config.get("year_retrieval", {}).get("concurrent_api_calls", 5)
-        adaptive_delay = self.config.get("year_retrieval", {}).get("adaptive_delay", False)
+        batch_size = self.config.get("year_retrieval", {}).get("processing", {}).get("batch_size", 20)  # Get from processing subsection
+        delay_between_batches = (
+            self.config.get("year_retrieval", {}).get("processing", {}).get("delay_between_batches", 30)
+        )  # Get from processing subsection
+        concurrent_limit = (
+            self.config.get("year_retrieval", {}).get("rate_limits", {}).get("concurrent_api_calls", 5)
+        )  # Get from rate_limits subsection
+        adaptive_delay = self.config.get("year_retrieval", {}).get("processing", {}).get("adaptive_delay", False)  # Get from processing subsection
 
         album_items = list(albums.items())
 
@@ -1025,8 +692,8 @@ class MusicUpdater:
                 else:  # No API calls made in this batch
                     self.console_logger.info("No API calls made in this batch. Proceeding to next batch immediately.")
 
-        self.console_logger.info("Album year update logic complete. Updated %d tracks.", len(updated_tracks))
-        year_logger.info("Album year update logic complete. Updated %d tracks.", len(updated_tracks))
+        self.console_logger.info("Album year update logic complete. Processed %d albums.", len(albums))  # Log albums processed, not just tracks
+        year_logger.info("Album year update logic complete. Processed %d albums.", len(albums))
 
         # Return the list of updated tracks and the changes log
         # Note: updated_tracks list is populated inside the inner process_album function
@@ -1040,15 +707,18 @@ class MusicUpdater:
         Checks if the incremental interval has passed since the last run using injected CacheService.
         """
         if force_run:
+            self.console_logger.info("Force run requested. Bypassing incremental interval check.")
             return True
 
         # Use config from self.config
-        last_file_path = get_full_log_path(self.config, "last_incremental_run_file", "last_incremental_run.log")
+        last_file_path = get_full_log_path(
+            self.config, "last_incremental_run_file", "last_incremental_run.log", self.error_logger
+        )  # Pass error_logger
         interval = self.config.get("incremental_interval_minutes", 60)
 
         # If the file does not exist, allow it to run
         if not os.path.exists(last_file_path):
-            self.console_logger.info("Last incremental run file not found. Proceeding.")
+            self.console_logger.info("Last incremental run file not found at %s. Proceeding.", last_file_path)
             return True
 
         # Trying to read a file with repeated attempts
@@ -1064,34 +734,47 @@ class MusicUpdater:
                 try:
                     last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
                 except ValueError:
-                    self.error_logger.error("Invalid date in %s. Proceeding with execution.", last_file_path)
+                    self.error_logger.error(
+                        f"Invalid date format '{last_run_str}' in {last_file_path}. Proceeding with execution assuming first run."
+                    )  # Log invalid format
                     return True
 
                 next_run_time = last_run_time + timedelta(minutes=interval)
                 now = datetime.now()
 
                 if now >= next_run_time:
+                    self.console_logger.info(
+                        "Incremental interval (%d mins) elapsed since last run (%s). Proceeding.",
+                        interval,
+                        last_run_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    )
                     return True
                 else:
                     diff = next_run_time - now
                     minutes_remaining = diff.total_seconds() // 60  # Use total_seconds for more accurate difference
-                    self.console_logger.info("Last run: %s. Next run in %d mins.", last_run_time.strftime('%Y-%m-%d %H:%M'), minutes_remaining)
+                    self.console_logger.info(
+                        "Last run: %s. Next run in %d mins.", last_run_time.strftime('%Y-%m-%d %H:%M:%S'), minutes_remaining
+                    )  # Log full timestamp
                     return False
 
             except (OSError, IOError) as e:
                 if attempt < max_retries - 1:
                     # If this is not the last attempt, we wait and try again
                     self.console_logger.warning(
-                        f"Error reading last run file (attempt {attempt+1}/{max_retries}): {e}. Retrying in {retry_delay}s..."
+                        f"Error reading last run file (attempt {attempt + 1}/{max_retries}): "
+                        f"{e}. Retrying in {retry_delay:.1f}s..."  # Use :.1f for float
                     )
                     time.sleep(retry_delay)
                     retry_delay *= 2  # Exponential increase in latency
                 else:
                     # If all attempts fail, log and allow launch
-                    self.error_logger.error(f"Error accessing last run file after {max_retries} attempts: {e}")
+                    self.error_logger.error(
+                        f"Error accessing last run file at {last_file_path} after {max_retries} attempts: {e}. Allowing execution."
+                    )  # Log file path
                     return True
 
         # Should not be reached, but for safety:
+        self.error_logger.error("Unexpected logic path reached in can_run_incremental. Allowing execution.")  # Log unexpected path
         return True
 
     # Logic moved from old update_last_incremental_run
@@ -1103,13 +786,16 @@ class MusicUpdater:
         Uses config from self.config.
         """
         # Use config from self.config
-        last_file_path = get_full_log_path(self.config, "last_incremental_run_file", "last_incremental_run.log")
+        last_file_path = get_full_log_path(
+            self.config, "last_incremental_run_file", "last_incremental_run.log", self.error_logger
+        )  # Pass error_logger
         try:
             # Ensure directory exists before writing
             os.makedirs(os.path.dirname(last_file_path), exist_ok=True)
             with open(last_file_path, "w", encoding="utf-8") as f:
-                f.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-            self.console_logger.info("Updated last incremental run timestamp.")
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(now_str)
+            self.console_logger.info("Updated last incremental run timestamp to %s.", now_str)
         except IOError as e:
             self.error_logger.error(f"Failed to write last incremental run timestamp to {last_file_path}: {e}")
 
@@ -1124,25 +810,25 @@ class MusicUpdater:
         """
         removed_count = 0
         try:
-            self.console_logger.info("Starting database verification process...")
+            self.console_logger.info("Starting database verification process (force=%s)...", force)  # Log force status
             # Use config from self.config
-            csv_path = get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv")
+            csv_path = get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger)  # Pass error_logger
 
             if not os.path.exists(csv_path):
-                self.console_logger.info("Track database not found at %s, nothing to verify.", csv_path)
+                self.console_logger.info("Track database CSV file not found at %s, nothing to verify.", csv_path)
                 return 0
 
             # Load the entire track list from CSV into a dictionary {track_id: track_dict}
-            # load_track_list is a utility function, doesn't need self.
-            csv_tracks_map = load_track_list(csv_path)
+            # load_track_list is a utility function, pass error logger if it logs internally
+            csv_tracks_map = load_track_list(csv_path)  # Assumes load_track_list uses module-level or passed loggers
 
             if not csv_tracks_map:
-                self.console_logger.info("No tracks loaded from database to verify.")
+                self.console_logger.info("No tracks loaded from database CSV to verify.")
                 return 0
 
             # --- Check if verification is needed based on interval (unless forced) ---
             # Use config from self.config
-            last_verify_file = get_full_log_path(self.config, "last_db_verify_log", "main/last_db_verify.log")
+            last_verify_file = get_full_log_path(self.config, "last_db_verify_log", "main/last_db_verify.log", self.error_logger)  # Pass error_logger
             auto_verify_days = self.config.get("database_verification", {}).get("auto_verify_days", 7)
 
             if not force and auto_verify_days > 0 and os.path.exists(last_verify_file):
@@ -1153,7 +839,7 @@ class MusicUpdater:
                     days_since_last = (datetime.now().date() - last_date).days
                     if days_since_last < auto_verify_days:
                         self.console_logger.info(
-                            f"Database verified {days_since_last} days ago ({last_date}). "
+                            f"Database verified on {last_date} ({days_since_last} days ago). "
                             f"Skipping verification (interval: {auto_verify_days} days). Use --force to override."
                         )
                         return 0  # Verification not needed yet
@@ -1179,11 +865,11 @@ class MusicUpdater:
                 self.console_logger.info("No tracks to verify (either DB is empty or after filtering by test_artists).")
                 # Update the verification timestamp even if nothing was checked
                 try:
-                    os.makedirs(os.path.dirname(last_verify_file), exist_ok=True)
+                    os.makedirs(os.path.dirname(last_verify_file), exist_ok=True)  # Ensure directory exists
                     with open(last_verify_file, "w", encoding="utf-8") as f:
                         f.write(datetime.now().strftime("%Y-%m-%d"))
                 except IOError as e:
-                    self.error_logger.error(f"Failed to write last verification timestamp: {e}")
+                    self.error_logger.error(f"Failed to write last verification timestamp to {last_verify_file}: {e}")
                 return 0  # Nothing removed
 
             # --- Log correct count and get IDs ---
@@ -1196,12 +882,14 @@ class MusicUpdater:
             async def verify_track_exists(track_id: str) -> bool:
                 """Checks if a track ID exists in the Music library using injected AppleScriptClient."""
                 if not track_id or not track_id.isdigit():
+                    self.error_logger.warning(f"Invalid track ID '{track_id}' passed to verify_track_exists.")  # Log invalid ID
                     return False  # Basic validation
                 script = f'''
                 tell application "Music"
                     try
                         # Efficiently check existence by trying to get a property
-                        get id of track id {track_id} of library playlist 1
+                        # Using 'properties' to get a dictionary is slightly more robust than just 'id'
+                        get properties of track id {track_id} of library playlist 1
                         return "exists"
                     on error errMsg number errNum
                         if errNum is -1728 then
@@ -1219,7 +907,16 @@ class MusicUpdater:
                     # Use injected ap_client
                     result = await self.ap_client.run_script_code(script)
                     # Return True only if AppleScript explicitly confirmed existence
-                    return result == "exists"
+                    if result == "exists":
+                        return True
+                    elif result == "not_found":
+                        self.console_logger.debug(f"Track ID {track_id} not found in Music.app.")  # Log not found
+                        return False
+                    else:  # Includes "error_assume_exists" case from AppleScript
+                        self.error_logger.warning(
+                            f"AppleScript verification for track ID {track_id} returned unexpected result: '{result}'. Assuming exists."
+                        )  # Log unexpected result
+                        return True  # Assume exists on unknown result or error
                 except Exception as e:  # Catch potential exceptions during script execution
                     self.error_logger.error(f"Exception during AppleScript execution for track {track_id}: {e}")
                     return True  # Assume exists on error to prevent accidental deletion
@@ -1241,10 +938,11 @@ class MusicUpdater:
                 for idx, result in enumerate(results):
                     track_id = batch_ids[idx]
                     # If an exception occurred or verify_track_exists returned False (doesn't exist)
-                    if isinstance(result, Exception) or result is False:
+                    if isinstance(result, Exception) or result is False:  # Result is False means verify_track_exists returned False
                         if isinstance(result, Exception):
-                            self.error_logger.warning(f"Exception during verification task for track ID {track_id}: {result}")
-                        # Add track ID to the list of invalid ones
+                            self.error_logger.warning(
+                                f"Exception during verification task for track ID {track_id}: {result}. Treating as non-existent for cleanup."
+                            )  # Log exception and intent
                         invalid_track_ids.append(track_id)
 
                 self.console_logger.info("Verified batch %d/%d", (i // batch_size) + 1, (tracks_to_verify_count + batch_size - 1) // batch_size)
@@ -1275,7 +973,9 @@ class MusicUpdater:
                 save_to_csv(final_list_to_save, csv_path, self.console_logger, self.error_logger)
                 self.console_logger.info("Removed %d invalid tracks from database.", removed_count)
             else:
-                self.console_logger.info("All verified tracks (%d) exist in Music.app.", tracks_to_verify_count)
+                self.console_logger.info(
+                    "All verified tracks (%d) exist in Music.app.", tracks_to_verify_count - len(invalid_track_ids)
+                )  # Log actual verified count
                 removed_count = 0
 
             # --- Update Last Verification Timestamp ---
@@ -1285,7 +985,7 @@ class MusicUpdater:
                     f.write(datetime.now().strftime("%Y-%m-%d"))
                 self.console_logger.info("Updated last database verification timestamp.")
             except IOError as e:
-                self.error_logger.error(f"Failed to write last verification timestamp: {e}")
+                self.error_logger.error(f"Failed to write last verification timestamp to {last_verify_file}: {e}")
 
             return removed_count
 
@@ -1305,33 +1005,59 @@ class MusicUpdater:
         """
         try:
             # Use config from self.config
-            csv_path = get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv")
+            csv_path = get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger)  # Pass error_logger
             # load_track_list is a utility function, doesn't need self.
-            load_track_list(csv_path)  # This line seems redundant here, load_track_list result is not used
+            load_track_list(csv_path)  # This line seems redundant here, load_track_list result is not used. Can be removed if not needed.
 
             if last_run_time and last_run_time != datetime.min:
-                self.console_logger.info("Filtering tracks added after %s", last_run_time)
-                tracks = [
-                    track for track in tracks if datetime.strptime(track.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S") > last_run_time
-                ]
-                self.console_logger.info("Found %d tracks added since last run", len(tracks))
+                self.console_logger.info(
+                    "Filtering tracks added after %s for genre update", last_run_time.strftime('%Y-%m-%d %H:%M:%S')
+                )  # Log full timestamp
+                filtered_tracks = []
+                for track in tracks:
+                    date_added_str = track.get("dateAdded", "1900-01-01 00:00:00")  # Use default date string
+                    try:
+                        date_added = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
+                        if date_added > last_run_time:
+                            filtered_tracks.append(track)
+                    except ValueError:
+                        self.error_logger.warning(
+                            f"Invalid date format '{date_added_str}' for track ID {track.get('id', 'N/A')} "
+                            f"during genre update filtering. Skipping track for incremental check."
+                        )  # Log invalid format
+                        # Treat as not added since last run for safety in incremental mode.
+                        pass  # Track is not added to filtered_tracks
+
+                self.console_logger.info("Found %d tracks added since last run for genre update", len(filtered_tracks))
+                tracks_to_process = filtered_tracks  # Process only filtered tracks
+            else:
+                self.console_logger.info("Processing all %d tracks for genre update (force run or first run)", len(tracks))
+                tracks_to_process = tracks  # Process all tracks
 
             # group_tracks_by_artist is a utility function, doesn't need self.
-            grouped = group_tracks_by_artist(tracks)
+            grouped = group_tracks_by_artist(tracks_to_process)  # Group the tracks selected for processing
             updated_tracks = []  # This list will contain tracks that were successfully updated
             changes_log = []
 
             # Inner async function to process a single track for genre update
             # It needs access to update_track_async method (which uses ap_client)
             async def process_track(track: Dict[str, str], dom_genre: str) -> None:
-                nonlocal updated_tracks, changes_log
+                nonlocal updated_tracks, changes_log  # Access outer scope lists
                 old_genre = track.get("genre", "Unknown")
                 track_id = track.get("id", "")
-                status = track.get("trackStatus", "unknown")
+                status = track.get("trackStatus", "unknown").lower()  # Ensure status is lowercase for comparison
 
                 # Check if update is needed and status allows modification
+                # Only update if current genre is different from dominant genre AND status allows modification
                 if track_id and old_genre != dom_genre and status in ("subscription", "downloaded"):
-                    self.console_logger.info("Updating track %s (Old Genre: %s, New Genre: %s)", track_id, old_genre, dom_genre)
+                    self.console_logger.info(
+                        "Updating track %s ('%s' - '%s') (Old Genre: %s, New Genre: %s)",
+                        track_id,
+                        track.get("artist", "Unknown"),
+                        track.get("name", "Unknown"),
+                        old_genre,
+                        dom_genre,
+                    )  # Log track details
                     # Use the method of this class
                     if await self.update_track_async(track_id, new_genre=dom_genre):
                         # If update successful, modify track dict and log changes
@@ -1347,21 +1073,44 @@ class MusicUpdater:
                                 "track_name": track.get("name", "Unknown"),
                                 "old_genre": old_genre,
                                 "new_genre": dom_genre,
-                                # "new_track_name": track.get("name", "Unknown"), # Removed - not a genre change
                                 "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             }
                         )
                     else:
-                        self.error_logger.error("Failed to update genre for track %s", track_id)
+                        self.error_logger.error(
+                            "Failed to update genre for track %s ('%s' - '%s')",
+                            track_id,
+                            track.get("artist", "Unknown"),
+                            track.get("name", "Unknown"),
+                        )  # Log track details
                 # else: # Optional: Log why a track was skipped
-                if track_id and old_genre == dom_genre:
-                    self.console_logger.debug(f"Skipping track {track_id}: Genre already matches dominant ({dom_genre})")
-                elif track_id and status not in ("subscription", "downloaded"):
-                    self.console_logger.debug(f"Skipping track {track_id}: Status '{status}' does not allow modification")
+                elif track_id:  # If track_id exists but update wasn't needed or possible
+                    if old_genre == dom_genre:
+                        self.console_logger.debug(
+                            f"Skipping track {track_id} "
+                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                            f"Genre already matches dominant ({dom_genre})"
+                        )
+                    elif status not in ("subscription", "downloaded"):
+                        self.console_logger.debug(
+                            f"Skipping track {track_id} "
+                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                            f"Status '{status}' does not allow modification"
+                        )
+                    else:
+                        # Should not happen if logic is correct, but good for debugging
+                        self.console_logger.debug(
+                            f"Skipping track {track_id} "
+                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                            f"No update needed or condition not met."
+                        )
 
-            async def process_tasks_in_batches(tasks: List[asyncio.Task], batch_size: int = 1000) -> None:
+            async def process_tasks_in_batches(tasks: List[asyncio.Task], batch_size: int) -> None:  # Pass batch_size
                 for i in range(0, len(tasks), batch_size):
                     batch = tasks[i : i + batch_size]  # noqa: ignore=E203
+                    self.console_logger.debug(
+                        "Processing genre update batch %d/%d...", (i // batch_size) + 1, (len(tasks) + batch_size - 1) // batch_size
+                    )  # Log batch progress
                     await asyncio.gather(*batch, return_exceptions=True)
 
             tasks = []
@@ -1370,7 +1119,8 @@ class MusicUpdater:
                     continue
                 try:
                     # determine_dominant_genre_for_artist is a utility function, doesn't need self.
-                    dom_genre = determine_dominant_genre_for_artist(artist_tracks)
+                    # Pass the error logger from the instance
+                    dom_genre = determine_dominant_genre_for_artist(artist_tracks, self.error_logger)
                 except Exception as e:  # Catch potential exceptions from utility function
                     self.error_logger.error("Error determining dominant genre for artist '%s': %s", artist, e, exc_info=True)
                     dom_genre = "Unknown"  # Default to Unknown on error
@@ -1387,11 +1137,32 @@ class MusicUpdater:
                 self.console_logger.info("Created %d genre update tasks.", len(tasks))
                 # Use batch_size from config, default to 1000 for genre updates
                 batch_size_genre = self.config.get("genre_update", {}).get("batch_size", 1000)  # Assume genre_update batch_size config exists
-                await process_tasks_in_batches(tasks, batch_size=batch_size_genre)
+                await process_tasks_in_batches(tasks, batch_size=batch_size_genre)  # Pass batch_size
+
             else:
                 self.console_logger.info("No genre update tasks needed.")
 
             # Return the list of tracks that were actually updated and the changes log
+            # Note: updated_tracks list is populated inside the inner process_track function
+            self.console_logger.info("Genre update process complete. Updated %d tracks.", len(updated_tracks))
+            return updated_tracks, changes_log
+
+        except Exception as e:  # Catch potential exceptions during the process
+            self.error_logger.error("Error in update_genres_by_artist_async: %s", e, exc_info=True)
+            return [], []
+
+            if tasks:
+                self.console_logger.info("Created %d genre update tasks.", len(tasks))
+                # Use batch_size from config, default to 1000 for genre updates
+                batch_size_genre = self.config.get("genre_update", {}).get("batch_size", 1000)  # Assume genre_update batch_size config exists
+                await process_tasks_in_batches(tasks, batch_size=batch_size_genre)  # Pass batch_size
+
+            else:
+                self.console_logger.info("No genre update tasks needed.")
+
+            # Return the list of tracks that were actually updated and the changes log
+            # Note: updated_tracks list is populated inside the inner process_track function
+            self.console_logger.info("Genre update process complete. Updated %d tracks.", len(updated_tracks))
             return updated_tracks, changes_log
 
         except Exception as e:  # Catch potential exceptions during the process
@@ -1422,7 +1193,7 @@ class MusicUpdater:
         changes_log_cleaning = []  # Log of cleaning changes
 
         # Define async helper for cleaning a single track
-        # This helper needs access to the update_track_async method
+        # This helper needs access to the update_track_async method and clean_names utility
         async def clean_track(track: Dict[str, str]) -> None:
             nonlocal updated_tracks_cleaning, changes_log_cleaning  # Access outer scope lists
             orig_name = track.get("name", "")
@@ -1433,8 +1204,8 @@ class MusicUpdater:
             if not track_id:
                 return  # Skip if no ID
 
-            # Use the utility function clean_names, pass config from self.config
-            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config)
+            # Use the utility function clean_names, pass config and loggers from self.config/self
+            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
 
             # Determine if changes were actually made
             new_tn = cleaned_nm if cleaned_nm != orig_name else None
@@ -1474,8 +1245,8 @@ class MusicUpdater:
                     self.console_logger.debug(f"Skipping track update for '{orig_name}' (ID: {track_id}) due to status '{track_status}'")
 
         # Run cleaning tasks concurrently
-        clean_tasks = [asyncio.create_task(clean_track(t)) for t in all_tracks]
-        await asyncio.gather(*clean_tasks)
+        clean_tasks_default = [asyncio.create_task(clean_track(t)) for t in all_tracks]
+        await asyncio.gather(*clean_tasks_default)
 
         # --- Post-Processing for clean_artist ---
         # Note: Genre and Year updates are NOT run in clean_artist mode by default.
@@ -1484,11 +1255,12 @@ class MusicUpdater:
 
         # Save results if any tracks were updated
         if updated_tracks_cleaning:
+            self.console_logger.info("Cleaned %d track/album names.", len(updated_tracks_cleaning))
             # Sync changes with the main CSV database (utility function)
             # Use config from self.config, injected cache_service, loggers
             await sync_track_list_with_current(
-                updated_tracks_cleaning,  # Pass only the list of tracks that were updated by cleaning
-                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv"),
+                all_tracks,  # Pass the fully updated list of tracks, not just the cleaned ones, to preserve other metadata
+                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger),  # Pass error_logger
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
@@ -1498,12 +1270,14 @@ class MusicUpdater:
             # Use config from self.config, injected loggers
             save_unified_changes_report(
                 changes_log_cleaning,
-                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv"),
+                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv", self.error_logger),  # Pass error_logger
                 self.console_logger,
                 self.error_logger,
                 force_mode=force,  # Use force flag from arguments for console output
             )
-            self.console_logger.info("Processed and cleaned %d tracks for artist: %s", len(updated_tracks_cleaning), artist)
+            self.console_logger.info(
+                "Processed and logged %d cleaning changes for artist: %s", len(changes_log_cleaning), artist
+            )  # Log changes count
         else:
             self.console_logger.info("No cleaning updates needed for artist: %s", artist)
 
@@ -1524,7 +1298,13 @@ class MusicUpdater:
         tracks = await self.fetch_tracks_async(artist=artist, force_refresh=force_year_update)
         if not tracks:
             self.console_logger.warning(f"No tracks found{artist_msg}.")
+            # Update last run timestamp even if no tracks processed, to respect interval
+            if not force_year_update and artist is None:  # Only update if it was a full incremental scan attempt
+                await self.update_last_incremental_run()  # Use method of this class
             return
+
+        # Make copies AFTER filtering to avoid modifying cached data if applicable
+        all_tracks = [track.copy() for track in tracks]
 
         # Determine whether to use incremental or full processing
         effective_last_run = datetime.min  # Default to beginning of time for full run
@@ -1532,43 +1312,55 @@ class MusicUpdater:
             try:
                 # Use injected cache_service
                 last_run_time = await self.cache_service.get_last_run_timestamp()
-                self.console_logger.info("Last incremental run timestamp: %s", last_run_time if last_run_time != datetime.min else "Never or Failed")
+                self.console_logger.info(
+                    "Last incremental run timestamp: %s",
+                    last_run_time.strftime('%Y-%m-%d %H:%M:%S') if last_run_time != datetime.min else "Never or Failed",
+                )  # Log full timestamp
                 effective_last_run = last_run_time  # Use actual last run time for incremental
             except Exception as e:
                 self.error_logger.warning(f"Could not get last run timestamp from cache service: {e}. Assuming full run.")
                 effective_last_run = datetime.min  # Fallback to full run if timestamp retrieval fails
 
         # Use injected process_album_years method
-        updated_y, changes_y = await self.process_album_years(tracks, effective_last_run, force=force_year_update)
+        updated_y, changes_y = await self.process_album_years(all_tracks, effective_last_run, force=force_year_update)  # Pass all_tracks
 
         # Save results if updates occurred
         if updated_y:
+            self.console_logger.info("Year updates resulted in %d tracks needing DB sync.", len(updated_y))
             # Sync updated tracks (containing new years) with the main CSV (utility function)
             # Use config from self.config, injected cache_service, loggers
+            # We should sync ALL tracks after potentially updating some, to reflect the new years
+            # This ensures the CSV accurately represents the state after the run.
+            # sync_track_list_with_current reads the existing CSV, updates based on the provided list (all_tracks)
+            # and saves the merged result. So passing `all_tracks` which contains the updated years is correct.
             await sync_track_list_with_current(
-                updated_y,
-                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv"),
+                all_tracks,  # Pass the fully updated list of tracks
+                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger),  # Pass error_logger
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
-                partial_sync=True,  # Partial sync is appropriate for year updates
+                partial_sync=not force_year_update,  # Use partial sync for incremental, full sync for force
             )
             # Save a report of the year changes (utility function)
             # Use config from self.config, injected loggers
             save_unified_changes_report(
                 changes_y,
-                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv"),
+                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv", self.error_logger),  # Pass error_logger
                 self.console_logger,
                 self.error_logger,
                 force_mode=force_year_update,  # Use force flag for console output
             )
-            # Update last run time only if it was an incremental run (not forced)
-            if not force_year_update:
-                # Use injected update_last_incremental_run method
-                await self.update_last_incremental_run()
+            self.console_logger.info("Processed and logged %d year changes.", len(changes_y))  # Log changes count
+            # Update last run time only if it was an incremental run (not forced) AND was for all artists
+            if not force_year_update and artist is None:
+                await self.update_last_incremental_run()  # Use method of this class
 
         else:
             self.console_logger.info("No year updates needed or year retrieval disabled.")
+            # Update last run time only if it was an incremental run (not forced) AND was for all artists,
+            # even if no updates were made, to respect the interval.
+            if not force_year_update and artist is None:
+                await self.update_last_incremental_run()  # Use method of this class
 
     # Logic moved from old run_verify_database
     # Correctly using the classmethod decorator from Analytics
@@ -1594,7 +1386,8 @@ class MusicUpdater:
     @Analytics.track_instance_method("Run Verify Pending")
     async def run_verify_pending(self, force: bool) -> None:
         """
-        Executes verification for all pending albums regardless of timeframe.
+        Executes verification for all pending albums regardless of timeframe if force is True,
+        or only those due for verification based on the pending interval if force is False.
         Uses injected services and config from self.config.
         """
         self.console_logger.info(f"Executing verify_pending command with force={force}")
@@ -1604,26 +1397,33 @@ class MusicUpdater:
             self.error_logger.error("PendingVerificationService is not available. Cannot verify pending albums.")
             return
 
-        # Get all pending albums regardless of interval if force is True,
-        # otherwise get only those needing verification now.
-        # The get_verified_album_keys method already checks the interval.
-        # If force is True for this command, we might need a way to bypass the interval check
-        # within get_verified_album_keys or get all pending albums.
-        # Let's assume get_verified_album_keys respects force=True or add a new method to PendingVerificationService.
-        # If force is False, get_verified_album_keys already filters by interval.
+        albums_to_verify: List[Tuple[str, str, datetime]] = []  # List to store (artist, album, timestamp) tuples
 
-        albums_to_verify_keys = set()
         if force:
             # Get all pending albums if force is true
-            all_pending = self.pending_verification_service.get_all_pending_albums()
-            albums_to_verify_keys = {f"{artist}|||{album}" for artist, album, _ in all_pending}
-            self.console_logger.info(f"Force verification for all {len(albums_to_verify_keys)} pending albums.")
+            # get_all_pending_albums is async
+            all_pending_raw = await self.pending_verification_service.get_all_pending_albums()
+            albums_to_verify = [(artist, album, timestamp) for artist, album, timestamp in all_pending_raw]
+            self.console_logger.info(f"Force verification for all {len(albums_to_verify)} pending albums.")
         else:
-            # Get only albums needing verification based on interval
-            albums_to_verify_keys = self.pending_verification_service.get_verified_album_keys()
-            self.console_logger.info(f"Found {len(albums_to_verify_keys)} albums needing verification based on interval.")
+            # Get album keys needing verification based on interval
+            # get_verified_album_keys is async
+            verified_keys = await self.pending_verification_service.get_verified_album_keys()
+            self.console_logger.info(f"Found {len(verified_keys)} album keys needing verification based on interval.")
 
-        if not albums_to_verify_keys:
+            # Retrieve artist/album names for the verified keys from the pending service cache
+            # Accessing the cache directly for names is less ideal, a method in PendingVerificationService
+            # to get details by key would be better, or iterate the result of get_all_pending_albums
+            # and filter by keys. Let's iterate get_all_pending_albums and filter.
+            if verified_keys:
+                all_pending_raw = await self.pending_verification_service.get_all_pending_albums()
+                # Use the same key generation as PendingVerificationService to filter
+                for timestamp, artist, album in all_pending_raw:  # Note: tuple is (timestamp, artist, album) in service
+                    album_key = self.pending_verification_service._generate_album_key(artist, album)  # Use service's internal key generation
+                    if album_key in verified_keys:
+                        albums_to_verify.append((artist, album, timestamp))
+
+        if not albums_to_verify:
             self.console_logger.info("No albums currently need verification.")
             return
 
@@ -1632,65 +1432,105 @@ class MusicUpdater:
 
         # Fetch all tracks to find tracks belonging to pending albums
         # Use injected fetch_tracks_async method
-        all_tracks = await self.fetch_tracks_async(force_refresh=False)  # Don't force refresh here unless necessary
+        # We need track objects for `process_album_years`, don't force refresh unless strictly necessary
+        # to avoid unnecessary AppleScript calls, relying on cache if available.
+        all_tracks_fetched = await self.fetch_tracks_async(force_refresh=False)
 
-        if not all_tracks:
+        if not all_tracks_fetched:
             self.console_logger.warning("Could not fetch tracks to verify pending albums.")
             return
 
-        # Group tracks by album key for easy lookup
-        all_tracks_by_album_key = defaultdict(list)
-        for track in all_tracks:
-            artist = track.get("artist", "")
-            album = track.get("album", "")
+        # Group tracks by album (artist, album) for easy lookup
+        all_tracks_grouped_by_album: Dict[Tuple[str, str], List[Dict[str, str]]] = defaultdict(list)
+        for track in all_tracks_fetched:
+            artist = track.get("artist", "").strip()
+            album = track.get("album", "").strip()
             if artist and album:
-                album_key = f"{artist}|||{album}"
-                all_tracks_by_album_key[album_key].append(track)
+                all_tracks_grouped_by_album[(artist, album)].append(track)
 
         # Process each album that needs verification
-        for album_key in albums_to_verify_keys:
+        for artist, album, _ in albums_to_verify:  # Iterate through (artist, album, timestamp) tuples
             try:
-                artist, album = album_key.split("|||", 1)
                 self.console_logger.info("Verifying album '%s - %s'", artist, album)
 
                 # Find tracks for this album using the grouped map
-                album_tracks = all_tracks_by_album_key.get(album_key, [])
+                album_tracks = all_tracks_grouped_by_album.get((artist, album), [])
 
                 if album_tracks:
-                    # Force verification regardless of current year values
-                    # Use the method of this class
-                    verified_tracks, verified_changes = await self.process_album_years(album_tracks, datetime.min, force=True)
+                    # Force verification regardless of current year values for pending albums
+                    # Use the method of this class. Pass force=True to process_album_years
+                    # to ensure it fetches from API/re-scores.
+                    verified_tracks_for_album, verified_changes_for_album = await self.process_album_years(album_tracks, datetime.min, force=True)
 
-                    if verified_tracks:
-                        verification_updated_tracks.extend(verified_tracks)
-                        verification_changes.extend(verified_changes)
-                        # Remove from pending verification as we've processed it using injected service
-                        self.pending_verification_service.remove_from_pending(artist, album)
-                        self.console_logger.info("Successfully verified and updated album '%s - %s'", artist, album)
+                    if verified_tracks_for_album:
+                        verification_updated_tracks.extend(verified_tracks_for_album)
+                        verification_changes.extend(verified_changes_for_album)
+                        # remove_from_pending is now called inside process_album_years if a definitive year is found
+                        # If process_album_years didn't find a definitive year, it re-marked as pending.
+                        self.console_logger.info("Successfully processed and potentially updated album '%s - %s' during verification.", artist, album)
                     else:
-                        self.console_logger.warning("Verification didn't result in updates for '%s - %s'", artist, album)
-                        # If verification didn't result in updates, should it remain pending?
-                        # The current logic in process_album_years marks as pending if not definitive.
-                        # So, if process_album_years didn't find a definitive year, it will re-mark it.
-                        # If it found a definitive year but no tracks needed updating (e.g., year was already correct),
-                        # it won't be re-marked, and remove_from_pending is called above.
-                        pass  # No action needed here, marking is handled in process_album_years
+                        self.console_logger.info("Processing album '%s - %s' during verification did not result in updates.", artist, album)
+                        # If process_album_years didn't result in updates or definitive year, it's still pending.
+                        # No need to call remove_from_pending here.
+
                 else:
-                    self.console_logger.warning("No tracks found for album '%s - %s' needing verification", artist, album)
-                    # If no tracks found, still remove from verification list to avoid endless processing
-                    # Use injected pending_verification_service
-                    self.pending_verification_service.remove_from_pending(artist, album)
+                    self.console_logger.warning(
+                        "No tracks found in fetched data for album '%s - %s' needing verification. Removing from pending list.", artist, album
+                    )
+                    # If no tracks found in the library for this album, remove it from pending list to avoid endless checks.
+                    if self.pending_verification_service:
+                        await self.pending_verification_service.remove_from_pending(artist, album)  # remove_from_pending is async
 
             except Exception as e:
-                self.error_logger.error(f"Error verifying album {album_key}: {e}", exc_info=True)
+                self.error_logger.error(f"Error verifying album '{artist} - {album}': {e}", exc_info=True)
 
-        # Add verification results to other changes (these will be saved by the main process)
-        if verification_updated_tracks:
-            self.console_logger.info("Verified and updated %d tracks from %d albums", len(verification_updated_tracks), len(albums_to_verify_keys))
-            # Note: These updated tracks and changes need to be returned or added to a shared list
-            # to be saved by the main execution flow.
-            # For now, we just log, but the main orchestration logic needs to handle collecting these results.
-            pass  # The results handling needs to be integrated into the main run logic
+        # Add verification results to other changes (these will be saved by the main process if run_full_process calls this)
+        # If run_verify_pending is a standalone command, we need to save the changes here.
+        if verification_updated_tracks or verification_changes:
+            self.console_logger.info(
+                "Verification of pending albums resulted in %d track updates and %d changes.",
+                len(verification_updated_tracks),
+                len(verification_changes),
+            )
+            # Save the results if this is a standalone command
+            # Need to decide how updates from verify_pending integrate into the main track_list.csv
+            # The process_album_years call within the loop already updates the in-memory state
+            # and saves the *year* changes to the report file via `save_unified_changes_report`.
+            # The main `sync_track_list_with_current` should handle saving the updated track list.
+            # So, if this is a standalone command, we should trigger the main sync after the loop.
+
+            # Use config from self.config
+            csv_output_file_path = get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger)  # Pass error_logger
+            changes_report_file_path = get_full_log_path(
+                self.config, "changes_report_file", "csv/changes_report.csv", self.error_logger
+            )  # Pass error_logger
+
+            # Need to ensure all_tracks_fetched list is updated with changes before syncing.
+            # The tracks updated within process_album_years (called from verify_pending) are
+            # modified in-place if they are part of the `album_tracks` list passed to it.
+            # Since `album_tracks` is a subset of `all_tracks_fetched`, `all_tracks_fetched`
+            # should contain the updated tracks.
+            await sync_track_list_with_current(
+                all_tracks_fetched,  # Pass the list that potentially contains updated tracks
+                csv_output_file_path,
+                self.cache_service,
+                self.console_logger,
+                self.error_logger,
+                partial_sync=True,  # Verification is always a partial sync of existing entries
+            )
+
+            # Append the verification changes to the changes report file
+            # save_unified_changes_report appends if file exists, or creates new.
+            save_unified_changes_report(
+                verification_changes,
+                changes_report_file_path,
+                self.console_logger,
+                self.error_logger,
+                force_mode=force,  # Use force flag for console output
+            )
+
+        else:
+            self.console_logger.info("No updates resulted from verifying pending albums.")
 
     # Logic for the main execution methods of MusicUpdater
     # These methods orchestrate the process using the injected services (self.)
@@ -1720,7 +1560,10 @@ class MusicUpdater:
             try:
                 # Use injected cache_service
                 last_run_time = await self.cache_service.get_last_run_timestamp()
-                self.console_logger.info("Last incremental run timestamp: %s", last_run_time if last_run_time != datetime.min else "Never or Failed")
+                self.console_logger.info(
+                    "Last incremental run timestamp: %s",
+                    last_run_time.strftime('%Y-%m-%d %H:%M:%S') if last_run_time != datetime.min else "Never or Failed",
+                )  # Log full timestamp
                 effective_last_run = last_run_time  # Use actual last run time for incremental
             except Exception as e:
                 self.error_logger.warning(f"Could not get last run timestamp from cache service: {e}. Assuming full run.")
@@ -1729,13 +1572,13 @@ class MusicUpdater:
         # --- Fetch Tracks (respecting test_artists if set globally) ---
         all_tracks: List[Dict[str, str]] = []
         # Use config from self.config
-        test_artists_global = self.config.get("development", {}).get("test_artists", [])
+        test_artists_config = self.config.get("development", {}).get("test_artists", [])
 
-        if test_artists_global:
+        if test_artists_config:
             # Fetch tracks only for test artists if the list is populated
-            self.console_logger.info(f"Development mode: Fetching tracks only for test_artists: {test_artists_global}")
+            self.console_logger.info(f"Development mode: Fetching tracks only for test_artists: {test_artists_config}")
             fetched_track_map = {}  # Use map to avoid duplicates if artist listed multiple times
-            for art in test_artists_global:
+            for art in test_artists_config:
                 # Use injected fetch_tracks_async method
                 art_tracks = await self.fetch_tracks_async(artist=art, force_refresh=args.force)
                 for track in art_tracks:
@@ -1772,12 +1615,13 @@ class MusicUpdater:
             orig_name = track.get("name", "")
             orig_album = track.get("album", "")
             track_id = track.get("id", "")
-            artist_name = track.get("artist", "Unknown")
-            if not track_id:
-                return
+            artist_name = track.get("artist", "Unknown")  # Use artist from track data
 
-            # Use the utility function clean_names, pass config from self.config
-            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config)
+            if not track_id:
+                return  # Skip if no ID
+
+            # Use the utility function clean_names, pass config and loggers from self.config/self
+            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
 
             # Determine if changes were actually made
             new_tn = cleaned_nm if cleaned_nm != orig_name else None
@@ -1810,7 +1654,9 @@ class MusicUpdater:
                             }
                         )
                     else:
-                        self.error_logger.error("Failed to apply cleaning update for track ID %s", track_id)
+                        self.error_logger.error(
+                            "Failed to apply cleaning update for track ID %s ('%s' - '%s')", track_id, artist_name, orig_name
+                        )  # Log track details
                 else:
                     self.console_logger.debug(f"Skipping track update for '{orig_name}' (ID: {track_id}) due to status '{track_status}'")
 
@@ -1826,7 +1672,7 @@ class MusicUpdater:
         self.console_logger.info("Starting genre update process...")
         # Pass the effective last run time (min if forced, actual otherwise)
         # Use the method of this class
-        updated_g, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)
+        updated_g, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)  # Pass all_tracks
         if updated_g:
             self.console_logger.info("Updated genres for %d tracks.", len(updated_g))
         else:
@@ -1836,7 +1682,7 @@ class MusicUpdater:
         self.console_logger.info("Starting album year update process...")
         # process_album_years also needs last_run_time for incremental updates
         # Use the method of this class
-        updated_y, changes_y = await self.process_album_years(all_tracks, effective_last_run, force=args.force)
+        updated_y, changes_y = await self.process_album_years(all_tracks, effective_last_run, force=args.force)  # Pass all_tracks
         if updated_y:
             self.console_logger.info("Updated years for %d tracks.", len(updated_y))
         else:
@@ -1853,7 +1699,7 @@ class MusicUpdater:
             # Use config from self.config, injected cache_service, loggers
             await sync_track_list_with_current(
                 all_tracks,  # Pass the fully updated list of tracks
-                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv"),
+                get_full_log_path(self.config, "csv_output_file", "csv/track_list.csv", self.error_logger),  # Pass error_logger
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
@@ -1863,7 +1709,7 @@ class MusicUpdater:
             # Use config from self.config, injected loggers
             save_unified_changes_report(
                 all_changes,
-                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv"),
+                get_full_log_path(self.config, "changes_report_file", "csv/changes_report.csv", self.error_logger),  # Pass error_logger
                 self.console_logger,
                 self.error_logger,
                 force_mode=args.force,  # Use force flag for console output if needed
@@ -1879,7 +1725,8 @@ class MusicUpdater:
 
         # --- Step 4: Verify Pending Albums (after 30 days) ---
         # This step is part of the default process
-        # Use the method of this class
+        # Use the method of this class. This will call process_album_years internally
+        # for pending albums and handle updating the pending list and reporting changes.
         await self.run_verify_pending(force=False)  # Run pending verification based on interval
 
 
@@ -1914,159 +1761,256 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 
-# --- Main Execution Block ---
-# --- Main Execution Block ---
 def main() -> None:
     """
     Main synchronous function to parse arguments and run the async main logic.
     Handles top-level setup, teardown, exception handling, and listener shutdown.
+    Initializes loggers and DependencyContainer, orchestrates command execution.
     """
     # Import DependencyContainer here to break the circular import and make it available to main's scope
+    # Ensure DependencyContainer is imported at the function level if needed only here,
+    # or at the top level if used elsewhere in this file outside of methods.
+    # It's used in the main function only, so importing here is acceptable for breaking the cycle.
     from services.dependencies_service import DependencyContainer
 
     start_all = time.time()
     args = parse_arguments()
 
-    # Initialize loggers and listener *early*
-    # These are module-level variables
-    # console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG) # Already initialized at module level
+    # Initialize loggers and the QueueListener *before* creating DependencyContainer
+    # These are needed by the DependencyContainer constructor and for early logging
+    # Ensure CONFIG is loaded at the module level or before this point
+    # CONFIG is loaded at the module level in this file, needed by get_loggers.
+    # If CONFIG loading fails at module level, script exits early.
+    # Assuming this is handled correctly.
 
-    # --- Add safety check for listener ---
-    # Check the module-level listener
-    if listener is None:
-        console_logger.error("Failed to initialize QueueListener for logging. File logs might be missing.")
+    # Initialize loggers and the QueueListener using the module-level CONFIG
+    # This is the ONLY place get_loggers should be called
+    local_console_logger = None  # Initialize to None for error handling in finally
+    local_error_logger = None
+    local_analytics_logger = None
+    local_listener = None  # Initialize listener to None
 
-    # --- Handle Dry Run mode ---
-    if args.dry_run:
-        console_logger.info("Running in dry-run mode. No changes will be applied.")
-        try:
-            # dry_run.main() needs access to config and potentially loggers
-            # It should ideally obtain these via dependency injection or arguments
-            # For now, we call the existing dry_run.main() which uses global CONFIG and loggers
-            # This part will be refactored in Step 3.2
-            asyncio.run(dry_run.main())
-        except Exception as dry_run_err:
-            error_logger.error(f"Error during dry run: {dry_run_err}", exc_info=True)
-            sys.exit(1)  # Exit with error code
-        finally:
-            # Stop listener after dry run
-            if listener:
-                console_logger.info("Stopping QueueListener (after dry run)...")
-                listener.stop()
-            # Explicitly close handlers (might be redundant if listener closes them)
-            console_logger.info("Explicitly closing logger handlers (after dry run)...")
-            # Use module-level loggers or root logger to get handlers
-            all_handlers = []
-            # Close root handlers first
-            for handler in logging.root.handlers[:]:
-                all_handlers.append(handler)
-                logging.root.removeHandler(handler)
-            # Close handlers attached to specific loggers (console, error, analytics)
-            for name in ['console_logger', 'main_logger', 'analytics_logger', 'year_updates']:  # Include names of loggers used
-                logger = logging.getLogger(name)
-                for handler in logger.handlers[:]:
-                    all_handlers.append(handler)
-                    logger.removeHandler(handler)
-
-            # Close all collected handlers
-            for handler in all_handlers:
-                try:
-                    handler.close()
-                except Exception as e:
-                    print(f"Error closing handler {handler}: {e}", file=sys.stderr)
-
-            end_all = time.time()
-            print(f"\nTotal script execution time (dry run): {end_all - start_all:.2f} seconds")
-            sys.exit(0)  # Exit after dry run
-
-    # --- Initialize Dependency Container ---
-    # The import is now at the top of the main function
-    deps = None
     try:
-        # Create the DependencyContainer instance
-        deps = DependencyContainer(CONFIG_PATH)
+        # Check if CONFIG exists (it should if module level load passed)
+        if 'CONFIG' not in globals() or not isinstance(CONFIG, dict):
+            # This case should ideally not be reached if module level load works
+            raise ValueError("CONFIG not loaded or invalid at module level.")
 
-        # Get the main orchestrator instance from the container
-        music_updater = deps.get_music_updater()
+        # Initialize loggers and the QueueListener using the module-level CONFIG
+        # Store results in local variables
+        local_console_logger, local_error_logger, local_analytics_logger, local_listener = get_loggers(CONFIG)
 
-        # Always check if Music.app is running first (utility function)
-        if not is_music_app_running():
-            console_logger.error("Music app is not running! Please start Music.app before running this script.")
-            sys.exit(1)  # Exit if Music app is not running
+        # Log that loggers are initialized (should see this only ONCE)
+        local_console_logger.info("Main function: Loggers and QueueListener initialized.")
+        # Check if listener is None (get_loggers might fail)
+        if local_listener is None:
+            local_console_logger.error("Main function: QueueListener failed to initialize. File logs might be missing.")
 
-        # --- Command-Specific Execution Paths ---
-        # Use asyncio.run for the main entry point
-        if hasattr(args, 'command') and args.command == "verify_database":
-            # Call the corresponding method on the music_updater instance
-            asyncio.run(music_updater.run_verify_database(force=args.force))
+        # --- Add safety check for listener (redundant if checked above, but harmless) ---
+        # if local_listener is None:
+        #     local_console_logger.error("Failed to initialize QueueListener for logging. File logs might be missing.")
 
-        elif args.command == "clean_artist":
-            # Call the corresponding method on the music_updater instance
-            asyncio.run(music_updater.run_clean_artist(artist=args.artist, force=args.force))
+        # --- Perform initial path checks ---
+        # Call check_paths here, after loggers are initialized
+        # Pass CONFIG and the local error logger
+        check_paths([CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]], local_error_logger)
 
-        elif args.command == "update_years":
-            # Call the corresponding method on the music_updater instance
-            asyncio.run(music_updater.run_update_years(artist=args.artist, force=args.force))
+        # --- Handle Dry Run mode ---
+        # Dry run logic is now handled by calling dry_run.main() which has its own DI setup
+        if args.dry_run:
+            local_console_logger.info("Running in dry-run mode. No changes will be applied.")
+            try:
+                # dry_run.main() is an async function, need asyncio.run here
+                # dry_run.main() now gets its own loggers and config internally.
+                # Ideally, dry_run.main should receive loggers/listener from here to share
+                # the same logging setup, but for now, we keep it separate as refactored earlier.
+                # This part needs careful consideration for shared logging/DI in dry run.
+                # For now, stick to the current call, acknowledging dry_run might have its own logger setup.
+                asyncio.run(dry_run.main())
+            except Exception as dry_run_err:
+                local_error_logger.error(f"Error during dry run: {dry_run_err}", exc_info=True)
+                sys.exit(1)  # Exit with error code
+            # After dry run completes, exit the script. Cleanup is in finally.
+            sys.exit(0)
 
-        elif args.command == "verify_pending":
-            # Call the corresponding method on the music_updater instance
-            asyncio.run(music_updater.run_verify_pending(force=args.force))
+        # --- Initialize Dependency Container ---
+        # Create the DependencyContainer instance, passing config path and the initialized loggers/listener
+        # Pass the local logger and listener variables
+        deps = DependencyContainer(CONFIG_PATH, local_console_logger, local_error_logger, local_analytics_logger, local_listener)
 
-        else:  # Default mode
-            # Call the main processing method on the music_updater instance
-            asyncio.run(music_updater.run_full_process(args))
+        # --- Asynchronously Initialize Dependencies ---
+        # IMPORTANT: Call the async initialize method before using services
+        # This must be awaited, so we run it using asyncio.run
+        local_console_logger.info("Starting DependencyContainer asynchronous initialization...")
+        try:
+            # Need a wrapper async function to await deps.initialize()
+            async def initialize_dependencies_async(deps_instance):
+                await deps_instance.initialize()
 
-    except KeyboardInterrupt:
-        console_logger.info("Script interrupted by user (main level).")
-        sys.exit(1)  # Exit with error code upon interruption
-    except Exception as exc:
-        console_logger.error("Critical error during main execution: %s", exc, exc_info=True)
-        # Try logging to error logger from deps if available
-        if deps and hasattr(deps, 'get_error_logger'):
-            deps.get_error_logger().error("Critical error during main execution: %s", exc, exc_info=True)
-        sys.exit(1)  # Exit with error code upon any other critical exception
+            asyncio.run(initialize_dependencies_async(deps))
+            local_console_logger.info("DependencyContainer asynchronous initialization completed successfully.")
+        except Exception as init_err:
+            local_error_logger.critical(f"Critical error during DependencyContainer asynchronous initialization: {init_err}", exc_info=True)
+            # If async initialization fails, the application likely cannot proceed
+            sys.exit(1)
+
+        # --- Run Main Commands ---
+        # Wrap the main command execution in an async function
+        async def run_main_commands(deps: DependencyContainer, args: argparse.Namespace):
+            # Get the main orchestrator instance from the container
+            music_updater = deps.get_music_updater()
+
+            # Always check if Music.app is running first (utility function)
+            # Pass the error logger from deps
+            error_logger_for_check = deps.get_error_logger()
+            # is_music_app_running requires error_logger
+            if not is_music_app_running(error_logger_for_check):
+                deps.get_console_logger().error("Music app is not running! Please start Music.app before running this script.")
+                sys.exit(1)  # Exit if Music app is not running
+
+            # --- Command-Specific Execution Paths ---
+            # Call the corresponding methods on the music_updater instance
+            # These methods are async and need to be awaited
+            if hasattr(args, 'command') and args.command == "verify_database":
+                await music_updater.run_verify_database(force=args.force)
+
+            elif args.command == "clean_artist":
+                await music_updater.run_clean_artist(artist=args.artist, force=args.force)
+
+            elif args.command == "update_years":
+                await music_updater.run_update_years(artist=args.artist, force=args.force)
+
+            elif args.command == "verify_pending":
+                await music_updater.run_verify_pending(force=args.force)  # Pass force argument
+
+            else:  # Default mode
+                await music_updater.run_full_process(args)
+
+        # Run the async command execution wrapper function
+        # This runs the main logic after successful async initialization
+        try:
+            # This asyncio.run starts the main event loop for the command execution
+            asyncio.run(run_main_commands(deps, args))
+        except KeyboardInterrupt:
+            # Log interruption using loggers from deps
+            deps.get_console_logger().info("Script interrupted by user (main commands).")
+            sys.exit(1)  # Exit with error code upon interruption
+        except Exception as command_exec_err:
+            # Log critical error using loggers from deps
+            deps.get_error_logger().critical("Critical error during main command execution: %s", command_exec_err, exc_info=True)
+            sys.exit(1)  # Exit with error code
+
+    except FileNotFoundError as e:
+        # Catch config loading error (re-raised by DependencyContainer __init__)
+        # Loggers are initialized *before* deps, so local loggers should be available.
+        if 'local_error_logger' in locals() and local_error_logger:
+            local_error_logger.critical(f"Configuration file not found: {e}")
+        else:
+            # Fallback print if loggers weren't initialized
+            print(f"CRITICAL ERROR: Configuration file not found: {e}", file=sys.stderr)
+        sys.exit(1)
+    except ValueError as e:
+        # Catch config validation error (re-raised by DependencyContainer __init__)
+        if 'local_error_logger' in locals() and local_error_logger:
+            local_error_logger.critical(f"Configuration validation error: {e}")
+        else:
+            print(f"CRITICAL ERROR: Configuration validation error: {e}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        # Catch config parsing error (re-raised by DependencyContainer __init__)
+        if 'local_error_logger' in locals() and local_error_logger:
+            local_error_logger.critical(f"Configuration parsing error: {e}")
+        else:
+            print(f"CRITICAL ERROR: Configuration parsing error: {e}", file=sys.stderr)
+        sys.exit(1)
+    # Other exceptions from DependencyContainer __init__ (e.g. Import Error) will also be caught here.
+    except Exception as deps_init_err:
+        if 'local_error_logger' in locals() and local_error_logger:
+            local_error_logger.critical("Critical error during DependencyContainer initialization: %s", deps_init_err, exc_info=True)
+        else:
+            print(f"CRITICAL ERROR: Critical error during DependencyContainer initialization: {deps_init_err}", file=sys.stderr)
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+
     finally:
         # --- Final Cleanup ---
-        # Analytics report is generated within the MusicUpdater methods now,
-        # or can be called here if needed, accessing analytics via deps.analytics
-        if deps and hasattr(deps, 'get_analytics'):
+        # Shutdown DependencyContainer if it was successfully created
+        # This handles closing services and stopping the listener
+        if deps:
             try:
-                # Generate report using the analytics instance from deps
-                deps.get_analytics().generate_reports(force_mode=args.force)
-            except Exception as report_err:
-                console_logger.error(f"Error generating report: {report_err}", exc_info=True)
+                deps.shutdown()
+            except Exception as shutdown_err:
+                # Use error logger from deps if available, otherwise local error logger
+                error_logger_for_shutdown = (
+                    deps.get_error_logger()
+                    if deps and hasattr(deps, 'get_error_logger')
+                    else ('local_error_logger' in locals() and local_error_logger) or None
+                )
+                if error_logger_for_shutdown:
+                    error_logger_for_shutdown.error(f"Error during DependencyContainer shutdown: {shutdown_err}", exc_info=True)
+                else:
+                    print(f"ERROR: Error during DependencyContainer shutdown: {shutdown_err}", file=sys.stderr)
 
-        # --- Stop Listener and Close Handlers ---
-        # Use the module-level listener variable
-        if listener:
-            console_logger.info("Stopping QueueListener...")
-            listener.stop()  # Stop the background thread first
+        # Explicitly close handlers for robustness.
+        # This is handled by deps.shutdown() if deps was created.
+        # If deps was NOT created due to an error before its initialization (e.g. config error),
+        # the local loggers might still need explicit handler closing if they had file handlers added by get_loggers.
+        # The get_loggers implementation in utils/logger.py adds RunTrackingHandler and QueueHandler.
+        # RunTrackingHandler's close method calls super().close() and trim_log_to_max_runs.
+        # QueueListener's stop() method calls close() on its handlers.
+        # So if deps.shutdown() is called, the listener is stopped and handlers are closed.
+        # If deps is NOT created, the listener started by get_loggers needs to be stopped,
+        # and its handlers closed.
+        # Let's make sure the listener is stopped directly if deps is not created.
+        # And rely on listener stopping to close handlers.
 
-        console_logger.info("Explicitly closing logger handlers...")
-        # Use module-level loggers or root logger to get handlers
-        all_handlers = []
-        # Close root handlers first
-        for handler in logging.root.handlers[:]:
-            all_handlers.append(handler)
-            logging.root.removeHandler(handler)
-        # Close handlers attached to specific loggers (console, error, analytics)
-        for name in ['console_logger', 'main_logger', 'analytics_logger', 'year_updates']:  # Include names of loggers used
-            logger = logging.getLogger(name)
-            for handler in logger.handlers[:]:
-                all_handlers.append(handler)
-                logger.removeHandler(handler)
-
-        # Close all collected handlers
-        for handler in all_handlers:
+        # Simplified cleanup in finally
+        # If deps exists, it calls deps.shutdown() which stops the listener and closes handlers.
+        # If deps does NOT exist (error before deps = ...), the local listener was created
+        # by get_loggers and needs to be stopped. Its handlers will be closed by listener.stop().
+        # This case handles errors *before* deps = DependencyContainer(...).
+        # In case of errors *within* the try block *after* deps is created, the `if deps:` block above runs.
+        # This structure seems correct for cleanup regardless of where the error occurs.
+        # The local_listener is only stopped here if deps is not created.
+        elif 'local_listener' in locals() and local_listener:
             try:
-                handler.close()
-            except Exception as e:
-                print(f"Error closing handler {handler}: {e}", file=sys.stderr)
+                # Use the console logger if available, otherwise print
+                logger_for_listener_stop = ('local_console_logger' in locals() and local_console_logger) or None
+                if logger_for_listener_stop:
+                    logger_for_listener_stop.info("Stopping QueueListener (deps not created)...")
+                else:
+                    print("INFO: Stopping QueueListener (deps not created)...", file=sys.stderr)
 
+                local_listener.stop()
+            except Exception as listener_stop_err:
+                if 'local_error_logger' in locals() and local_error_logger:
+                    local_error_logger.error(f"Error stopping QueueListener (deps not created): {listener_stop_err}", exc_info=True)
+                else:
+                    print(f"ERROR: Error stopping QueueListener (deps not created): {listener_stop_err}", file=sys.stderr)
+
+        # Final timing log
         end_all = time.time()
-        print(f"\nTotal script execution time: {end_all - start_all:.2f} seconds")
+        # Use console logger from deps if available, otherwise local console logger
+        console_logger_for_final = (
+            deps.get_console_logger()
+            if deps and hasattr(deps, 'get_console_logger')
+            else ('local_console_logger' in locals() and local_console_logger) or None
+        )
+        if console_logger_for_final:
+            console_logger_for_final.info(f"\nTotal script execution time: {end_all - start_all:.2f} seconds")
+        else:
+            # Fallback print if no loggers were successfully initialized at all
+            print(f"\nTotal script execution time: {end_all - start_all:.2f} seconds", file=sys.stderr)
+
         # sys.exit(0) # Exit status is handled by explicit sys.exit calls above
 
+
+# --- Initial checks and entry point ---
+# CONFIG is loaded at module level.
+# check_paths is called in main now.
+# The main function is the entry point.
 
 if __name__ == "__main__":
     main()

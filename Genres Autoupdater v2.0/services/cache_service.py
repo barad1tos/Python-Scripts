@@ -17,10 +17,8 @@ Features:
     - Atomic file writes for data safety
     - Tracking of last incremental run timestamp
 
-Usage:
-    - For general data caching: get_async/set_async with optional TTL
-    - For album-year caching: get_album_year_from_cache/store_album_year_in_cache
-    - Force disk synchronization with sync_cache() before shutdown
+Refactored: Initial asynchronous loading and saving handled in separate async methods,
+called by DependencyContainer after service instantiation.
 """
 
 import asyncio
@@ -33,6 +31,7 @@ import time
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Tuple
 
+# Assuming get_full_log_path is a utility function that handles path joining and dir creation
 from utils.logger import get_full_log_path
 
 
@@ -41,11 +40,13 @@ class CacheService:
     Cache Service Class
     This class provides an in-memory cache with TTL support and a persistent CSV-based cache
     for album release years. Uses hash-based keys for album data.
+    Initializes asynchronously.
     """
 
     def __init__(self, config: dict, console_logger, error_logger):
         """
         Initialize the CacheService with configuration and loggers.
+        Does NOT perform file loading here. Use the async initialize method.
 
         :param config: Configuration dictionary loaded from my-config.yaml.
         :param console_logger: Logger object for console output.
@@ -60,10 +61,8 @@ class CacheService:
         self.cache: Dict[str, Tuple[Any, float]] = {}  # key (hash) -> (value, expiry_time)
 
         # CSV cache settings
-        logs_base_dir = self.config.get("logs_base_dir", ".")
-        # Save the file in the "csv" folder next to track_list.csv
-        self.album_cache_csv = os.path.join(logs_base_dir, "csv", "cache_albums.csv")
-        os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
+        # logs_base_dir is retrieved via get_full_log_path
+        self.album_cache_csv = get_full_log_path(config, "album_cache_csv", "csv/cache_albums.csv", error_logger)  # Use utility function
 
         # In-memory album years cache
         # key: hash of "artist|album", value: (year, artist, album)
@@ -72,8 +71,17 @@ class CacheService:
         self.cache_dirty = False  # Flag indicating unsaved changes
         self.sync_interval = config.get("album_cache_sync_interval", 300)  # Sync every 5 minutes by default
 
-        # Load initial album cache
-        self._load_album_years_cache()
+        # Initial album cache loading is now done in the async initialize method
+        # self._load_album_years_cache() # REMOVED from __init__
+
+    async def initialize(self) -> None:
+        """
+        Asynchronously initializes the CacheService by loading data from disk.
+        This method must be called after instantiation.
+        """
+        self.console_logger.info("Initializing CacheService asynchronously...")
+        await self._load_album_years_cache()
+        self.console_logger.info("CacheService asynchronous initialization complete.")
 
     def _generate_album_key(self, artist: str, album: str) -> str:
         """
@@ -127,11 +135,14 @@ class CacheService:
     async def set_async(self, key_data: Any, value: Any, ttl: Optional[int] = None) -> None:
         """
         Asynchronously set a value in the in-memory cache with an optional TTL.
+        Currently just calls sync set, but kept async signature for consistency/future needs.
 
         :param key_data: The key data to hash (can be a tuple or any hashable object).
         :param value: The value to store in the cache.
         :param ttl: The time-to-live in seconds for the cache entry.
         """
+        # In-memory dictionary operations are synchronous.
+        # If cache involved blocking I/O (like a database), this would need executor.
         self.set(key_data, value, ttl)
 
     async def get_async(self, key_data: Any, compute_func: Optional[Callable[[], "asyncio.Future[Any]"]] = None) -> Any:
@@ -147,10 +158,13 @@ class CacheService:
             tracks = []
             now_ts = time.time()
             # Iterate through values, which are (value, expiry_time) tuples
-            for val, expiry in self.cache.values():
+            for val, expiry in list(self.cache.values()):  # Iterate over a copy to allow deletion during iteration
                 # Filter out only non-expired track objects (assuming tracks are dicts with 'id')
                 if now_ts < expiry and isinstance(val, dict) and "id" in val:
                     tracks.append(val)
+                # Optional: remove expired entries here if iterating all is frequent
+                # elif now_ts >= expiry and self._hash_key(val.get('id', '')) in self.cache: # Need a stable key to remove
+                #      del self.cache[self._hash_key(val.get('id', ''))] # This assumes track id is hashable key data
             return tracks
 
         # Otherwise standard logic for a specific key
@@ -176,6 +190,7 @@ class CacheService:
     def invalidate(self, key_data: Any) -> None:
         """
         Invalidate a single cache entry by key or clear all entries if key_data == "ALL".
+        This is a synchronous operation on the in-memory cache.
 
         :param key_data: The key data to invalidate or "ALL" to clear all entries.
         """
@@ -192,37 +207,62 @@ class CacheService:
     def clear(self) -> None:
         """
         Clear the entire in-memory generic cache.
+        This is a synchronous operation.
         """
         self.cache.clear()
         self.console_logger.info("All in-memory generic cache entries cleared.")
 
-    def _load_album_years_cache(self) -> None:
+    async def _load_album_years_cache(self) -> None:
         """
-        Load album years cache from CSV file into memory.
-        Called during initialization.
+        Load album years cache from CSV file into memory asynchronously.
+        Uses loop.run_in_executor for blocking file operations.
         Reads artist, album, and year from CSV and stores using hash keys.
         """
         self.album_years_cache.clear()  # Clear existing cache before loading
-        try:
-            if os.path.exists(self.album_cache_csv):
-                with open(self.album_cache_csv, "r", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        # Read artist, album, and year from CSV columns
-                        a = row.get("artist", "").strip()
-                        b = row.get("album", "").strip()
-                        y = row.get("year", "").strip()
-                        if a and b and y:
-                            # Generate hash key from artist and album
-                            key_hash = self._generate_album_key(a, b)
-                            # Store year, original artist, and original album in the in-memory cache value
-                            self.album_years_cache[key_hash] = (y, a, b)
-                self.console_logger.info(f"Loaded {len(self.album_years_cache)} album years into memory cache")
-            else:
-                self.console_logger.info(f"Album-year cache file not found, will create at: {self.album_cache_csv}")
+        loop = asyncio.get_event_loop()
 
-        except Exception as e:
-            self.error_logger.error(f"Error loading album years cache: {e}", exc_info=True)
+        def blocking_load():
+            album_data = {}
+            try:
+                # Check if the directory exists before trying to open the file
+                os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
+                if os.path.exists(self.album_cache_csv):
+                    with open(self.album_cache_csv, "r", encoding="utf-8") as f:
+                        reader = csv.DictReader(f)
+                        # Ensure expected headers are present, fallback if not
+                        fieldnames = reader.fieldnames if reader.fieldnames else []
+                        if 'artist' not in fieldnames or 'album' not in fieldnames or 'year' not in fieldnames:
+                            self.error_logger.warning(
+                                f"Album cache CSV header missing expected fields in {self.album_cache_csv}. Found: {fieldnames}. Skipping load."
+                            )
+                            return album_data  # Return empty on missing headers
+
+                        for row in reader:
+                            # Read artist, album, and year from CSV columns
+                            a = row.get("artist", "").strip()
+                            b = row.get("album", "").strip()
+                            y = row.get("year", "").strip()
+                            if a and b and y:
+                                # Generate hash key from artist and album
+                                key_hash = self._generate_album_key(a, b)
+                                # Store year, original artist, and original album in the in-memory cache value
+                                album_data[key_hash] = (y, a, b)
+                            else:
+                                self.error_logger.warning(f"Skipping malformed row in album cache file: {row}")
+
+                else:
+                    self.console_logger.info(f"Album-year cache file not found, will create at: {self.album_cache_csv}")
+
+                return album_data
+
+            except Exception as e:
+                # Log error and return empty data on failure
+                self.error_logger.error(f"Error loading album years cache from {self.album_cache_csv}: {e}", exc_info=True)
+                return {}
+
+        # Run the blocking load operation in the default executor
+        self.album_years_cache = await loop.run_in_executor(None, blocking_load)
+        self.console_logger.info(f"Loaded {len(self.album_years_cache)} album years into memory cache from {self.album_cache_csv}")
 
     async def _sync_cache_if_needed(self, force=False) -> None:
         """
@@ -232,104 +272,153 @@ class CacheService:
         """
         now = time.time()
         if force or (self.cache_dirty and now - self.last_cache_sync >= self.sync_interval):
+            self.console_logger.info(
+                f"Syncing album years cache to disk (force={force}, dirty={self.cache_dirty}, "
+                f"interval_elapsed={now - self.last_cache_sync >= self.sync_interval})..."
+            )
             await self._save_cache_to_disk()
             self.last_cache_sync = now
             self.cache_dirty = False
+        # else:
+        # self.console_logger.debug("Cache sync not needed yet.") # Too verbose for debug
 
     async def _save_cache_to_disk(self) -> None:
         """
-        Save the in-memory album years cache to disk.
-        Uses atomic write pattern with temporary file.
+        Save the in-memory album years cache to disk asynchronously.
+        Uses atomic write pattern with temporary file and loop.run_in_executor.
         Writes artist, album, and year columns.
         """
         temp_file = f"{self.album_cache_csv}.tmp"
+        loop = asyncio.get_event_loop()
 
+        def blocking_save():
+            try:
+                # Create directories if they do not exist
+                os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
+
+                with open(temp_file, "w", newline="", encoding="utf-8") as f:
+                    # Define fieldnames for the CSV file
+                    fieldnames = ["artist", "album", "year"]
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+
+                    # Iterate through values in the in-memory cache (which are (year, artist, album) tuples)
+                    # Create a list copy to iterate safely in a separate thread
+                    items_to_save = list(self.album_years_cache.values())
+
+                    for year, artist, album in items_to_save:
+                        # Write artist, album, and year as separate columns
+                        writer.writerow({"artist": artist, "album": album, "year": year})
+
+                # Atomic rename (will replace existing file)
+                os.replace(temp_file, self.album_cache_csv)
+
+                # self.console_logger.info(f"Synchronized {len(items_to_save)} album years to disk.") # Log inside blocking is not ideal
+
+            except Exception as e:
+                # Log error and clean up temp file
+                # Use print as loggers might have issues in this separate thread context
+                print(f"ERROR during blocking save of album years cache to {self.album_cache_csv}: {e}", file=sys.stderr)
+                if os.path.exists(temp_file):
+                    try:
+                        os.remove(temp_file)
+                    except OSError as cleanup_e:
+                        print(f"WARNING: Could not remove temporary cache file {temp_file}: {cleanup_e}", file=sys.stderr)
+                # Re-raise the exception so run_in_executor propagates it
+                raise
+
+        # Run the blocking save operation in the default executor
         try:
-            os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
-
-            with open(temp_file, "w", newline="", encoding="utf-8") as f:
-                # Define fieldnames for the CSV file
-                writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
-                writer.writeheader()
-
-                # Iterate through values in the in-memory cache (which are (year, artist, album) tuples)
-                for year, artist, album in self.album_years_cache.values():
-                    # Write artist, album, and year as separate columns
-                    writer.writerow({"artist": artist, "album": album, "year": year})
-
-            # Atomic rename
-            # If on Windows, you may need to delete the target file before renaming it
-            if os.path.exists(self.album_cache_csv):
-                if sys.platform == 'win32':
-                    os.replace(temp_file, self.album_cache_csv)  # Windows: atomic rename with replacement
-                else:
-                    os.rename(temp_file, self.album_cache_csv)  # POSIX: atomic rename
-            else:
-                os.rename(temp_file, self.album_cache_csv)
-
-            self.console_logger.info(f"Synchronized {len(self.album_years_cache)} album years to disk")
-
+            await loop.run_in_executor(None, blocking_save)
+            self.console_logger.info(f"Synchronized {len(self.album_years_cache)} album years to disk.")  # Log after successful save
         except Exception as e:
-            self.error_logger.error(f"Error synchronizing cache to disk: {e}", exc_info=True)
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except OSError as e:
-                    # Log the error if removing the temp file fails, but don't raise it
-                    self.error_logger.warning(f"Could not remove temporary cache file {temp_file}: {e}")
+            # The exception from blocking_save is caught here
+            self.error_logger.error(f"Error synchronizing album years cache to disk: {e}")
 
     async def initialize_album_cache_csv(self) -> None:
         """
-        If the album cache CSV file does not exist, create it with the header row.
+        If the album cache CSV file does not exist, create it with the header row asynchronously.
         Ensures the CSV has 'artist', 'album', 'year' columns.
-
-        :return: None
+        Uses loop.run_in_executor for blocking file operations.
         """
-        if not os.path.exists(self.album_cache_csv):
-            self.console_logger.info(f"Creating album-year CSV cache: {self.album_cache_csv}")
-            # Define fieldnames for the CSV file
-            with open(self.album_cache_csv, "w", newline="", encoding="utf-8") as f:
-                writer = csv.DictWriter(f, fieldnames=["artist", "album", "year"])
-                writer.writeheader()
+        loop = asyncio.get_event_loop()
+
+        def blocking_init():
+            # Check if path exists before creating
+            if not os.path.exists(self.album_cache_csv):
+                self.console_logger.info(f"Creating album-year CSV cache: {self.album_cache_csv}")
+                try:
+                    # Ensure directory exists before creating file
+                    os.makedirs(os.path.dirname(self.album_cache_csv), exist_ok=True)
+                    # Define fieldnames for the CSV file
+                    fieldnames = ["artist", "album", "year"]
+                    with open(self.album_cache_csv, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                except Exception as e:
+                    print(f"ERROR during blocking init of album cache CSV {self.album_cache_csv}: {e}", file=sys.stderr)
+                    raise  # Re-raise to propagate
+
+        # Run the blocking initialization operation
+        try:
+            await loop.run_in_executor(None, blocking_init)
+        except Exception as e:
+            self.error_logger.error(f"Error initializing album cache CSV: {e}")
 
     async def get_last_run_timestamp(self) -> datetime:
         """
-        Get the timestamp of the last incremental run.
+        Get the timestamp of the last incremental run asynchronously.
+        Uses loop.run_in_executor for blocking file operations.
 
         Returns:
-            datetime: The timestamp of the last incremental run, or datetime.min if not found
-
-        Example:
-            >>> last_run = await cache_service.get_last_run_timestamp()
-            >>> if (datetime.now() - last_run).total_seconds() > 3600:
-            >>>     print("More than an hour since last run")
+            datetime: The timestamp of the last incremental run, or datetime.min if not found or error occurs.
         """
-        # Ensure the logging config section and key exist before accessing
-        logging_config = self.config.get("logging", {})
-        last_file_key = logging_config.get("last_incremental_run_file")
+        loop = asyncio.get_event_loop()
 
-        if not last_file_key:
-            self.error_logger.warning("Config key 'logging.last_incremental_run_file' is missing.")
-            return datetime.min  # Return min datetime if config key is missing
+        def blocking_read_timestamp():
+            # Ensure the logging config section and key exist before accessing
+            logging_config = self.config.get("logging", {})
+            last_file_key = logging_config.get("last_incremental_run_file")
 
-        # Use get_full_log_path to get the file path
-        last_file = get_full_log_path(self.config, "last_incremental_run_file", "last_incremental_run.log", self.error_logger)
+            if not last_file_key:
+                # Use print as loggers might not be fully available in this thread context
+                print("WARNING: Config key 'logging.last_incremental_run_file' is missing.", file=sys.stderr)
+                return datetime.min  # Return min datetime if config key is missing
 
-        if not os.path.exists(last_file):
-            return datetime.min
+            # Use get_full_log_path to get the file path (it ensures directory exists)
+            # Pass error_logger, but it might not work reliably in executor thread
+            last_file = get_full_log_path(self.config, "last_incremental_run_file", "last_incremental_run.log", self.error_logger)
 
+            if not os.path.exists(last_file):
+                return datetime.min  # Return min datetime if file does not exist
+
+            try:
+                with open(last_file, "r", encoding="utf-8") as f:
+                    last_run_str = f.read().strip()
+                return datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+            except (ValueError, IOError, OSError) as e:
+                # Use print as loggers might not be fully available in this thread context
+                print(f"ERROR during blocking read of last run timestamp from {last_file}: {e}", file=sys.stderr)
+                return datetime.min
+
+        # Run the blocking read operation in the default executor
         try:
-            with open(last_file, "r", encoding="utf-8") as f:
-                last_run_str = f.read().strip()
-            return datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
-        except (ValueError, IOError, OSError) as e:
-            self.error_logger.error(f"Error reading last run timestamp from {last_file}: {e}")
-            return datetime.min
+            timestamp = await loop.run_in_executor(None, blocking_read_timestamp)
+            # Log success at console/error logger level after getting result
+            if timestamp != datetime.min:
+                self.console_logger.debug(f"Successfully read last run timestamp: {timestamp}")
+            # else: # Logged in blocking_read_timestamp if config key missing or file not found initially
+            return timestamp
+        except Exception as e:
+            # Catch exceptions from the executor
+            self.error_logger.error(f"Error getting last run timestamp from executor: {e}")
+            return datetime.min  # Return min datetime on error
 
     async def get_album_year_from_cache(self, artist: str, album: str) -> Optional[str]:
         """
         Get album year from the in-memory cache for a given artist and album.
         Uses the hash key for lookup. Returns the year if found, None otherwise.
+        Automatically syncs cache if needed before lookup.
 
         :param artist: The artist name.
         :param album: The album name.
@@ -338,8 +427,9 @@ class CacheService:
         # Generate the hash key for the album
         key_hash = self._generate_album_key(artist, album)
 
-        # Sync cache if needed (this will load from disk if not already loaded)
-        await self._sync_cache_if_needed()  # Note: _sync_cache_if_needed saves, doesn't load. Loading is in __init__
+        # Sync cache if needed (this will save to disk if dirty/interval met)
+        # Note: Initial loading is done in async initialize, not here.
+        await self._sync_cache_if_needed()
 
         # Check if the hash key exists in the in-memory cache
         if key_hash in self.album_years_cache:
@@ -376,6 +466,8 @@ class CacheService:
         """
         Invalidate the album-year cache for a given artist and album.
         Removes the entry from the in-memory cache using the hash key.
+        Marks the cache as dirty for eventual disk sync.
+        This is a synchronous operation on the in-memory cache.
 
         :param artist: The artist name.
         :param album: The album name.
@@ -389,18 +481,19 @@ class CacheService:
             del self.album_years_cache[key_hash]
             self.cache_dirty = True
             self.console_logger.info(f"Invalidated album-year cache for: {artist} - {album}")
-            # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
+        # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
 
     def invalidate_all_albums(self) -> None:
         """
         Invalidate the entire album-year cache.
         Clears the in-memory cache and marks it for synchronization.
+        This is a synchronous operation on the in-memory cache.
         """
         if self.album_years_cache:
             self.album_years_cache.clear()
             self.cache_dirty = True
             self.console_logger.info("Entire album-year cache cleared.")
-            # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
+        # No need to save immediately here, _sync_cache_if_needed will handle it based on interval/force
 
     async def sync_cache(self) -> None:
         """

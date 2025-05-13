@@ -7,25 +7,29 @@ When an album's year cannot be definitely determined from external sources,
 it is added to this list with a timestamp. On future runs, albums whose
 verification period has elapsed will be checked again.
 
-File operations (_load_pending_albums, _save_pending_albums) are now asynchronous
+File operations (_load_pending_albums, _save_pending_albums) are asynchronous
 using asyncio's run_in_executor to avoid blocking the event loop.
+
+Refactored: Initial asynchronous loading handled in a separate async initialize method,
+called by DependencyContainer after service instantiation.
 
 Usage:
     service = PendingVerificationService(config, console_logger, error_logger)
+    await service.initialize() # IMPORTANT: Call this after creating the instance
 
     # Mark album for future verification (now an async method)
     await service.mark_for_verification("Pink Floyd", "The Dark Side of the Moon")
 
-    # Check if album needs verification now (remains sync)
-    if service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
+    # Check if album needs verification now (now an async method)
+    if await service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
         # Perform verification
         pass
 
     # Get all pending albums (now an async method)
     pending_list = await service.get_all_pending_albums()
 
-    # Get verified album keys (remains sync, but internal check might implicitly use async load)
-    verified_keys = service.get_verified_album_keys()
+    # Get verified album keys (now an async method)
+    verified_keys = await service.get_verified_album_keys()
 
 """
 
@@ -38,34 +42,34 @@ import sys
 from datetime import datetime, timedelta
 from typing import Dict, List, Set, Tuple
 
+from utils.logger import get_full_log_path  # Assuming this is a utility function to get the full path for logging
+
 
 class PendingVerificationService:
     """
     Service to track albums needing future verification of their release year.
     Uses hash-based keys for album data. File operations are asynchronous.
+    Initializes asynchronously.
 
     Attributes:
         pending_file_path (str): Path to the CSV file storing pending verifications
         console_logger: Logger for console output
         error_logger: Logger for error output
         verification_interval_days (int): Days to wait before re-checking an album
-        # pending_albums: Cache of pending albums using hash keys.
-        # Value is a tuple: (timestamp, artist, album)
-        pending_albums: Dict[str, Tuple[datetime, str, str]]
+        pending_albums: Cache of pending albums using hash keys.
+                        Value is a tuple: (timestamp, artist, album)
         _lock: asyncio.Lock for synchronizing access to pending_albums cache
     """
 
     def __init__(self, config: Dict, console_logger, error_logger):
         """
         Initialize the PendingVerificationService.
+        Does NOT perform file loading here. Use the async initialize method.
 
         Args:
             config: Application configuration dictionary
             console_logger: Logger for console output
-            error_logger: Logger for error output
-
-        Example:
-            >>> service = PendingVerificationService(config, console_logger, error_logger)
+            error_logger: Logger for error logging.
         """
         self.config = config
         self.console_logger = console_logger
@@ -74,49 +78,30 @@ class PendingVerificationService:
         # Get verification interval from config or use default (30 days)
         # Ensure the config path exists before accessing
         year_retrieval_config = config.get("year_retrieval", {})
-        self.verification_interval_days = year_retrieval_config.get("pending_verification_interval_days", 30)
+        processing_config = year_retrieval_config.get("processing", {})  # Get processing subsection
+        self.verification_interval_days = processing_config.get("pending_verification_interval_days", 30)  # Get from processing
 
-        # Set up the pending file path
-        logs_base_dir = config.get("logs_base_dir", ".")
-        self.pending_file_path = os.path.join(logs_base_dir, "csv", "pending_year_verification.csv")
+        # Set up the pending file path using the utility function
+        self.pending_file_path = get_full_log_path(config, "pending_verification_file", "csv/pending_year_verification.csv", error_logger)
 
-        # Initialize in-memory cache of pending albums
+        # Initialize in-memory cache of pending albums - it will be populated in async initialize
         # key: hash of "artist|album", value: (timestamp, artist, album)
         self.pending_albums = {}
-
-        # Create directory if it doesn't exist (this is a quick sync operation, can remain sync)
-        os.makedirs(os.path.dirname(self.pending_file_path), exist_ok=True)
 
         # Initialize an asyncio Lock for thread-safe access to the in-memory cache
         self._lock = asyncio.Lock()
 
-        # Load existing pending albums asynchronously during initialization
-        # Note: Calling async methods in __init__ is not standard.
-        # A common pattern is to have an async `initialize` method for the service.
-        # For now, we'll call it directly, but be aware this might need adjustment
-        # in the DependencyContainer if it expects init to be fully synchronous.
-        # Let's add a flag and call it from an async context later if needed.
-        # For simplicity in this step, we'll assume it's called from an async context
-        # or handle the initial load outside __init__.
-        # Given DependencyContainer is sync, the initial load should probably remain sync
-        # or the service needs an async init method called after creation.
-        # Let's keep the initial load sync in __init__ for now, but make save/subsequent load async.
-        # A better approach would be to make the service have an async init method.
+        # Initial asynchronous load is now done in the async initialize method
+        # Removed the asyncio.run(...) block from here
 
-        # Let's make _load_pending_albums async, but call it from a sync wrapper in __init__
-        # This is a common pattern to bridge sync __init__ with async setup.
-        async def _async_init_load():
-            await self._load_pending_albums()
-
-        # Run the async load using a new loop or the current one if available
-        try:
-            loop = asyncio.get_event_loop()
-            loop.run_until_complete(_async_init_load())
-        except RuntimeError:
-            # If no loop is running (e.g., script run directly), run it in a new loop
-            asyncio.run(_async_init_load())
-        except Exception as e:
-            self.error_logger.error(f"Error during initial async load of pending albums: {e}", exc_info=True)
+    async def initialize(self) -> None:
+        """
+        Asynchronously initializes the PendingVerificationService by loading data from disk.
+        This method must be called after instantiation.
+        """
+        self.console_logger.info("Initializing PendingVerificationService asynchronously...")
+        await self._load_pending_albums()
+        self.console_logger.info("PendingVerificationService asynchronous initialization complete.")
 
     def _generate_album_key(self, artist: str, album: str) -> str:
         """
@@ -144,13 +129,30 @@ class PendingVerificationService:
         # Define the blocking file reading operation
         def blocking_load():
             pending_data = {}
-            if not os.path.exists(self.pending_file_path):
-                self.console_logger.info(f"Pending verification file not found, will create at: {self.pending_file_path}")
-                return pending_data  # Return empty if file doesn't exist
-
             try:
+                # Ensure directory exists before trying to open the file
+                os.makedirs(os.path.dirname(self.pending_file_path), exist_ok=True)
+
+                if not os.path.exists(self.pending_file_path):
+                    self.console_logger.info(f"Pending verification file not found, will create at: {self.pending_file_path}")
+                    return pending_data  # Return empty if file doesn't exist
+
+                # Use print/basic logging in executor thread as main logger might not be safe
+                print(f"DEBUG: Reading pending verification file: {self.pending_file_path}", file=sys.stderr)
+
                 with open(self.pending_file_path, "r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
+                    # Ensure expected headers are present, fallback if not
+                    fieldnames = reader.fieldnames if reader.fieldnames else []
+                    if 'artist' not in fieldnames or 'album' not in fieldnames or 'timestamp' not in fieldnames:
+                        # Use print as error_logger might not be safe in this context
+                        print(
+                            f"WARNING: Pending verification CSV header missing expected fields in "
+                            f"{self.pending_file_path}. Found: {fieldnames}. Skipping load.",
+                            file=sys.stderr,
+                        )
+                        return pending_data  # Return empty on missing headers
+
                     albums_data = list(reader)  # Read all lines at once
 
                 # Process data after closing the file
@@ -161,29 +163,49 @@ class PendingVerificationService:
 
                     if artist and album and timestamp_str:
                         try:
-                            timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                            # Use a more flexible date parsing to handle potential inconsistencies
+                            # Try primary format, then fallback if needed
+                            try:
+                                timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
+                            except ValueError:
+                                # Fallback to date only if necessary
+                                timestamp = datetime.strptime(timestamp_str, "%Y-%m-%d")
+                                self.error_logger.warning(
+                                    f"Pending file timestamp had date-only format for '{artist} - {album}': {timestamp_str}. Parsed as date only."
+                                )
+
                             key_hash = self._generate_album_key(artist, album)
                             pending_data[key_hash] = (timestamp, artist, album)
                         except ValueError:
-                            self.error_logger.warning(f"Invalid timestamp format in pending file for '{artist} - {album}': {timestamp_str}")
+                            # Use print as error_logger might not be safe in this context
+                            print(f"WARNING: Invalid timestamp format in pending file for '{artist} - {album}': {timestamp_str}", file=sys.stderr)
+                        except Exception as row_e:
+                            # Use print for other potential errors during row processing
+                            print(f"WARNING: Error processing row in pending file for '{artist} - {album}': {row_e}", file=sys.stderr)
                     else:
-                        self.error_logger.warning(f"Skipping malformed row in pending file: {row}")
+                        # Use print for malformed row warnings
+                        print(f"WARNING: Skipping malformed row in pending file: {row}", file=sys.stderr)
 
                 return pending_data
 
             except (FileNotFoundError, IOError, OSError) as e:
-                self.error_logger.error(f"Error reading pending file: {e}")
+                # Use print for errors during file reading
+                print(f"ERROR reading pending verification file {self.pending_file_path}: {e}", file=sys.stderr)
                 return {}  # Return empty data on error
-            except Exception as e:  # Catch other potential errors during processing rows
-                self.error_logger.error(f"Unexpected error processing pending file data: {e}", exc_info=True)
+            except Exception as e:  # Catch other potential errors during blocking operation
+                print(f"UNEXPECTED ERROR during blocking load of pending albums from {self.pending_file_path}: {e}", file=sys.stderr)
                 return {}  # Return empty data on unexpected error
 
         # Run the blocking load operation in the default executor
-        # Acquire lock before updating the in-memory cache
+        # Acquire lock before updating the in-memory cache AFTER the blocking read is done
         async with self._lock:
             self.pending_albums = await loop.run_in_executor(None, blocking_load)
 
-        self.console_logger.info(f"Loaded {len(self.pending_albums)} pending albums for verification")
+        # Log success/failure at console logger level after the executor task is complete
+        if self.pending_albums:
+            self.console_logger.info(f"Loaded {len(self.pending_albums)} pending albums for verification from {self.pending_file_path}")
+        else:
+            self.console_logger.info(f"No pending albums loaded from {self.pending_file_path} (file not found or empty/corrupt).")
 
     async def _save_pending_albums(self) -> None:
         """
@@ -200,66 +222,51 @@ class PendingVerificationService:
             temp_file = f"{self.pending_file_path}.tmp"
 
             try:
-                # Create directories if they do not exist (can remain sync as it's quick)
+                # Create directories if they do not exist
                 os.makedirs(os.path.dirname(self.pending_file_path), exist_ok=True)
 
-                # Write to a temporary file
                 with open(temp_file, "w", newline="", encoding="utf-8") as f:
                     # Define fieldnames for the CSV file
-                    writer = csv.DictWriter(f, fieldnames=["artist", "album", "timestamp"])
+                    fieldnames = ["artist", "album", "timestamp"]
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
                     writer.writeheader()
 
-                    # Acquire lock to safely read from the in-memory cache
-                    # Note: The lock is acquired *inside* the blocking function,
-                    # which is okay because the entire function runs in a single thread
-                    # from the executor, preventing race conditions with other async methods
-                    # trying to access the cache.
-                    # However, it's generally better to acquire the lock *before*
-                    # calling run_in_executor if the blocking operation itself doesn't need the lock.
-                    # Let's acquire the lock outside the blocking function.
+                    # Acquire lock is done outside the blocking function now
+                    # Iterate through values in the in-memory cache (which are (timestamp, artist, album) tuples)
+                    # Create a list copy to iterate safely in a separate thread
+                    pending_items_to_save = list(self.pending_albums.values())
 
-                    # Re-defining blocking_save to acquire lock outside
-                    pass  # This inner function will be replaced
-
-                # Redefine blocking_save to capture current state and acquire lock outside
-                pending_items_to_save = list(self.pending_albums.values())  # Get a copy of items to save
-
-                with open(temp_file, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=["artist", "album", "timestamp"])
-                    writer.writeheader()
                     for timestamp, artist, album in pending_items_to_save:
+                        # Write artist, album, and timestamp
                         writer.writerow({"artist": artist, "album": album, "timestamp": timestamp.strftime("%Y-%m-%d %H:%M:%S")})
 
                 # Rename the temporary file (atomic operation)
-                if os.path.exists(self.pending_file_path):
-                    if sys.platform == 'win32':
-                        os.replace(temp_file, self.pending_file_path)  # Windows: atomic rename with replacement
-                    else:
-                        os.rename(temp_file, self.pending_file_path)  # POSIX: atomic rename
-                else:
-                    os.rename(temp_file, self.pending_file_path)
+                os.replace(temp_file, self.pending_file_path)
 
-                self.console_logger.info(f"Saved {len(pending_items_to_save)} pending albums for verification")
+                # self.console_logger.info(f"Saved {len(pending_items_to_save)} pending albums for verification") # Log inside blocking is not ideal
 
-            except (IOError, OSError) as e:
-                self.error_logger.error(f"Error saving pending verification file: {e}")
-                if os.path.exists(temp_file):
-                    try:
-                        os.remove(temp_file)  # Remove temporary file in case of error
-                    except OSError:
-                        pass  # Silently ignore error removing temp file
-            except Exception as e:  # Catch other potential errors during saving
-                self.error_logger.error(f"Unexpected error saving pending verification file: {e}", exc_info=True)
+            except Exception as e:
+                # Log error and clean up temp file
+                print(f"ERROR during blocking save of pending verification file to {self.pending_file_path}: {e}", file=sys.stderr)
                 if os.path.exists(temp_file):
                     try:
                         os.remove(temp_file)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_e:
+                        print(f"WARNING: Could not remove temporary pending file {temp_file}: {cleanup_e}", file=sys.stderr)
+                # Re-raise the exception so run_in_executor propagates it
+                raise
 
         # Acquire lock before accessing the in-memory cache for saving
         async with self._lock:
             # Run the blocking save operation in the default executor
-            await loop.run_in_executor(None, blocking_save)
+            try:
+                await loop.run_in_executor(None, blocking_save)
+                self.console_logger.info(
+                    f"Saved {len(self.pending_albums)} pending albums for verification to {self.pending_file_path}"
+                )  # Log after successful save
+            except Exception as e:
+                # The exception from blocking_save is caught here
+                self.error_logger.error(f"Error saving pending verification file: {e}")
 
     # Mark album for future verification (now an async method because it calls async _save_pending_albums)
     async def mark_for_verification(self, artist: str, album: str) -> None:
@@ -279,17 +286,18 @@ class PendingVerificationService:
             # Generate the hash key for the album
             key_hash = self._generate_album_key(artist, album)
             # Store the current timestamp, original artist, and original album in the value
+            # Use datetime.now() directly, no need for strftime yet
             self.pending_albums[key_hash] = (datetime.now(), artist.strip(), album.strip())
 
         self.console_logger.info(f"Marked '{artist} - {album}' for verification in {self.verification_interval_days} days")
         # Save asynchronously after modifying the cache
         await self._save_pending_albums()
 
-    # is_verification_needed remains sync as it only reads from in-memory cache
-    def is_verification_needed(self, artist: str, album: str) -> bool:
+    # is_verification_needed is now an async method because it acquires the lock
+    async def is_verification_needed(self, artist: str, album: str) -> bool:
         """
         Check if an album needs verification now.
-        Uses the hash key for lookup. Reads from in-memory cache (sync).
+        Uses the hash key for lookup. Reads from in-memory cache (async with lock).
 
         Args:
             artist: Artist name
@@ -299,46 +307,37 @@ class PendingVerificationService:
             True if verification period has elapsed, False otherwise
 
         Example:
-            >>> if service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
+            >>> if await service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
             >>>     # Perform verification
         """
         # Acquire lock before reading from the in-memory cache
-        # Note: In sync methods, you cannot use 'async with self._lock:'.
-        # To safely read from the cache in a sync method when the cache is
-        # modified by async methods, you would typically use loop.call_soon_threadsafe
-        # to schedule the read in the event loop thread, or ensure the sync method
-        # is only called from within the event loop thread (e.g., via run_until_complete
-        # or ensuring the caller is already in an async context).
-        # For simplicity here, we'll assume sync methods are called in a way that
-        # doesn't cause race conditions with async modifications, OR that the lock
-        # is acquired by the caller if needed.
-        # A more robust solution for sync access to async-modified data is complex.
-        # Let's assume sync reads are safe enough for this context or will be called appropriately.
-        # If strict thread safety is needed for sync reads, the method would need to become async.
+        async with self._lock:
+            # Generate the hash key for the album
+            key_hash = self._generate_album_key(artist, album)
 
-        # Let's add a note about potential thread safety if called from multiple threads
-        # outside the event loop.
-        # For now, proceed with direct access assuming it's called from the event loop thread.
+            # Check if the hash key exists in the in-memory cache
+            if key_hash not in self.pending_albums:
+                return False
 
-        # Generate the hash key for the album
-        key_hash = self._generate_album_key(artist, album)
+            # The value is a tuple (timestamp, artist, album)
+            timestamp, stored_artist, stored_album = self.pending_albums[key_hash]
+            verification_time = timestamp + timedelta(days=self.verification_interval_days)
 
-        # Check if the hash key exists in the in-memory cache
-        if key_hash not in self.pending_albums:
+            if datetime.now() >= verification_time:
+                # Verification period has elapsed
+                # Retrieve original artist/album from the stored tuple for logging
+                self.console_logger.info(f"Verification period elapsed for '{stored_artist} - {stored_album}'")
+                return True
+
+            # Log when verification is NOT needed, for debugging
+            # diff = verification_time - datetime.now()
+            # days_remaining = diff.total_seconds() / 86400
+            # self.console_logger.debug(
+            #     f"Verification not needed yet for '{stored_artist} - {stored_album}'. "
+            #     f"Next check in {days_remaining:.1f} days."
+            # )
+
             return False
-
-        # The value is a tuple (timestamp, artist, album)
-        timestamp, _, _ = self.pending_albums[key_hash]
-        verification_time = timestamp + timedelta(days=self.verification_interval_days)
-
-        if datetime.now() >= verification_time:
-            # Verification period has elapsed
-            # Retrieve original artist/album from the stored tuple for logging
-            _, stored_artist, stored_album = self.pending_albums[key_hash]
-            self.console_logger.info(f"Verification period elapsed for '{stored_artist} - {stored_album}'")
-            return True
-
-        return False
 
     # remove_from_pending is now an async method because it calls async _save_pending_albums
     async def remove_from_pending(self, artist: str, album: str) -> None:
@@ -364,24 +363,28 @@ class PendingVerificationService:
                 _, stored_artist, stored_album = self.pending_albums[key_hash]
                 del self.pending_albums[key_hash]
                 self.console_logger.info(f"Removed '{stored_artist} - {stored_album}' from pending verification")
+            # No need to save if the item wasn't found
+            else:
+                self.console_logger.debug(f"Attempted to remove '{artist} - {album}' from pending verification, but it was not found.")
+                return  # Exit without saving if no removal occurred
 
         # Save asynchronously after modifying the cache
         await self._save_pending_albums()
 
     # get_all_pending_albums is now an async method because it needs to acquire the lock
     # to safely access the in-memory cache.
-    async def get_all_pending_albums(self) -> List[Tuple[str, str, datetime]]:
+    async def get_all_pending_albums(self) -> List[Tuple[datetime, str, str]]:  # Correct return type includes timestamp first
         """
         Get a list of all pending albums with their verification timestamps.
-        Retrieves artist, album, and timestamp from the stored tuples.
+        Retrieves timestamp, artist, and album from the stored tuples.
         Accesses the in-memory cache asynchronously with a lock.
 
         Returns:
-            List of tuples containing (artist, album, timestamp)
+            List of tuples containing (timestamp, artist, album)
 
         Example:
             >>> pending_list = await service.get_all_pending_albums()
-            >>> for artist, album, timestamp in pending_list:
+            >>> for timestamp, artist, album in pending_list: # Correct order
             >>>     print(f"{artist} - {album}: {timestamp}")
         """
         result = []
@@ -389,7 +392,8 @@ class PendingVerificationService:
         async with self._lock:
             # Iterate through values in the in-memory cache (which are (timestamp, artist, album) tuples)
             for timestamp, artist, album in self.pending_albums.values():
-                result.append((artist, album, timestamp))
+                # Return in the order (timestamp, artist, album) as stored
+                result.append((timestamp, artist, album))
         return result
 
     # get_verified_album_keys is now an async method because it needs to acquire the lock
@@ -415,6 +419,8 @@ class PendingVerificationService:
         # Acquire lock before accessing the in-memory cache
         async with self._lock:
             # Iterate through items (key_hash, value_tuple) in the in-memory cache
+            # Iterate over a list copy to allow potential future modifications during iteration if needed,
+            # though in this specific method it's just reading.
             for key_hash, value_tuple in list(self.pending_albums.items()):
                 # The value is a tuple (timestamp, artist, album)
                 timestamp, stored_artist, stored_album = value_tuple
@@ -422,5 +428,12 @@ class PendingVerificationService:
                 if now >= verification_time:
                     self.console_logger.info(f"Album '{stored_artist} - {stored_album}' needs verification")
                     verified_keys.add(key_hash)
+                # else: # Log when not needed, for debugging
+                # diff = verification_time - now
+                # days_remaining = diff.total_seconds() / 86400
+                # self.console_logger.debug(
+                #     f"Album '{stored_artist} - {stored_album}' does not need verification yet. "
+                #     f"Next check in {days_remaining:.1f} days."
+                # )
 
         return verified_keys

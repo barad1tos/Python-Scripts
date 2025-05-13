@@ -421,7 +421,7 @@ class ExternalApiService:
                         self.error_logger.warning(f"[{api_name}] Failed to read response body: {read_err}")
 
                     # Log basic request outcome
-                    self.console_logger.debug(f"[{api_name}] Request (Attempt {attempt+1}): {log_url} - Status: {response_status} ({elapsed:.3f}s)")
+                    self.console_logger.debug(f"[{api_name}] Request (Attempt {attempt + 1}): {log_url} - Status: {response_status} ({elapsed:.3f}s)")
 
                     # --- Handle Response Status ---
                     # Retry on 429 or 5xx
@@ -440,7 +440,7 @@ class ExternalApiService:
                                 except ValueError:
                                     pass
                             self.console_logger.warning(
-                                f"[{api_name}] Status {response_status}, retrying {attempt+1}/{max_retries} "
+                                f"[{api_name}] Status {response_status}, retrying {attempt + 1}/{max_retries} "
                                 f"in {delay:.2f}s. URL: {url}. Snippet: {response_text_snippet}"
                             )
                             await asyncio.sleep(delay)
@@ -486,7 +486,7 @@ class ExternalApiService:
                 if attempt < max_retries:
                     delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
                     self.console_logger.warning(
-                        f"[{api_name}] Request timed out after {elapsed:.2f}s (Attempt {attempt+1}), retrying in {delay:.2f}s: {url}"
+                        f"[{api_name}] Request timed out after {elapsed:.2f}s (Attempt {attempt + 1}), retrying in {delay:.2f}s: {url}"
                     )
                     await asyncio.sleep(delay)
                     continue
@@ -496,7 +496,7 @@ class ExternalApiService:
             except aiohttp.ClientError as client_error:
                 elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
                 self.api_call_durations[api_name].append(elapsed)
-                self.error_logger.error(f"[{api_name}] Client error during request to {url} (Attempt {attempt+1}): {client_error}")
+                self.error_logger.error(f"[{api_name}] Client error during request to {url} (Attempt {attempt + 1}): {client_error}")
                 last_exception = client_error
                 if attempt < max_retries and isinstance(client_error, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
                     delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
@@ -507,7 +507,7 @@ class ExternalApiService:
             except Exception as e:
                 elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
                 self.api_call_durations[api_name].append(elapsed)
-                self.error_logger.exception(f"[{api_name}] Unexpected error making request to {url} (Attempt {attempt+1}): {e}")
+                self.error_logger.exception(f"[{api_name}] Unexpected error making request to {url} (Attempt {attempt + 1}): {e}")
                 last_exception = e
                 return None
             finally:
@@ -1109,6 +1109,7 @@ class ExternalApiService:
         """
         Retrieve and score releases from MusicBrainz, prioritizing Release Group search.
         Includes fallback search strategies if the initial precise query fails.
+        Includes improved artist matching after fallback searches.
         """
         scored_releases: List[Dict[str, Any]] = []
         release_groups = []  # Initialize list to store found release groups
@@ -1179,17 +1180,25 @@ class ExternalApiService:
                 self.console_logger.debug(f"Filtering {len(release_groups)} fallback results for artist '{artist_norm}'...")
                 for rg in release_groups:
                     artist_credit = rg.get("artist-credit", [])
+                    # Check if *any* artist in the artist-credit list matches the search artist (normalized)
+                    artist_match_found = False
                     if artist_credit and isinstance(artist_credit, list):
-                        # Check if the first artist name in the credit matches closely
-                        # Using a simple lowercase comparison for now. This could be improved.
-                        first_artist = artist_credit[0]
-                        if isinstance(first_artist, dict) and first_artist.get("name", "").lower() == artist_norm.lower():
-                            filtered_release_groups.append(rg)
-                        else:
-                            skipped_artist = first_artist.get("name", "Unknown") if isinstance(first_artist, dict) else "Unknown"
-                            self.console_logger.debug(
-                                f"Skipping RG '{rg.get('title')}' due to artist mismatch ('{skipped_artist}' != '{artist_norm}')"
-                            )
+                        for credit in artist_credit:
+                            if isinstance(credit, dict) and credit.get("name"):
+                                # Use _normalize_name for comparison
+                                if self._normalize_name(credit["name"]) == artist_norm:
+                                    artist_match_found = True
+                                    break  # Found a match, no need to check further credits
+
+                    if artist_match_found:
+                        filtered_release_groups.append(rg)
+                    else:
+                        # Log skipped results with artist credit for debugging
+                        ac_names = ", ".join([c.get("name", "Unknown") for c in artist_credit if isinstance(c, dict)])
+                        self.console_logger.debug(
+                            f"[musicbrainz] Skipping RG '{rg.get('title')}' due to artist mismatch " f"('{ac_names}' vs search '{artist_norm}')"
+                        )
+
                 self.console_logger.info(f"Found {len(filtered_release_groups)} release groups matching artist after filtering fallback results.")
                 if not filtered_release_groups:
                     return []  # No relevant groups found after filtering
@@ -1231,9 +1240,14 @@ class ExternalApiService:
                 rg_artist_credit = rg_info_full.get("artist-credit", [])
                 rg_artist_name = ""
                 if rg_artist_credit and isinstance(rg_artist_credit, list):
-                    first_artist = rg_artist_credit[0]
-                    if isinstance(first_artist, dict):
-                        rg_artist_name = first_artist.get("name", "")
+                    # Use _normalize_name when extracting RG artist name for consistency
+                    rg_artist_name_parts = []
+                    for credit in rg_artist_credit:
+                        if isinstance(credit, dict) and credit.get("name"):
+                            rg_artist_name_parts.append(self._normalize_name(credit["name"]))
+                            if credit.get("joinphrase"):
+                                rg_artist_name_parts.append(credit["joinphrase"])
+                    rg_artist_name = "".join(rg_artist_name_parts).strip()  # Build normalized name
 
                 if isinstance(result, Exception):
                     self.error_logger.warning(f"Failed to fetch releases for MB RG ID {rg_id}: {result}")
@@ -1268,8 +1282,17 @@ class ExternalApiService:
                     format_details = media[0].get("format", "") if media and isinstance(media, list) else ""
 
                     # Use reissue keywords from scoring config
-                    reissue_keywords = self.scoring_config.get('reissue_keywords', []) if isinstance(self.scoring_config, dict) else []
-                    is_reissue = any(kw.lower() in release_title.lower() for kw in reissue_keywords)
+                    scoring_cfg = self.scoring_config if isinstance(self.scoring_config, dict) else {}  # Ensure scoring_cfg is a dict
+                    reissue_keywords = (
+                        scoring_cfg.get('reissue_keywords', []) if isinstance(scoring_cfg.get('reissue_detection'), dict) else []
+                    )  # Get from reissue_detection subsection if it exists
+                    reissue_keywords.extend(self.config.get("cleaning", {}).get("remaster_keywords", []))  # Include cleaning remaster keywords
+
+                    is_reissue = False
+                    title_lower = release_title.lower()
+                    if any(kw.lower() in title_lower for kw in reissue_keywords):
+                        is_reissue = True
+
                     # Also check format descriptions for reissue keywords
                     format_desc_lower = " ".join(
                         [
@@ -1278,7 +1301,8 @@ class ExternalApiService:
                             if isinstance(fmt, dict) and isinstance(fmt.get('descriptions'), list)
                             for d in fmt['descriptions']
                         ]
-                    )
+                    ).lower()  # Convert descriptions to lower case and join
+
                     if not is_reissue and any(kw.lower() in format_desc_lower for kw in reissue_keywords):
                         is_reissue = True
 
@@ -1286,9 +1310,12 @@ class ExternalApiService:
                         'source': 'musicbrainz',
                         'id': release_id,
                         'title': release_title,
-                        'artist': rg_artist_name or artist_norm,  # Use artist from RG credit
+                        'artist': rg_artist_name or artist_norm,  # Use normalized RG artist name or search artist
                         'year': year,
-                        'type': rg_primary_type or release.get("release-group", {}).get("primary-type"),  # Use RG type
+                        'type': rg_primary_type
+                        or (
+                            release.get("release-group", {}).get("primary-type") if isinstance(release.get("release-group"), dict) else None
+                        ),  # Use RG type
                         'status': status,
                         'country': country,
                         'format_details': format_details,
@@ -1298,18 +1325,28 @@ class ExternalApiService:
                         'score': 0,
                     }
 
-                    if self._is_valid_year(release_info['year']):
+                    # Only score if year is potentially valid
+                    if year is not None and self._is_valid_year(year):
                         release_info['score'] = self._score_original_release(release_info, artist_norm, album_norm, artist_region)
                         scored_releases.append(release_info)
+                    else:
+                        self.console_logger.debug(
+                            f"Skipping scoring for MB release '{release_info.get('title')}' "
+                            f"due to invalid or missing year: {release_info.get('year')}"
+                        )
 
             # --- Final Sorting and Logging ---
-            scored_releases.sort(key=lambda x: x['score'], reverse=True)
+            # Sort by score descending, then year ascending for ties
+            scored_releases.sort(key=lambda x: (-x['score'], int(x.get('year') or 0)))  # Ensure year is int for sorting
 
             self.console_logger.info(f"Found {len(scored_releases)} scored releases from MusicBrainz for '{artist_norm} - {album_norm}'")
             for i, r in enumerate(scored_releases[:3]):
+                # Break long log line
                 self.console_logger.info(
-                    f"  MB #{i+1}: {r['title']} ({r['year']}) - Type: {r['type']}, Status: {r['status']}, "
-                    f"Score: {r['score']} (RG First Date: {r.get('releasegroup_first_date')})"
+                    f"  MB #{i + 1}: {r.get('title', '')} ({r.get('year', '')}) - "
+                    f"Type: {r.get('type', '')}, Status: {r.get('status', '')}, "
+                    f"Country: {r.get('country', '').upper()}, "
+                    f"Score: {r.get('score')} (RG First Date: {r.get('releasegroup_first_date')})"
                 )
 
             return scored_releases
@@ -1321,7 +1358,7 @@ class ExternalApiService:
     async def _get_scored_releases_from_discogs(self, artist_norm: str, album_norm: str, artist_region: Optional[str]) -> List[Dict[str, Any]]:
         """
         Retrieve and score releases from Discogs.
-        Uses a combined query parameter 'q' and includes basic result validation.
+        Uses a combined query parameter 'q' and includes basic result validation with improved artist matching.
         """
         scored_releases: List[Dict[str, Any]] = []
         try:
@@ -1335,10 +1372,9 @@ class ExternalApiService:
 
             data = await self._make_api_request('discogs', search_url, params=params)
 
-            # --- ADDED DEBUG LOGGING ---
+            # --- DEBUG LOGGING ---
             self.console_logger.debug(f"[discogs] Data received from _make_api_request: Type={type(data)}")
             if isinstance(data, dict):
-                # Log keys and maybe first part of results if present
                 self.console_logger.debug(f"[discogs] Received data keys: {list(data.keys())}")
                 results_preview = data.get('results', 'N/A')
                 if isinstance(results_preview, list):
@@ -1349,10 +1385,8 @@ class ExternalApiService:
                     self.console_logger.debug("[discogs] 'results' key not found or not a list.")
             elif data is None:
                 self.console_logger.debug("[discogs] _make_api_request returned None.")
-            # ---------------------------
 
             # --- Process Discogs Results ---
-            # Removed duplicate check
             if not data or "results" not in data:
                 self.console_logger.warning(f"[discogs] Search failed or no results key in data for query: '{search_query}'")
                 return []
@@ -1365,39 +1399,51 @@ class ExternalApiService:
             self.console_logger.debug(f"Found {len(results)} potential Discogs matches for query: '{search_query}'")
 
             scoring_cfg = self.scoring_config if isinstance(self.scoring_config, dict) else {}
-            reissue_keywords = scoring_cfg.get('reissue_keywords', [])
+            # Get reissue keywords from both reissue_detection and cleaning sections
+            reissue_keywords = scoring_cfg.get('reissue_detection', {}).get('reissue_keywords', [])
+            reissue_keywords.extend(self.config.get("cleaning", {}).get("remaster_keywords", []))  # Include cleaning remaster keywords
 
             for item in results:
                 year_str = str(item.get('year', ''))
                 release_title_full = item.get('title', '')
+                # Discogs title is often "Artist - Album", need to parse correctly
                 title_parts = release_title_full.split(' - ', 1)
-                release_artist = self._normalize_name(title_parts[0].strip()) if len(title_parts) > 1 else artist_norm
-                actual_release_title = (
-                    self._normalize_name(title_parts[1].strip()) if len(title_parts) > 1 else self._normalize_name(release_title_full)
-                )
+                item_artist_raw = title_parts[0].strip() if len(title_parts) > 1 else ""  # Artist part
+                item_album_raw = title_parts[1].strip() if len(title_parts) > 1 else release_title_full.strip()  # Album part or full title
 
-                # --- Stricter validation after broad search ---
-                artist_matches = artist_norm.lower() in release_artist.lower() or release_artist.lower() in artist_norm.lower()
-                # Require high album title similarity or perfect artist match for less strict title check
-                # Using simple containment check for now
-                album_matches = album_norm.lower() in actual_release_title.lower() or actual_release_title.lower() in album_norm.lower()
+                # --- IMPROVED ARTIST MATCHING LOGIC ---
+                # Normalize both the search artist and the artist part from the item title
+                artist_norm_item = self._normalize_name(item_artist_raw)
 
-                # Break long condition into multiple lines for readability
-                artist_mismatch_skip = not artist_matches
-                album_mismatch_skip = not album_matches and (release_artist.lower() != artist_norm.lower())
+                # Check if the normalized artist part from the item title matches the normalized search artist
+                # Use simple equality on normalized names for stricter match after broad search
+                artist_matches = artist_norm_item != "" and artist_norm_item == artist_norm
 
-                if artist_mismatch_skip:
+                # Secondary check: if primary match failed, see if normalized search artist is
+                # a significant part of the normalized item artist (e.g. "The Beatles" vs "Beatles, The")
+                if not artist_matches and artist_norm_item != "" and artist_norm != "":
+                    if artist_norm in artist_norm_item or artist_norm_item in artist_norm:
+                        # This is a weaker match, potentially give a small bonus or just accept as a match
+                        # For now, let's treat as a match but maybe log it for review if needed
+                        artist_matches = True
+                        self.console_logger.debug(
+                            f"[discogs] Found potential artist variation match for '{item_artist_raw}' vs search '{artist_norm}'"
+                        )
+
+                if not artist_matches:
                     self.console_logger.debug(
-                        f"[discogs] Skipping result '{release_title_full}' due to artist mismatch " f"('{release_artist}' vs search '{artist_norm}')"
+                        f"[discogs] Skipping result '{release_title_full}' due to artist mismatch "
+                        f"('{item_artist_raw}' normalized to '{artist_norm_item}' vs search '{artist_norm}')"
                     )
                     continue
-                if album_mismatch_skip:
-                    self.console_logger.debug(
-                        f"[discogs] Skipping result '{release_title_full}' due to album mismatch "
-                        f"('{actual_release_title}' vs search '{album_norm}') and imperfect artist match"
-                    )
-                    continue
-                # ----------------------------------------------------
+
+                # If artist matched well, but album title seems completely unrelated, we might still skip
+                # Add a check to skip if the normalized album title from the item is very short or completely unrelated
+                # (beyond simple substring check). This is harder without fuzzy matching.
+                # For now, rely on the scoring function to penalize unrelated titles.
+                # The scoring function uses simple_norm and checks for exact/substring match.
+                # We rely on the scoring function's album title penalties to handle unrelated titles.
+                # The filter here is primarily to ensure the artist part of the title is correct.
 
                 formats = item.get('formats', [])
                 format_names: List[str] = []
@@ -1415,12 +1461,14 @@ class ExternalApiService:
                 format_details_str = ", ".join(format_names + format_descriptions)
 
                 is_reissue = False
-                title_lower = actual_release_title.lower()
+                # Check reissue keywords in original title and format descriptions
+                title_lower = release_title_full.lower()  # Use full title for reissue check
                 desc_lower = " ".join(format_descriptions).lower()
                 if any(kw.lower() in title_lower for kw in reissue_keywords):
                     is_reissue = True
                 if not is_reissue and any(kw.lower() in desc_lower for kw in reissue_keywords):
                     is_reissue = True
+                # Also check specific common reissue terms in descriptions
                 if not is_reissue and any(d.lower() in ['reissue', 'remastered', 'repress', 'remaster'] for d in format_descriptions):
                     is_reissue = True
 
@@ -1439,31 +1487,44 @@ class ExternalApiService:
                 release_info = {
                     'source': 'discogs',
                     'id': item.get('id'),
-                    'title': actual_release_title,
-                    'artist': release_artist,
+                    'title': item_album_raw,  # Use the extracted album part
+                    'artist': item_artist_raw,  # Use the extracted artist part
                     'year': year_str,
                     'type': release_type,
-                    'status': 'Official',
+                    'status': 'Official',  # Discogs results are typically official releases
                     'country': item.get('country', '').lower(),
                     'format_details': format_details_str,
                     'is_reissue': is_reissue,
                     'score': 0,
                 }
 
+                # Only score if year is potentially valid
                 if self._is_valid_year(release_info['year']):
+                    # Pass the normalized search artist/album to scoring for consistent comparison
                     release_info['score'] = self._score_original_release(release_info, artist_norm, album_norm, artist_region)
-                    min_score = scoring_cfg.get('discogs_min_broad_score', 20)
-                    if release_info['score'] > min_score:
+                    min_score = scoring_cfg.get('discogs_min_broad_score', 20)  # Use configured minimum score for broad matches
+                    if release_info['score'] >= min_score:  # Use >= for inclusivity
                         scored_releases.append(release_info)
+                    else:
+                        self.console_logger.debug(
+                            f"Skipping Discogs release '{release_info.get('title')}' "
+                            f"due to low score: {release_info['score']} (Min required: {min_score})"
+                        )  # Log skipped low scores
+                else:
+                    self.console_logger.debug(
+                        f"Skipping scoring for Discogs release '{release_info.get('title')}' "
+                        f"due to invalid or missing year: {release_info.get('year')}"
+                    )
 
-            scored_releases.sort(key=lambda x: x['score'], reverse=True)
+            # Sort by score descending, then year ascending for ties
+            scored_releases.sort(key=lambda x: (-x['score'], int(x.get('year') or 0)))  # Ensure year is int for sorting
 
             self.console_logger.info(f"Found {len(scored_releases)} scored releases from Discogs for query: '{search_query}'")
             for i, r in enumerate(scored_releases[:3]):
                 # Break long log line
                 self.console_logger.info(
-                    f"  Discogs #{i+1}: {r.get('title', '')} ({r.get('year', '')}) - "
-                    f"Type: {r.get('type', '')}, Reissue: {r.get('is_reissue')}, "
+                    f"  Discogs #{i + 1}: {r.get('artist', '')} - {r.get('title', '')} ({r.get('year', '')}) - "  # Log artist and title clearly
+                    f"Type: {r.get('type', '')}, Country: {r.get('country', '').upper()}, Reissue: {r.get('is_reissue')}, "  # Added Country
                     f"Score: {r.get('score')}"
                 )
 
