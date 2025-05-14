@@ -56,5 +56,8 @@ new_content = header + snippet + existing
 # Trim trailing whitespace per line and ensure single ending newline
 clean_content = "\n".join(line.rstrip() for line in new_content.splitlines()) + "\n"
 
+# Add whitespace to the end of the file
+clean_content += "\n"
+
 MB.parent.mkdir(parents=True, exist_ok=True)
 MB.write_text(clean_content)
