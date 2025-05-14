@@ -1,5 +1,51 @@
 # Active Context
 
+## 2025-05-14T23:19:00
+
+`````diff
+# ⇢ Changed files
+# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+# Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+index 469031b..8aa1946 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+@@ -1,10 +1,61 @@
+ # Active Context
+
++## 2025-05-14T22:28:33
++
++````diff
++# ⇢ Changed files
++# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++# Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
++
++diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++index dbd6aae..469031b 100644
++--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+++++ b/Genres Autoupdater v2.0/.curso
+
+diff --git a/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc b/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+index feb84fa..3e3cced 100644
+--- a/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
++++ b/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+@@ -1,9 +1,9 @@
+ ---
+ description: Memory Bank (always)
+ alwaysApply: true
+ globs:
+-  - /.cursor/memory-bank/*.md
++  - "**/.cursor/memory-bank/*.md"
+ ---
+
+ # READ BEFORE ANSWERING
+-Load every .md in memory-bank/ before replying.
++Load every .md in Genres Autoupdater v2.0/.cursor/memory-bank/ before replying.
+\ No newline at end of file
+
+`````
+
 ## 2025-05-14T22:28:33
 
 ````diff

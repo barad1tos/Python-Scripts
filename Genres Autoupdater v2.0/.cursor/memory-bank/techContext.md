@@ -10,14 +10,14 @@
 
 ## 2. Python dependencies
 
-| Package  | Version | Purpose                        |
-| -------- | ------- | ------------------------------ |
-| PyYAML   | ≥ 6.0   | parsing `.yaml' configurations |
-| tenacity | ≥ 8.0   | retry logic for APIs           |
-| rich     | ≥ 13.7  | colored CLI output             |
-| ...      | ...     | ...                            |
+| Package  | Version | Purpose                             |
+| -------- | ------- | ----------------------------------- |
+| PyYAML   | ≥ 6.0   | parsing `.yaml' configurations      |
+| aiohttp  | ?       | Asynchronous HTTP client (for APIs) |
+| tenacity | ≥ 8.0   | Retry logic for APIs calls          |
+| rich     | ≥ 13.7  | Colored CLI output                  |
 
-> **📝 TODO:** add libs after `pip freeze > requirements.txt`.
+> **📝 TODO:** Verify this list against actual project dependencies (e.g., using `pip freeze` or checking setup files) and specify exact versions if necessary.
 
 ## 3. Directories
 
@@ -33,7 +33,10 @@ project/
 ## 4. Integrations
 
 - **Music.app** via AppleScript to read/write tags
-- **Last.fm API** (road-map) - metadata collection
+- **External Music APIs:**
+  - **MusicBrainz API:** Used for retrieving album year metadata. Configuration for this API (including application name and contact email) is loaded from `my-config.yaml`.
+  - **Discogs API:** Used as a fallback or alternative source for album year metadata. The API token is loaded from `my-config.yaml`.
+- **Last.fm API** (road-map) - metadata collection. The API key is loaded from `my-config.yaml` if used.
 - Local cache in csv (`services/_cache_service.py`)
 
-> **📝 TODO:** specify the versions of external APIs and keys (free of charge - ENV vars).
+> **📝 TODO:** Verify specific API versions targeted/used if relevant. Ensure API keys/tokens are securely handled, preferably loaded from environment variables rather than being directly in `my-config.yaml` if it's committed to version control.

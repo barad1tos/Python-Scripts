@@ -31,9 +31,4 @@ Automated Music.app library manager: harmonizes genres, cleans tags, updates rel
 
 - The `python music_genre_updater.py --dry-run` command completes without errors.
 - 90% of tracks get a valid genre from the base dictionary.
-
-> **📝 TODO (fill in the blank):** add specific KPIs and deadlines.
-
-- Deal with errors in the console
-- Implement incremental work when determining the year through API
-- Embed the implementation of the previous paragraph in all existing procedures and functions
+- Successful retrieval of album year for 95% of albums using external APIs and caching.
