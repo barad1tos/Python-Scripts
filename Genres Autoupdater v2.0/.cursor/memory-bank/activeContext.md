@@ -1,5 +1,73 @@
 # Active Context
 
+## 2025-05-15T01:33:10
+
+```diff
+# ⇢ Changed files
+# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+# Genres Autoupdater v2.0/.cursor/memory-bank/progress.md
+# Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+index 38e09c3..3c7c365 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+@@ -1,7 +1,34 @@
+ # Active Context
+
++## 2025-05-15T00:44:43
++
++```diff
++# ⇢ Changed files
++# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++
++diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++index a020a8e..38e09c3 100644
++--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++@@ -1,7 +1,46 @@
++ # Active Contex
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/progress.md b/Genres Autoupdater v2.0/.cursor/memory-bank/progress.md
+index 45249eb..2c41fc1 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/progress.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/progress.md
+@@ -3,28 +3,33 @@
+ > ⚠️ **Do not edit old entries**; add new ones above.
+ > `scripts/update_memory_bank.py` will automatically push `git diff` after the commit.
+
+ ---
+
+-## ✅ Done
++## 📅 Last updated: 2025-05-16 01:12
+
+-- [x] Memory Bank template imported
+-- [x] Added pre-commit hook
+-- [x] Updated `projectBrief.md` with initial KPIs and structure
+-- [x] Updated `techContext.md` with inferred Python dependencies and API details
+-- [x] Updated `systemPatterns.md` with Code Style details, detailed HLD, Design Pat
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md
+index 496f8d4..8962c0c 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md
+@@ -21,15 +21,40 @@
+
+ ## 3. Directories
+
+ ```shell
+ project/
+-├─ .cursor/               # rules + memory‑bank + scripts
+-├─ helpers/, utils/       # utility modules
+-├─ services/              # DI‑level (AppleScript, DB)
+-├─ music_genre_updater.py # main script
+-└─ config.yaml            # main settings
++├─ .cursor/               # AI configuration, memory bank, rules, and related scripts
++│  ├─ memory-bank/        # Markdown files storing project context, brief, progress, etc.
++│  ├─ rules/
+
+```
+
 ## 2025-05-15T00:44:43
 
 ```diff
