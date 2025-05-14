@@ -1,13 +1,8 @@
 ---
-description:
-globs:
-alwaysApply: true
----
----
 description: Memory Bank (always)
 alwaysApply: true
 globs:
-  - memory-bank/*.md
+  - /.cursor/memory-bank/*.md
 ---
 
 # READ BEFORE ANSWERING
