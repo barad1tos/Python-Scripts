@@ -2,8 +2,8 @@
 description: Memory Bank (always)
 alwaysApply: true
 globs:
-  - /.cursor/memory-bank/*.md
+  - "**/.cursor/memory-bank/*.md"
 ---
 
 # READ BEFORE ANSWERING
-Load every .md in memory-bank/ before replying.
+Load every .md in Genres Autoupdater v2.0/.cursor/memory-bank/ before replying.

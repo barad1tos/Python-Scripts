@@ -1,8 +1,59 @@
 # Active Context
 
+## 2025-05-14T22:28:33
+
+````diff
+# ⇢ Changed files
+# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+# Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+index dbd6aae..469031b 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+@@ -1,7 +1,62 @@
+ # Active Context
+
++## 2025-05-14T22:08:09
++
++```diff
++# ⇢ Changed files
++# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++# Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
++
++diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++index c4b1223..dbd6aae 100644
++--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+++++ b/Genres Autoupdater v2.0/.cursor/
+
+diff --git a/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc b/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+index ca5bc1c..feb84fa 100644
+--- a/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
++++ b/Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
+@@ -1,14 +1,9 @@
+ ---
+-description:
+-globs:
+-alwaysApply: true
+----
+----
+ description: Memory Bank (always)
+ alwaysApply: true
+ globs:
+-  - memory-bank/*.md
++  - /.cursor/memory-bank/*.md
+ ---
+
+ # READ BEFORE ANSWERING
+-Load every .md in memory-bank/ before replying.
+\ No newline at end of file
++Load every .md in memory-bank/ before replying.
+
+````
+
 ## 2025-05-14T22:08:09
 
-```diff
+``````diff
 # ⇢ Changed files
 # Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
 # Genres Autoupdater v2.0/.cursor/rules/memory-bank-always.mdc
@@ -53,7 +104,7 @@ index cd0edd9..ca5bc1c 100644
 +Load every .md in memory-bank/ before replying.
 \ No newline at end of file
 
-```
+``````
 
 ```diff
 diff --git a/Genres Autoupdater v2.0/.cursor/scripts/update_memory_bank.py b/Genres Autoupdater v2.0/.cursor/scripts/update_memory_bank.py
