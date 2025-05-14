@@ -430,7 +430,7 @@ class ExternalApiService:
                             response.request_info, response.history, status=response_status, message=response_text_snippet
                         )
                         if attempt < max_retries:
-                            delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                            delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)  # trunk-ignore(bandit/B311)
                             retry_after_header = response.headers.get('Retry-After')
                             if retry_after_header:
                                 try:
@@ -484,7 +484,7 @@ class ExternalApiService:
                 self.api_call_durations[api_name].append(elapsed)
                 last_exception = timeout_error
                 if attempt < max_retries:
-                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)  # trunk-ignore(bandit/B311)
                     self.console_logger.warning(
                         f"[{api_name}] Request timed out after {elapsed:.2f}s (Attempt {attempt + 1}), retrying in {delay:.2f}s: {url}"
                     )
@@ -499,7 +499,7 @@ class ExternalApiService:
                 self.error_logger.error(f"[{api_name}] Client error during request to {url} (Attempt {attempt + 1}): {client_error}")
                 last_exception = client_error
                 if attempt < max_retries and isinstance(client_error, (aiohttp.ClientConnectorError, aiohttp.ServerDisconnectedError)):
-                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)  # trunk-ignore(bandit/B311)
                     await asyncio.sleep(delay)
                     continue
                 else:
@@ -1215,7 +1215,7 @@ class ExternalApiService:
             # Map index to RG data to retrieve full info after fetching releases
             rg_info_map = {idx: groups_to_process[idx] for idx in range(len(groups_to_process))}
 
-            for idx, rg in enumerate(groups_to_process):
+            for rg in groups_to_process:
                 rg_id = rg.get("id")
                 if not rg_id:
                     continue

@@ -1151,24 +1151,6 @@ class MusicUpdater:
             self.error_logger.error("Error in update_genres_by_artist_async: %s", e, exc_info=True)
             return [], []
 
-            if tasks:
-                self.console_logger.info("Created %d genre update tasks.", len(tasks))
-                # Use batch_size from config, default to 1000 for genre updates
-                batch_size_genre = self.config.get("genre_update", {}).get("batch_size", 1000)  # Assume genre_update batch_size config exists
-                await process_tasks_in_batches(tasks, batch_size=batch_size_genre)  # Pass batch_size
-
-            else:
-                self.console_logger.info("No genre update tasks needed.")
-
-            # Return the list of tracks that were actually updated and the changes log
-            # Note: updated_tracks list is populated inside the inner process_track function
-            self.console_logger.info("Genre update process complete. Updated %d tracks.", len(updated_tracks))
-            return updated_tracks, changes_log
-
-        except Exception as e:  # Catch potential exceptions during the process
-            self.error_logger.error("Error in update_genres_by_artist_async: %s", e, exc_info=True)
-            return [], []
-
     # Logic moved from old run_clean_artist
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Clean Artist")

@@ -1,0 +1,14 @@
+---
+description:
+globs:
+alwaysApply: true
+---
+---
+description: Persistent Memory Bank
+alwaysApply: true
+globs:
+  - ".cursor/memory-bank/**/*.md"
+---
+
+# IMPORTANT
+Read every file in `.cursor/memory-bank/` **before** answering.

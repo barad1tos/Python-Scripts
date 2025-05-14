@@ -68,11 +68,11 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
       - [Exception Handling](#exception-handling)
       - [Analytics Configuration](#analytics-configuration)
   - [AppleScript Implementation Details](#applescript-implementation-details)
-    - [fetch\_tracks.applescript](#fetch_tracksapplescript)
-      - [fetch\_tracks Key Operations](#fetch_tracks-key-operations)
+    - [fetch_tracks.applescript](#fetch_tracksapplescript)
+      - [fetch_tracks Key Operations](#fetch_tracks-key-operations)
       - [Example Output](#example-output)
-    - [update\_property.applescript](#update_propertyapplescript)
-      - [update\_property Key Operations](#update_property-key-operations)
+    - [update_property.applescript](#update_propertyapplescript)
+      - [update_property Key Operations](#update_property-key-operations)
       - [Example Usage from Python](#example-usage-from-python)
   - [Advanced Features](#advanced-features)
     - [Sophisticated Genre Determination Algorithm](#sophisticated-genre-determination-algorithm)
@@ -84,10 +84,10 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
     - [Analytics Reporting](#analytics-reporting)
     - [Console Reporting](#console-reporting)
   - [Auxiliary Scripts](#auxiliary-scripts)
-    - [full\_sync.py](#full_syncpy)
+    - [full_sync.py](#full_syncpy)
       - [Full Sync Functions](#full-sync-functions)
       - [Full Sync Operation](#full-sync-operation)
-    - [dry\_run.py](#dry_runpy)
+    - [dry_run.py](#dry_runpy)
       - [Dry Run Functions](#dry-run-functions)
       - [Dry Run Operation](#dry-run-operation)
   - [Contributing](#contributing)
@@ -1496,3 +1496,17 @@ A: Album years are cached both in-memory and in a persistent CSV (`cache_albums.
 **Q: What is the difference between `old_year` and `new_year` in the CSV?**
 
 A: `old_year` represents the year previously stored in the library or fetched from Music.app, while `new_year` is the year determined by the script (from APIs or cache). This allows for clear tracking of changes and prevents accidental overwrites.
+
+# test
+
+# test
+
+# test
+
+# test
+
+# test
+
+# test
+
+# test
