@@ -4,11 +4,11 @@ globs:
 alwaysApply: true
 ---
 ---
-description: Persistent Memory Bank
+description: Memory Bank (always)
 alwaysApply: true
 globs:
-  - ".cursor/memory-bank/**/*.md"
+  - memory-bank/*.md
 ---
 
-# IMPORTANT
-Read every file in `.cursor/memory-bank/` **before** answering.
+# READ BEFORE ANSWERING
+Load every .md in memory-bank/ before replying.
