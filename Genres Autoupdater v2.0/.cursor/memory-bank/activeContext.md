@@ -1,5 +1,44 @@
 # Active Context
 
+## 2025-05-15T00:44:30
+
+```diff
+# ⇢ Changed files
+# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+# Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+index a89a50d..a020a8e 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
+@@ -1,7 +1,1196 @@
+ # Active Context
+
++## 2025-05-15T00:42:40
++
++```diff
++# ⇢ Changed files
++# .cache_ggshield
++# .gitguardian.yaml
++# Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
++# Genres Autoupdater v2.0/.cursor/memory-bank/progress.md
++# Genres Autoupdater v2.0/.cursor/memory-bank/projectBrief.md
++# Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md
++# Genres Autoupdater v2.0/.cursor/memory-bank/techContext.md
++# Genres Autoupdater v2.0/.cursor/rules/isolation_
+
+diff --git a/Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md b/Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md
+index a8a2296..e327bd5 100644
+--- a/Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md
++++ b/Genres Autoupdater v2.0/.cursor/memory-bank/systemPatterns.md
+@@ -210,5 +210,6 @@ The project utilizes several design patterns to improve structure, maintainabili
+ ## 4. Git / CI
+
+ - `main` branch strategy: The `main` branch is used for stable releases, with release tags created for each version.
+ - **Pre-commit Hook:** A pre-commit hook is configured to run the `scripts/update_memory_bank.py` script. This script automatically generates a markdown snippet summarizing the staged changes (list of modified files and their diffs) and prepends it to the
+
+```
+
 ## 2025-05-15T00:42:40
 
 ```diff
