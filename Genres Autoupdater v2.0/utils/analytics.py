@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+
+# trunk-ignore(ruff/D301)
 """
 Analytics Module
 
@@ -694,7 +696,10 @@ class Analytics:
             # Avoid division by zero if total is 0
             if total > 0:
                 self.console_logger.info(
-                    f"📊 Performance: " f"⚡ {dc['fast']/total*100:.0f}% | " f"⏱️ {dc['medium']/total*100:.0f}% | " f"🐢 {dc['slow']/total*100:.0f}%"
+                    f"📊 Performance: "
+                    f"⚡ {dc['fast'] / total * 100:.0f}% | "
+                    f"⏱️ {dc['medium'] / total * 100:.0f}% | "
+                    f"🐢 {dc['slow'] / total * 100:.0f}%"
                 )
             else:
                 self.console_logger.info("📊 Performance: No events recorded.")

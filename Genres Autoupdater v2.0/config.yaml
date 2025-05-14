@@ -1,45 +1,49 @@
-# Path to the Apple Music library file
-music_library_path: "/Users/yourusername/Music/Music/Music Library.musiclibrary"
+# -----------------------------------------------------------------------
+# 1. MAIN PATHS AND ENVIRONMENT
+# -----------------------------------------------------------------------
+# Essential paths for the application to function
+music_library_path: /Users/yourusername/Music/Music/Music Library.musiclibrary
+apple_scripts_dir: /Users/yourusername/Path/To/AppleScripts
+# Base directory for all generated files (logs, reports, caches, etc.)
+# RECOMMENDATION: Consider using a local folder instead of iCloud Drive to avoid potential syncing delays or errors.
+logs_base_dir: /Users/yourusername/Path/To/Logs
 
-# Directory containing AppleScript scripts
-apple_scripts_dir: "/Users/yourusername/Path/To/AppleScripts"
+# Python specific settings
+python_settings:
+  prevent_bytecode: true # Set to true to prevent __pycache__ generation
 
-# Path to the main log file
-log_file: "/Users/yourusername/Path/To/Logs/music_genre_updater.log"
+# -----------------------------------------------------------------------
+# 2. EXECUTION AND PERFORMANCE
+# -----------------------------------------------------------------------
+# Controls how the script runs and interacts with system resources
 
-# Path to the CSV file containing the list of tracks
-csv_output_file: "/Users/yourusername/Path/To/Outputs/track_list.csv"
+# AppleScript interaction settings
+apple_script_concurrency: 2 # Max number of simultaneous AppleScript calls
+applescript_timeout_seconds: 1800 # Timeout for AppleScript execution (30 min)
 
-# Path to the CSV file for changes report
-changes_report_file: "/Users/yourusername/Path/To/Outputs/changes_report.csv"
+# General retry logic for potentially recoverable errors (e.g., AppleScript updates)
+max_retries: 2 # Number of retry attempts for applicable operations
+retry_delay_seconds: 1 # Base delay between retries
 
-# File to store the timestamp of the last incremental run
-last_incremental_run_file: "/Users/yourusername/Path/To/Logs/last_incremental_run.log"
+# In-memory cache settings (used by CacheService for temporary data like fetched tracks)
+cache_ttl_seconds: 1800 # Default lifetime for in-memory cache items (30 min)
+album_cache_sync_interval: 300 # Interval for syncing in-memory cache with disk (5 min)
+# Incremental update settings
+incremental_interval_minutes: 60 # Interval for incremental updates (1 hour)
 
-# Interval for incremental updates in minutes
-incremental_interval_minutes: 60
+# -----------------------------------------------------------------------
+# 3. FEATURE TOGGLES AND SETTINGS
+# -----------------------------------------------------------------------
+# Enable/disable major features and configure specific behaviors
 
-# Maximum number of retries for updating genres
-max_retries: 3
-
-# Delay between retries in seconds
-retry_delay_seconds: 2
-
-# List of test artists for testing purposes (leave empty to process all)
-test_artists: [Abney Park]
-
-# Cleaning settings
+# Metadata cleaning settings
 cleaning:
   remaster_keywords:
     - remaster
     - remastered
-    - re-recording
-  album_suffixes_to_remove:
-    - " - Single"
-    - " — EP"
-
-# Exceptions for track cleaning
-exceptions:
-  track_cleaning:
-    - artist: "Rabbit Junk"
-      album: "Xenospheres"
+    - Re-recording
+    - Redux
+    - Expanded
+    - Special Edition
+    - Deluxe Edition
+    - Anniversary Edition

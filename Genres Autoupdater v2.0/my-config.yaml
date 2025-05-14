@@ -1,0 +1,226 @@
+# /GenresAutoUpdater/my-config.yaml
+#
+# -----------------------------------------------------------------------
+# 1. MAIN PATHS AND ENVIRONMENT
+# -----------------------------------------------------------------------
+# Essential paths for the application to function
+music_library_path: /Users/romanborodavkin/Music/Music/Music Library.musiclibrary
+apple_scripts_dir: /Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts
+# Base directory for all generated files (logs, reports, caches, etc.)
+# RECOMMENDATION: Consider using a local folder instead of iCloud Drive to avoid potential syncing delays or errors.
+logs_base_dir: /Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/4. Dev/MGU logs
+
+# Python specific settings
+python_settings:
+  prevent_bytecode: true # Set to true to prevent __pycache__ generation
+
+# -----------------------------------------------------------------------
+# 2. EXECUTION AND PERFORMANCE
+# -----------------------------------------------------------------------
+# Controls how the script runs and interacts with system resources
+
+# AppleScript interaction settings
+apple_script_concurrency: 2 # Max number of simultaneous AppleScript calls
+applescript_timeout_seconds: 1800 # Timeout for AppleScript execution (30 min)
+
+# General retry logic for potentially recoverable errors (e.g., AppleScript updates)
+max_retries: 2 # Number of retry attempts for applicable operations
+retry_delay_seconds: 1 # Base delay between retries
+
+# In-memory cache settings (used by CacheService for temporary data like fetched tracks)
+cache_ttl_seconds: 1800 # Default lifetime for in-memory cache items (30 min)
+album_cache_sync_interval: 300 # Interval for syncing in-memory cache with disk (5 min)
+# Incremental update settings
+incremental_interval_minutes: 60 # Interval for incremental updates (1 hour)
+# -----------------------------------------------------------------------
+# 3. FEATURE TOGGLES AND SETTINGS
+# -----------------------------------------------------------------------
+# Enable/disable major features and configure specific behaviors
+
+# Metadata cleaning settings
+cleaning:
+  remaster_keywords:
+    - remaster
+    - remastered
+    - Re-recording
+    - Redux
+    - Expanded
+    - Special Edition
+    - Deluxe Edition
+    - Anniversary Edition
+    - Bonus Tracks
+    - Digital Version
+  album_suffixes_to_remove:
+    - " - Remaster"
+    - " (Remaster)"
+    - " (Remastered)"
+    - " - EP"
+    - "EP" # trunk-ignore(yamllint/quoted-strings)
+    - " - Single"
+    - "Single" # trunk-ignore(yamllint/quoted-strings)
+
+# Exceptions for cleaning
+exceptions:
+  track_cleaning:
+    - artist: Rabbit Junk
+      album: Xenospheres
+    - artist: Agalloch
+      album: The White EP
+
+# Database verification feature settings
+database_verification:
+  auto_verify_days: 7
+  batch_size: 10
+
+# Development and testing settings
+development:
+  test_artists: [Soilwork] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+
+# -----------------------------------------------------------------------
+# 4. LOGGING AND ANALYTICS CONFIGURATION
+# -----------------------------------------------------------------------
+logging:
+  max_runs: 3
+  main_log_file: main/main.log
+  analytics_log_file: analytics/analytics.log
+  csv_output_file: csv/track_list.csv
+  album_cache_csv: csv/cache_albums.csv
+  changes_report_file: csv/changes_report.csv
+  dry_run_report_file: csv/dry_run_combined.csv
+  last_incremental_run_file: last_incremental_run.log
+  pending_verification_file: csv/pending_year_verification.csv
+  last_db_verify_log: main/last_db_verify.log
+
+  # New: Log levels configuration
+  # Defines logging levels for different loggers/handlers
+  levels:
+    console: DEBUG # Level for console output (RichHandler)
+    main_file: DEBUG # Level for the main log file (main/main.log)
+    analytics_file: INFO # Level for the analytics log file (analytics/analytics.log)
+    year_updates_file: INFO # Level for the year updates log file (main/year_changes.log)
+    # Example: debug_file: DEBUG # You could add a separate file for DEBUG logs if needed
+
+analytics:
+  duration_thresholds:
+    short_max: 5
+    medium_max: 20
+    long_max: 50
+  max_events: 10000
+  compact_time: true
+
+# -----------------------------------------------------------------------
+# 5. YEAR RETRIEVAL CONFIGURATION (Section read by ExternalAPIService)
+# -----------------------------------------------------------------------
+year_retrieval: # NOTE: Keep this top-level key as the code expects config.get('year_retrieval', {})
+  # --- Feature Toggle & Basic Settings ---
+  enabled: true # Master switch to enable/disable year retrieval
+  preferred_api: musicbrainz
+
+  # --- API Authentication & Identification ---
+  api_auth:
+    discogs_token: ${DISCOGS_TOKEN}
+    musicbrainz_app_name: MusicGenreUpdater/2.0
+    contact_email: ${CONTACT_EMAIL}
+    use_lastfm: true
+    lastfm_api_key: ${LASTFM_API_KEY}
+
+  # --- API Rate Limits & Concurrency ---
+  rate_limits:
+    discogs_requests_per_minute: 55
+    musicbrainz_requests_per_second: 1
+    lastfm_requests_per_second: 5
+    concurrent_api_calls: 5
+
+  # --- Processing Control ---
+  processing:
+    batch_size: 25
+    delay_between_batches: 20
+    adaptive_delay: true
+    cache_ttl_days: 365
+    pending_verification_interval_days: 30
+
+  # --- Year Validation & Logic ---
+  logic:
+    min_valid_year: 1900
+    definitive_score_threshold: 85
+    definitive_score_diff: 15
+    preferred_countries: [
+        us,
+        gb,
+        de,
+        fr,
+        jp,
+        ca,
+        au,
+        se,
+        fi,
+        dk,
+        nl,
+        be,
+        es,
+        it,
+        ie,
+        is,
+        pl,
+        at,
+        ch,
+        gr,
+        pt,
+        cz,
+        ua,
+      ] # Removed ru/by for now
+  major_market_codes: [us, gb, uk, de, jp, fr, ca, au] # Added parameter used in scoring
+
+  # --- Reissue Detection ---
+  reissue_detection:
+    reissue_keywords:
+      - reissue
+      - remaster
+      - remastered
+      - anniversary
+      - deluxe edition
+      - expanded edition
+      - special edition
+      - legacy edition
+      - definitive edition
+      - collector's edition
+      - bonus tracks
+      - re-release
+      - re-recorded
+      - re-issue
+      - re-press
+      - re-master
+      - redux
+      - revisited
+
+  # --- Scoring Parameters ---
+  scoring: # Values adjusted based on previous analysis
+    base_score: 10
+    # Match Quality
+    artist_exact_match_bonus: 20 # Reduced from 25
+    album_exact_match_bonus: 25 # Reduced from 40
+    perfect_match_bonus: 10 # Reduced from 20
+    album_variation_bonus: 10
+    album_substring_penalty: -15 # Reduced from -25
+    album_unrelated_penalty: -40 # Reduced from -50
+    # Release Characteristics
+    mb_release_group_match_bonus: 50 # Increased from 35
+    type_album_bonus: 15
+    type_ep_single_penalty: -10
+    type_compilation_live_penalty: -25
+    status_official_bonus: 10
+    status_bootleg_penalty: -50
+    status_promo_penalty: -20
+    reissue_penalty: -30
+    # Contextual Factors
+    year_diff_penalty_scale: -5 # NEW: Penalty per year difference from RG date (after 1st year)
+    year_diff_max_penalty: -40 # NEW: Max penalty for year difference
+    year_before_start_penalty: -35
+    year_after_end_penalty: -25
+    year_near_start_bonus: 20
+    country_artist_match_bonus: 10
+    country_major_market_bonus: 5
+    # Source Reliability
+    source_mb_bonus: 5
+    source_discogs_bonus: 2
+    source_lastfm_penalty: -5
