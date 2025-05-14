@@ -1,6 +1,6 @@
 .DS_Store
 /temp
 /.vscode
-my-config.yaml
 /30DaysOfPython
 pyproject.toml
+Genres Autoupdater v2.0/.env
