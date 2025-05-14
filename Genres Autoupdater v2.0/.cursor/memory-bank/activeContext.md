@@ -1,5 +1,6 @@
 # Active Context
 
+`````
 ## 2025-05-14T21:12:29
 
 ### Changed files
@@ -27,7 +28,7 @@ index 9b19b09..3c8805a 100644
 +index e69de29..9b19b09 100644
 +--- a/Genres Autoupdater v2.0/.cursor/memory-bank/activeContext.md
 ++++ b/Genres Autoupdater v2.0/.curs
-````
+`````
 
 ```diff
 diff --git a/Genres Autoupdater v2.0/.cursor/scripts/update_memory_bank.py b/Genres Autoupdater v2.0/.cursor/scripts/update_memory_bank.py
