@@ -4,11 +4,11 @@
 # 1. MAIN PATHS AND ENVIRONMENT
 # -----------------------------------------------------------------------
 # Essential paths for the application to function
-music_library_path: /Users/romanborodavkin/Music/Music/Music Library.musiclibrary
-apple_scripts_dir: /Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts
+music_library_path: "/Users/romanborodavkin/Music/Music/Music Library.musiclibrary"
+apple_scripts_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts"
 # Base directory for all generated files (logs, reports, caches, etc.)
 # RECOMMENDATION: Consider using a local folder instead of iCloud Drive to avoid potential syncing delays or errors.
-logs_base_dir: /Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/4. Dev/MGU logs
+logs_base_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/4. Dev/MGU logs"
 
 # Python specific settings
 python_settings:
@@ -31,7 +31,7 @@ retry_delay_seconds: 1 # Base delay between retries
 cache_ttl_seconds: 1800 # Default lifetime for in-memory cache items (30 min)
 album_cache_sync_interval: 300 # Interval for syncing in-memory cache with disk (5 min)
 # Incremental update settings
-incremental_interval_minutes: 60 # Interval for incremental updates (1 hour)
+incremental_interval_minutes: 1 # Interval for incremental updates (1 hour)
 # -----------------------------------------------------------------------
 # 3. FEATURE TOGGLES AND SETTINGS
 # -----------------------------------------------------------------------
@@ -74,7 +74,7 @@ database_verification:
 
 # Development and testing settings
 development:
-  test_artists: [Soilwork] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+  test_artists: [In Flames] # List of artists to test with (e.g., ["Artist1", "Artist2"])
 
 # -----------------------------------------------------------------------
 # 4. LOGGING AND ANALYTICS CONFIGURATION
@@ -145,31 +145,31 @@ year_retrieval: # NOTE: Keep this top-level key as the code expects config.get('
     definitive_score_threshold: 85
     definitive_score_diff: 15
     preferred_countries: [
-        us,
-        gb,
-        de,
-        fr,
-        jp,
-        ca,
-        au,
-        se,
-        fi,
-        dk,
-        nl,
-        be,
-        es,
-        it,
-        ie,
-        is,
-        pl,
-        at,
-        ch,
-        gr,
-        pt,
-        cz,
-        ua,
-      ] # Removed ru/by for now
-  major_market_codes: [us, gb, uk, de, jp, fr, ca, au] # Added parameter used in scoring
+        "us", # trunk-ignore(yamllint/quoted-strings)
+        "gb", # trunk-ignore(yamllint/quoted-strings)
+        "de", # trunk-ignore(yamllint/quoted-strings)
+        "fr", # trunk-ignore(yamllint/quoted-strings)
+        "jp", # trunk-ignore(yamllint/quoted-strings)
+        "ca", # trunk-ignore(yamllint/quoted-strings)
+        "au", # trunk-ignore(yamllint/quoted-strings)
+        "se", # trunk-ignore(yamllint/quoted-strings)
+        "fi", # trunk-ignore(yamllint/quoted-strings)
+        "dk", # trunk-ignore(yamllint/quoted-strings)
+        "nl", # trunk-ignore(yamllint/quoted-strings)
+        "be", # trunk-ignore(yamllint/quoted-strings)
+        "es", # trunk-ignore(yamllint/quoted-strings)
+        "it", # trunk-ignore(yamllint/quoted-strings)
+        "ie", # trunk-ignore(yamllint/quoted-strings)
+        "is", # trunk-ignore(yamllint/quoted-strings)
+        "pl", # trunk-ignore(yamllint/quoted-strings)
+        "at", # trunk-ignore(yamllint/quoted-strings)
+        "ch", # trunk-ignore(yamllint/quoted-strings)
+        "gr", # trunk-ignore(yamllint/quoted-strings)
+        "pt", # trunk-ignore(yamllint/quoted-strings)
+        "cz", # trunk-ignore(yamllint/quoted-strings)
+        "ua", # trunk-ignore(yamllint/quoted-strings)
+      ]
+    major_market_codes: ["us", "gb", "uk", "de", "jp", "fr", "ca", "au"] # trunk-ignore(yamllint/quoted-strings)
 
   # --- Reissue Detection ---
   reissue_detection:

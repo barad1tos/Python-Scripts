@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Metadata Helpers Module
+"""Metadata Helpers Module.
 
 Provides utility functions for parsing, cleaning, and processing music track metadata.
 These functions are designed to be independent of specific service instances
@@ -18,32 +17,33 @@ Functions:
 
 import logging
 import re
-import subprocess
-
+import subprocess  # trunk-ignore(bandit/B404)
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 # --- Utility Functions moved from music_genre_updater.py ---
 # These functions now accept logger instances as arguments
 
 
-def parse_tracks(raw_data: str, error_logger: logging.Logger) -> List[Dict[str, str]]:
-    """
-    Parses the raw data from AppleScript into a list of track dictionaries.
+def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, str]]:
+    """Parses the raw data from AppleScript into a list of track dictionaries.
+
     Uses the Record Separator (U+001E) as the field delimiter.
 
     :param raw_data: Raw string data from AppleScript.
     :param error_logger: Logger for error output.
     :return: List of track dictionaries.
     """
-    field_separator = '\x1e'
+    field_separator = "\x1e"
 
     if not raw_data:
         error_logger.error("No data fetched from AppleScript.")
         return []
 
-    error_logger.debug(f"parse_tracks: Input raw_data (first 500 chars): {raw_data[:500]}...")
+    error_logger.debug(
+        f"parse_tracks: Input raw_data (first 500 chars): {raw_data[:500]}..."
+    )
 
     tracks = []
     # Split raw data into rows using newline character
@@ -72,20 +72,26 @@ def parse_tracks(raw_data: str, error_logger: logging.Logger) -> List[Dict[str, 
             # provided in the original code, assuming they are read from fields 7 and 8.
             # The AppleScript outputs standardYear at index 7 and an empty string at index 8.
             track["old_year"] = fields[7].strip() if len(fields) > 7 else ""
-            track["new_year"] = fields[8].strip() if len(fields) > 8 else ""  # Assuming index 8 is intended for new_year
+            track["new_year"] = (
+                fields[8].strip() if len(fields) > 8 else ""
+            )  # Assuming index 8 is intended for new_year
 
             tracks.append(track)
         else:
             # Log malformed row for debugging
             error_logger.warning("Malformed track data row skipped: %s", row)
-            error_logger.debug(f"parse_tracks: Finished parsing. Found {len(tracks)} tracks.")
+            error_logger.debug(
+                f"parse_tracks: Finished parsing. Found {len(tracks)} tracks."
+            )
 
     return tracks
 
 
-def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Group tracks by artist name into a dictionary for efficient processing.
+def group_tracks_by_artist(
+    tracks: list[dict[str, str]],
+) -> dict[str, list[dict[str, str]]]:
+    """Group tracks by artist name into a dictionary for efficient processing.
+
     Uses standard Python collections, no external dependencies or logging needed internally.
 
     :param tracks: List of track dictionaries.
@@ -101,9 +107,11 @@ def group_tracks_by_artist(tracks: List[Dict[str, str]]) -> Dict[str, List[Dict[
     return artists
 
 
-def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]], error_logger: logging.Logger) -> str:
-    """
-    Determine the dominant genre for an artist based on the earliest genre of their track.
+def determine_dominant_genre_for_artist(
+    artist_tracks: list[dict[str, str]], error_logger: logging.Logger
+) -> str:
+    """Determine the dominant genre for an artist based on the earliest genre of their track.
+
     Does not require injected services, but logs errors.
 
     Algorithm:
@@ -119,29 +127,41 @@ def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]], err
         return "Unknown"
     try:
         # Find the earliest track for each album
-        album_earliest: Dict[str, Dict[str, str]] = {}
+        album_earliest: dict[str, dict[str, str]] = {}
         for track in artist_tracks:
             # Ensure album and dateAdded keys exist
             album = track.get("album", "Unknown")
-            date_added_str = track.get("dateAdded", "1900-01-01 00:00:00")  # Provide a default date string for safety
+            date_added_str = track.get(
+                "dateAdded", "1900-01-01 00:00:00"
+            )  # Provide a default date string for safety
             try:
                 track_date = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 # Handle cases with invalid date format by using a very old date
-                error_logger.warning(f"Invalid date format in track data for determining dominant genre: '{date_added_str}'. Using default old date.")
-                track_date = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+                error_logger.warning(
+                    f"Invalid date format in track data for determining dominant genre: '{date_added_str}'. Using default old date."
+                )
+                track_date = datetime.strptime(
+                    "1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"
+                )
 
             if album not in album_earliest:
                 album_earliest[album] = track
             else:
-                existing_date_str = album_earliest[album].get("dateAdded", "1900-01-01 00:00:00")
+                existing_date_str = album_earliest[album].get(
+                    "dateAdded", "1900-01-01 00:00:00"
+                )
                 try:
-                    existing_date = datetime.strptime(existing_date_str, "%Y-%m-%d %H:%M:%S")
+                    existing_date = datetime.strptime(
+                        existing_date_str, "%Y-%m-%d %H:%M:%S"
+                    )
                 except ValueError:
                     error_logger.warning(
                         f"Invalid date format for existing album earliest track in cache: '{existing_date_str}'. Using default old date."
                     )
-                    existing_date = datetime.strptime("1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S")
+                    existing_date = datetime.strptime(
+                        "1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"
+                    )
 
                 if track_date < existing_date:
                     album_earliest[album] = track
@@ -153,20 +173,31 @@ def determine_dominant_genre_for_artist(artist_tracks: List[Dict[str, str]], err
 
         earliest_album_track = min(
             album_earliest.values(),
-            key=lambda t: datetime.strptime(t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"),
+            key=lambda t: datetime.strptime(
+                t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+            ),
         )
 
         dominant_genre = earliest_album_track.get("genre")
 
-        return dominant_genre or "Unknown"  # Return genre or "Unknown" if genre is None/empty
+        return (
+            dominant_genre or "Unknown"
+        )  # Return genre or "Unknown" if genre is None/empty
     except Exception as e:  # Catch broader exceptions during processing
-        error_logger.error("Error in determine_dominant_genre_for_artist: %s", e, exc_info=True)
+        error_logger.error(
+            "Error in determine_dominant_genre_for_artist: %s", e, exc_info=True
+        )
         return "Unknown"
 
 
-def remove_parentheses_with_keywords(name: str, keywords: List[str], console_logger: logging.Logger, error_logger: logging.Logger) -> str:
-    """
-    Remove parentheses and their content if they contain any of the specified keywords.
+def remove_parentheses_with_keywords(
+    name: str,
+    keywords: list[str],
+    console_logger: logging.Logger,
+    error_logger: logging.Logger,
+) -> str:
+    """Remove parentheses and their content if they contain any of the specified keywords.
+
     Handles nested parentheses correctly. Logs debug info and errors.
 
     :param name: The string to clean.
@@ -175,13 +206,17 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str], console_log
     :param error_logger: Logger for error output.
     :return: Cleaned string.
     """
-    console_logger.debug("remove_parentheses_with_keywords called with name='%s' and keywords=%s", name, keywords)
+    console_logger.debug(
+        "remove_parentheses_with_keywords called with name='%s' and keywords=%s",
+        name,
+        keywords,
+    )
 
     if not name or not keywords:
         return name
 
     # Convert keywords to lowercase for case-insensitive comparison
-    keyword_set = set(k.lower() for k in keywords)
+    keyword_set = {k.lower() for k in keywords}
 
     # Iteratively clean brackets until no more matches are found
     prev_name = ""
@@ -200,11 +235,15 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str], console_log
             elif char in ")]":
                 if stack:
                     start_char, start_idx = stack.pop()
-                    if (start_char == "(" and char == ")") or (start_char == "[" and char == "]"):
+                    if (start_char == "(" and char == ")") or (
+                        start_char == "[" and char == "]"
+                    ):
                         pairs.append((start_idx, i))
                     # Handle mismatched brackets by clearing stack if top doesn't match
                     # This prevents incorrect removal based on unmatched opening brackets
-                    elif (start_char == "(" and char == "]") or (start_char == "[" and char == ")"):
+                    elif (start_char == "(" and char == "]") or (
+                        start_char == "[" and char == ")"
+                    ):
                         # Log a warning if a mismatch is found that prevents pairing
                         error_logger.warning(
                             f"Mismatched brackets found near index {i} in '{current_name}'. Clearing stack to prevent incorrect pairing."
@@ -212,7 +251,9 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str], console_log
                         stack.clear()  # Clear stack on mismatch to avoid incorrect pairing
                 else:
                     # Log a warning if a closing bracket is found with no open bracket
-                    error_logger.warning(f"Closing bracket '{char}' found at index {i} with no matching opening bracket in '{current_name}'.")
+                    error_logger.warning(
+                        f"Closing bracket '{char}' found at index {i} with no matching opening bracket in '{current_name}'."
+                    )
 
         # Sort pairs by start index
         pairs.sort()
@@ -238,11 +279,13 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str], console_log
 
         # Remove brackets (from right to left to maintain indices)
         # Convert set to list and sort in reverse order of end index
-        sorted_to_remove = sorted(list(to_remove), key=lambda item: item[1], reverse=True)
+        sorted_to_remove = sorted(to_remove, key=lambda item: item[1], reverse=True)
         for start, end in sorted_to_remove:
             # Indices were checked during finding, but double-check here
             if 0 <= start < end < len(current_name):
-                current_name = current_name[:start] + current_name[end + 1 :]  # noqa: ignore=E203
+                current_name = (
+                    current_name[:start] + current_name[end + 1 :]
+                )  # noqa: ignore=E203
             # Note: Invalid index cases were already logged during the find loop
 
     # Clean up multiple spaces
@@ -254,10 +297,15 @@ def remove_parentheses_with_keywords(name: str, keywords: List[str], console_log
 
 
 def clean_names(
-    artist: str, track_name: str, album_name: str, config: Dict[str, Any], console_logger: logging.Logger, error_logger: logging.Logger
-) -> Tuple[str, str]:
-    """
-    Cleans the track name and album name based on the configuration settings.
+    artist: str,
+    track_name: str,
+    album_name: str,
+    config: dict[str, Any],
+    console_logger: logging.Logger,
+    error_logger: logging.Logger,
+) -> tuple[str, str]:
+    """Cleans the track name and album name based on the configuration settings.
+
     Requires config and loggers.
 
     :param artist: Artist name.
@@ -268,29 +316,48 @@ def clean_names(
     :param error_logger: Logger for error output.
     :return: Tuple containing the cleaned track name and cleaned album name.
     """
-    console_logger.info("clean_names called with: artist='%s', track_name='%s', album_name='%s'", artist, track_name, album_name)
+    console_logger.info(
+        "clean_names called with: artist='%s', track_name='%s', album_name='%s'",
+        artist,
+        track_name,
+        album_name,
+    )
 
     # Use config passed as argument
     exceptions = config.get("exceptions", {}).get("track_cleaning", [])
     # Check if the current artist/album pair is in the exceptions list
-    is_exception = any(exc.get("artist", "").lower() == artist.lower() and exc.get("album", "").lower() == album_name.lower() for exc in exceptions)
+    is_exception = any(
+        exc.get("artist", "").lower() == artist.lower()
+        and exc.get("album", "").lower() == album_name.lower()
+        for exc in exceptions
+    )
 
     if is_exception:
-        console_logger.info("No cleaning applied due to exceptions for artist '%s', album '%s'.", artist, album_name)
+        console_logger.info(
+            "No cleaning applied due to exceptions for artist '%s', album '%s'.",
+            artist,
+            album_name,
+        )
         return track_name.strip(), album_name.strip()  # Return original names, stripped
 
     # Get cleaning config
     cleaning_config = config.get("cleaning", {})
-    remaster_keywords = cleaning_config.get("remaster_keywords", ["remaster", "remastered"])
+    remaster_keywords = cleaning_config.get(
+        "remaster_keywords", ["remaster", "remastered"]
+    )
     album_suffixes = set(cleaning_config.get("album_suffixes_to_remove", []))
 
     # Helper function for cleaning strings using remove_parentheses_with_keywords
-    def clean_string(val: str, keywords: List[str]) -> str:
+    def clean_string(val: str, keywords: list[str]) -> str:
         # Use the utility function defined above, passing loggers
-        new_val = remove_parentheses_with_keywords(val, keywords, console_logger, error_logger)
+        new_val = remove_parentheses_with_keywords(
+            val, keywords, console_logger, error_logger
+        )
         # Clean up multiple spaces and strip whitespace
         new_val = re.sub(r"\s+", " ", new_val).strip()
-        return new_val if new_val else ""  # Return empty string if result is empty after cleaning
+        return (
+            new_val if new_val else ""
+        )  # Return empty string if result is empty after cleaning
 
     original_track = track_name
     original_album = album_name
@@ -305,33 +372,54 @@ def clean_names(
             # Perform removal only if the suffix is at the very end
             cleaned_album = cleaned_album[: -len(suffix)].strip()
             # Log the removal
-            console_logger.info("Removed suffix '%s' from album. New album name: '%s'", suffix, cleaned_album)
+            console_logger.info(
+                "Removed suffix '%s' from album. New album name: '%s'",
+                suffix,
+                cleaned_album,
+            )
 
     # Log the cleaning results
-    console_logger.info("Original track name: '%s' -> '%s'", original_track, cleaned_track)
-    console_logger.info("Original album name: '%s' -> '%s'", original_album, cleaned_album)
+    console_logger.info(
+        "Original track name: '%s' -> '%s'", original_track, cleaned_track
+    )
+    console_logger.info(
+        "Original album name: '%s' -> '%s'", original_album, cleaned_album
+    )
 
     return cleaned_track, cleaned_album
 
 
 def is_music_app_running(error_logger: logging.Logger) -> bool:
-    """
-    Checks if the Music.app is currently running using subprocess. Logs errors.
+    """Checks if the Music.app is currently running using subprocess. Logs errors.
 
     :param error_logger: Logger for error output.
     :return: True if Music.app is running, False otherwise.
     """
     try:
-        script = 'tell application "System Events" to (name of processes) contains "Music"'
-        result = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, check=False)
+        script = (
+            'tell application "System Events" to (name of processes) contains "Music"'
+        )
+        # trunk-ignore(bandit/B603)
+        # trunk-ignore(ruff/S603)
+        result = subprocess.run(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
         # Log stderr from osascript if any, even if check=False
         if result.stderr:
-            error_logger.warning("AppleScript stderr during Music.app status check: %s", result.stderr.strip())
+            error_logger.warning(
+                "AppleScript stderr during Music.app status check: %s",
+                result.stderr.strip(),
+            )
 
         return result.stdout.strip().lower() == "true"
     except (subprocess.SubprocessError, OSError) as e:
         error_logger.error("Unable to check Music.app status: %s", e, exc_info=True)
         return False  # Assume not running on error
     except Exception as e:  # Catch any other unexpected exceptions
-        error_logger.error("Unexpected error checking Music.app status: %s", e, exc_info=True)
+        error_logger.error(
+            "Unexpected error checking Music.app status: %s", e, exc_info=True
+        )
         return False

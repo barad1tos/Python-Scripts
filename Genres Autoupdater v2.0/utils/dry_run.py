@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Dry Run Module
+"""Dry Run Module.
 
 This module provides a dry run simulation for cleaning and genre updates.
 It fetches tracks directly using AppleScript (via the DependencyContainer's client),
@@ -17,89 +16,68 @@ import logging
 import os
 import sys
 import time
-
 from datetime import datetime
-
-# Removed subprocess import, as it's now only used within is_music_app_running utility
-from typing import Any, Dict, List
+from typing import Any
 
 import yaml
-
-from services.applescript_client import AppleScriptClient  # For type hinting
-
-# Import DependencyContainer and services for type hinting and instantiation
+from services.applescript_client import AppleScriptClient
 from services.dependencies_service import DependencyContainer
+from utils.config import load_config
+from utils.logger import get_full_log_path, get_loggers
+from utils.metadata import (
+    clean_names,
+    parse_tracks,
+    group_tracks_by_artist,
+    determine_dominant_genre_for_artist,
+    is_music_app_running,
+)
 
-# Import necessary utilities that are NOT part of the dependency cycle
-from utils.config import load_config  # Still needed to load config initially
-from utils.logger import get_full_log_path, get_loggers  # Still needed to set up loggers
-
-# Import utility functions from the metadata_helpers module
-# These functions are now independent helpers
-from utils.metadata import clean_names  # Used by simulate_cleaning
-from utils.metadata import determine_dominant_genre_for_artist  # Used by simulate_genre_update
-from utils.metadata import group_tracks_by_artist  # Used by simulate_genre_update
-from utils.metadata import is_music_app_running  # Used by main for initial check
-from utils.metadata import parse_tracks  # Used by fetch_tracks
-from utils.reports import save_unified_dry_run  # Still needed to save the report
+from utils.reports import save_unified_dry_run
 
 # Adjusting path to the project root directory where my-config.yaml is located
 current_dir = os.path.dirname(os.path.abspath(__file__))
-# Go up one directory from utils to the project root
 project_root = os.path.join(current_dir, "..")
 
 # Ensure the project root is in sys.path for imports like services.* or utils.*
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-
-# Load the configuration early, as loggers and DependencyContainer need it
 CONFIG_PATH = os.path.join(project_root, "my-config.yaml")
 
 try:
-    # Load CONFIG using the utility function
     CONFIG = load_config(CONFIG_PATH)
 except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-    # Use basic print if loggers are not yet set up
     print(f"ERROR: Failed to load or validate configuration: {e}", file=sys.stderr)
     sys.exit(1)  # Exit if config loading fails
-
-# Initialize loggers using the loaded CONFIG
-# These loggers will be passed to the DependencyContainer and DryRunProcessor
 console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG)
 
 
-# --- DryRunProcessor Class ---
-# This class encapsulates the simulation logic and holds its dependencies
 class DryRunProcessor:
-    """
-    Processes the dry run simulation steps using injected dependencies.
-    """
+    """Processes the dry run simulation steps using injected dependencies."""
 
     def __init__(
         self,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         console_logger: logging.Logger,
         error_logger: logging.Logger,
-        ap_client: AppleScriptClient,  # Receives AppleScriptClient instance
-        # Optional: add external_api_service here if year simulation is added later
-        # external_api_service: ExternalApiService
+        ap_client: AppleScriptClient,
     ):
-        """
-        Initializes the DryRunProcessor with necessary services.
-        """
+        """Initializes the DryRunProcessor with necessary services."""
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.ap_client = ap_client
 
-    async def fetch_tracks(self, artist: str = None) -> List[Dict[str, str]]:
-        """
-        Fetches tracks asynchronously from Music.app via AppleScript using the injected client.
+    async def fetch_tracks(self, artist: str | None = None) -> list[dict[str, str]]:
+        """Fetches tracks asynchronously from Music.app via AppleScript using the injected client.
+
         This replaces the old fetch_tracks_direct function.
         Uses the parse_tracks utility from metadata_helpers.py.
         """
-        self.console_logger.info("Fetching tracks using AppleScript client for dry run %s", f"for artist: {artist}" if artist else "")
+        self.console_logger.info(
+            "Fetching tracks using AppleScript client for dry run %s",
+            f"for artist: {artist}" if artist else "",
+        )
 
         # script_path logic is now part of AppleScriptClient, just need script name
         script_name = "fetch_tracks.applescript"
@@ -109,149 +87,202 @@ class DryRunProcessor:
         timeout = self.config.get("applescript_timeout_seconds", 900)
 
         # Use the injected ap_client
-        raw_data = await self.ap_client.run_script(script_name, script_args, timeout=timeout)
+        raw_data = await self.ap_client.run_script(
+            script_name, script_args, timeout=timeout
+        )
 
         if raw_data:
-            lines_count = raw_data.count('\n') + 1
-            self.console_logger.info("AppleScript returned data: %d bytes, approximately %d lines", len(raw_data), lines_count)
+            lines_count = raw_data.count("\n") + 1
+            self.console_logger.info(
+                "AppleScript returned data: %d bytes, approximately %d lines",
+                len(raw_data),
+                lines_count,
+            )
         else:
             # Error logging is handled by AppleScriptClient, but we can add context here
-            self.error_logger.error("Empty response received from AppleScript client for %s. Possible script error.", script_name)
+            self.error_logger.error(
+                "Empty response received from AppleScript client for %s. Possible script error.",
+                script_name,
+            )
             return []
 
         # Use the parse_tracks utility function from metadata_helpers.py
         # Pass the error_logger from the processor instance
-        tracks = parse_tracks(raw_data, self.error_logger)
+        parsed = parse_tracks(raw_data, self.error_logger)
 
-        self.console_logger.info("Successfully parsed %s tracks from Music.app output", len(tracks))
-        return tracks
+        # Verify the return type is as expected
+        if not isinstance(parsed, list) or not all(isinstance(x, dict) for x in parsed):
+            self.error_logger.error("Unexpected return type from parse_tracks")
+            return []
 
-    async def simulate_cleaning(self) -> List[Dict[str, str]]:
+        self.console_logger.info(
+            "Successfully parsed %s tracks from Music.app output", len(parsed)
+        )
+        return parsed
+
+    async def simulate_cleaning(self) -> list[dict[str, str]]:
+        """Simulate cleaning of track/album names without applying changes.
+
+        Returns:
+            list[dict[str, str]]: A list of dictionaries containing cleaning changes.
+            Each dictionary has string keys and string values.
         """
-        Simulate cleaning of track/album names without applying changes.
-        Returns a list of simulated cleaning changes.
-        Uses the clean_names utility from metadata_helpers.py.
-        """
-        simulated_changes = []
+        simulated_changes: list[dict[str, str]] = []
 
         # Use the fetch_tracks method of this class
         tracks = await self.fetch_tracks()
 
         if not tracks:
-            self.error_logger.error("Failed to fetch tracks for dry run cleaning simulation!")
+            self.error_logger.error(
+                "No tracks found for cleaning simulation. Cannot proceed."
+            )
             return []
 
-        self.console_logger.info("Simulating cleaning for %s tracks", len(tracks))
+        self.console_logger.info("Starting cleaning simulation for %s tracks...", len(tracks))
 
         for track in tracks:
-            # Skip tracks with statuses that should not be cleaned
-            if track.get("trackStatus", "").lower() in ("prerelease", "no longer available"):
+            # Skip tracks with certain statuses
+            track_status = track.get("trackStatus", "").lower()
+            if track_status in ("prerelease", "no longer available"):
                 self.console_logger.debug(
-                    f"Skipping cleaning for track ID {track.get('id', 'N/A')} due to status '{track.get('trackStatus', 'N/A')}'"
+                    f"Skipping track with status '{track_status}': {track.get('name', 'Unnamed track')}"
                 )
                 continue
 
-            original_name = track.get("name", "")
-            original_album = track.get("album", "")
-            artist_name = track.get("artist", "Unknown")
+            original_name = str(track.get("name", ""))
+            original_album = str(track.get("album", ""))
+            artist_name = str(track.get("artist", "Unknown"))
+            track_id = str(track.get("id", ""))
+            date_added = str(track.get("dateAdded", ""))
 
             # Use the clean_names utility function from metadata_helpers.py
-            # Pass the CONFIG, console_logger, and error_logger from the processor instance
-            cleaned_name, cleaned_album = clean_names(artist_name, original_name, original_album, self.config, self.console_logger, self.error_logger)
+            cleaned_name, cleaned_album = clean_names(
+                artist=artist_name,
+                track_name=original_name,
+                album_name=original_album,
+                config=self.config,
+                console_logger=self.console_logger,
+                error_logger=self.error_logger,
+            )
 
+            # If either name or album was cleaned, add to changes
             if cleaned_name != original_name or cleaned_album != original_album:
-                simulated_changes.append(
-                    {
-                        "change_type": "cleaning",
-                        "track_id": track.get("id", ""),
-                        "artist": artist_name,
-                        "original_name": original_name,
-                        "cleaned_name": cleaned_name,
-                        "original_album": original_album,
-                        "cleaned_album": cleaned_album,
-                        "dateAdded": track.get("dateAdded", ""),  # Keep original dateAdded for context
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # Add timestamp for the change
-                    }
+                change: dict[str, str] = {
+                    "change_type": "cleaning",
+                    "track_id": track_id,
+                    "artist": artist_name,
+                    "original_name": original_name,
+                    "cleaned_name": cleaned_name,
+                    "original_album": original_album,
+                    "cleaned_album": cleaned_album,
+                    "dateAdded": date_added,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                simulated_changes.append(change)
+                self.console_logger.debug(
+                    f"Simulated cleaning change for '{artist_name}' - '{original_name}'"
                 )
-                self.console_logger.debug(f"Simulated cleaning change for '{artist_name}' - '{original_name}'")  # Log simulated change
 
-        self.console_logger.info("Cleaning simulation found %s changes.", len(simulated_changes))
+        self.console_logger.info(
+            "Cleaning simulation found %s changes.", len(simulated_changes)
+        )
         return simulated_changes
 
-    async def simulate_genre_update(self) -> List[Dict[str, str]]:
+    async def simulate_genre_update(self) -> list[dict[str, str]]:
+        """Simulate genre updates without applying changes.
+
+        Returns:
+            list[dict[str, str]]: A list of simulated 'genre_update' changes.
+            Uses group_tracks_by_artist and determine_dominant_genre_for_artist.
         """
-        Simulate genre updates without applying changes.
-        Returns a list of simulated 'genre_update' changes.
-        Uses group_tracks_by_artist and determine_dominant_genre_for_artist from metadata_helpers.py.
-        """
-        simulated_changes = []
+        simulated_changes: list[dict[str, str]] = []
 
         # Use the fetch_tracks method of this class
         tracks = await self.fetch_tracks()
 
         if not tracks:
-            self.error_logger.error("Failed to fetch tracks for genre update simulation!")
+            self.error_logger.error(
+                "No tracks found for genre update simulation. Cannot proceed."
+            )
             return []
 
-        # Skip tracks with unusable status for genre updates
-        tracks_to_process = [t for t in tracks if t.get("trackStatus", "").lower() not in ("prerelease", "no longer available")]
         self.console_logger.info(
-            "Simulating genre updates for %s tracks (skipped %s unusable tracks)", len(tracks_to_process), len(tracks) - len(tracks_to_process)
+            "Starting genre update simulation for %s tracks...", len(tracks)
         )
 
-        # Use group_tracks_by_artist utility function from metadata_helpers.py
-        # This utility function does not require loggers
-        grouped_by_artist = group_tracks_by_artist(tracks_to_process)
+        # Group tracks by artist for genre analysis
+        artist_tracks = group_tracks_by_artist(tracks)
+        self.console_logger.info(
+            "Grouped tracks into %s artists for genre analysis", len(artist_tracks)
+        )
 
-        # We determine the dominant genre for each artist
-        for artist, artist_tracks in grouped_by_artist.items():
-            if not artist_tracks:
-                continue  # Should not happen with group_tracks_by_artist, but safety check
-            try:
-                # Use determine_dominant_genre_for_artist utility function from metadata_helpers.py
-                # Pass the error_logger from the processor instance
-                dominant_genre = determine_dominant_genre_for_artist(artist_tracks, self.error_logger)
-            except Exception as e:
-                self.error_logger.error(f"Error determining dominant genre for artist '{artist}' during simulation: {e}", exc_info=True)
-                dominant_genre = "Unknown"  # Default on error
+        # Process each artist's tracks
+        for artist, artist_tracks_list in artist_tracks.items():
+            if not artist_tracks_list:
+                continue
 
-            if dominant_genre == "Unknown":
-                self.console_logger.debug(f"Skipping genre update simulation for artist '{artist}': Dominant genre could not be determined.")
-                continue  # Skip if dominant genre is unknown
+            # Get dominant genre for this artist's tracks
+            dominant_genre = determine_dominant_genre_for_artist(
+                artist_tracks_list,
+                self.error_logger,
+            )
 
-            for track in artist_tracks:
-                current_genre = track.get("genre", "").strip()
+            if not dominant_genre:
+                self.console_logger.debug(
+                    f"Could not determine dominant genre for artist: {artist}"
+                )
+                continue
+
+            # Check each track for this artist
+            for track in artist_tracks_list:
+                current_genre = str(track.get("genre", ""))
                 track_status = track.get("trackStatus", "").lower()
+                track_id = str(track.get("id", ""))
+                track_name = str(track.get("name", ""))
+                date_added = str(track.get("dateAdded", ""))
 
-                # Check if update is needed and status allows modification (simulation still respects this logic)
-                if current_genre != dominant_genre and track_status in ("subscription", "downloaded"):
-                    simulated_changes.append(
-                        {
-                            "change_type": "genre_update",
-                            "track_id": track.get("id", ""),
-                            "artist": artist,
-                            "album": track.get("album", ""),
-                            "track_name": track.get("name", ""),
-                            "original_genre": current_genre,
-                            "simulated_genre": dominant_genre,
-                            "dateAdded": track.get("dateAdded", ""),  # Keep original dateAdded for context
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),  # Add timestamp for the change
-                        }
-                    )
-                    self.console_logger.debug(
-                        f"Simulated genre change for '{artist}' - '{track.get('name', '')}': {current_genre} -> {dominant_genre}"
-                    )  # Log simulated change
+                # Skip if genre is already correct or track status doesn't allow modification
+                non_modifiable_statuses = (
+                    "purchased", "matched", "uploaded",
+                    "ineligible", "no longer available", "not eligible for upload"
+                )
 
-                elif current_genre == dominant_genre:
+                if current_genre == dominant_genre or track_status in non_modifiable_statuses:
                     self.console_logger.debug(
-                        f"Skipping genre simulation for track ID {track.get('id', 'N/A')}: Genre already matches dominant ({dominant_genre})"
+                        f"Skipping genre update for track {track_name} by {artist}: "
+                        f"Already has genre '{current_genre}' or status '{track_status}' does not allow modification"
                     )
-                elif track_status not in ("subscription", "downloaded"):
+                    continue
+
+                # Check track status to determine if it's eligible for genre updates
+                if track_status in ("matched", "uploaded"):
                     self.console_logger.debug(
-                        f"Skipping genre simulation for track ID {track.get('id', 'N/A')}: Status '{track_status}' does not allow modification"
+                        f"Skipping genre simulation for track ID {track_id}: "
+                        f"Status '{track_status}' does not allow modification"
+                    )
+                elif track_status in ("subscription", "downloaded"):
+                    change: dict[str, str] = {
+                        "change_type": "genre_update",
+                        "track_id": track_id,
+                        "artist": artist,
+                        "track_name": track_name,
+                        "original_genre": current_genre,
+                        "new_genre": dominant_genre,
+                        "dateAdded": date_added,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    simulated_changes.append(change)
+                    self.console_logger.debug(
+                        f"Simulated genre change for '{artist}' - '{track_name}': {current_genre} -> {dominant_genre}"
+                    )
+                else:
+                    self.console_logger.debug(
+                        f"Skipping track with unknown status '{track_status}': {track_name}"
                     )
 
-        self.console_logger.info("Genre update simulation found %s changes.", len(simulated_changes))
+        self.console_logger.info(
+            "Genre update simulation found %s changes.", len(simulated_changes)
+        )
         return simulated_changes
 
     # Optional: Add simulate_year_updates method here following plan step 3.2 (later)
@@ -260,8 +291,8 @@ class DryRunProcessor:
 
 # --- Main Execution Block ---
 def main() -> None:
-    """
-    Main synchronous function to run the dry run simulation.
+    """Main synchronous function to run the dry run simulation.
+
     Initializes dependencies and orchestrates the simulation process.
     """
     start_all = time.time()
@@ -280,7 +311,9 @@ def main() -> None:
     # Ensure Music.app is running using the utility function
     # Pass error_logger from the dry run script's scope
     if not is_music_app_running(error_logger):
-        console_logger.error("Music app is not running! Please start Music.app before running the dry run script.")
+        console_logger.error(
+            "Music app is not running! Please start Music.app before running the dry run script."
+        )
         sys.exit(1)  # Exit if Music app is not running
 
     # --- Initialize Dependency Container ---
@@ -290,7 +323,9 @@ def main() -> None:
     try:
         # Create the DependencyContainer instance, passing config and loggers
         # DependencyContainer expects loggers to be available when initialized
-        deps = DependencyContainer(CONFIG_PATH)  # DependencyContainer loads config internally, but we already have it loaded globally for loggers.
+        deps = DependencyContainer(
+            CONFIG_PATH, console_logger, error_logger, analytics_logger, listener
+        )  # Pass all logger instances
         # Passing CONFIG_PATH makes deps load it again. This is acceptable for now.
         # A future refactor might pass the loaded CONFIG dict directly to DependencyContainer.
 
@@ -310,28 +345,37 @@ def main() -> None:
 
         # Run the simulation methods on the processor instance
         # Use asyncio.run to execute the main async logic
-        async def run_simulations():
+        async def run_simulations() -> None:
             cleaning_changes = await dry_run_processor.simulate_cleaning()
             genre_changes = await dry_run_processor.simulate_genre_update()
             # Optional: Call year simulation here
             # year_changes = await dry_run_processor.simulate_year_updates() # needs implementation
 
-            # Combine all changes
-            all_simulated_changes = cleaning_changes + genre_changes  # + year_changes if implemented
-
             # We get the path for the combined report from the configuration
-            # Use config loaded at the top and loggers
-            dry_run_report_file = get_full_log_path(CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv", error_logger)
+            dry_run_report_file = get_full_log_path(
+                CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv", error_logger
+            )
 
             # We save the combined report using the utility function
             # Pass loggers from the dry run script's scope
-            save_unified_dry_run(all_simulated_changes, dry_run_report_file, console_logger, error_logger)
+            save_unified_dry_run(
+                cleaning_changes,
+                genre_changes,
+                dry_run_report_file,
+                console_logger,
+                error_logger,
+            )
 
             console_logger.info(
-                "Dry run simulation completed with %s cleaning changes and %s genre changes.", len(cleaning_changes), len(genre_changes)
+                "Dry run simulation completed with %s cleaning changes and %s genre changes.",
+                len(cleaning_changes),
+                len(genre_changes),
             )
             # Log total changes saved
-            console_logger.info("Total simulated changes saved to report: %s", len(all_simulated_changes))
+            console_logger.info(
+                "Total simulated changes saved to report: %s",
+                len(cleaning_changes) + len(genre_changes),
+            )
 
         asyncio.run(run_simulations())
 
@@ -344,9 +388,14 @@ def main() -> None:
     except Exception as e:
         # Use error logger from the main scope
         if error_logger:
-            error_logger.critical("Critical error during dry run execution: %s", e, exc_info=True)
+            error_logger.critical(
+                "Critical error during dry run execution: %s", e, exc_info=True
+            )
         else:
-            print(f"CRITICAL ERROR: Critical error during dry run execution: {e}", file=sys.stderr)
+            print(
+                f"CRITICAL ERROR: Critical error during dry run execution: {e}",
+                file=sys.stderr,
+            )
             import traceback
 
             traceback.print_exc(file=sys.stderr)
@@ -357,18 +406,26 @@ def main() -> None:
             try:
                 # Assuming DependencyContainer has a shutdown method for cleanup (e.g. closing API session)
                 # Check if the method exists before calling it
-                if hasattr(deps, 'shutdown') and callable(deps.shutdown):
+                if hasattr(deps, "shutdown") and callable(deps.shutdown):
                     console_logger.info("Shutting down DependencyContainer...")
                     deps.shutdown()  # Call the shutdown method
                 else:
-                    console_logger.warning("DependencyContainer instance has no shutdown method.")
+                    console_logger.warning(
+                        "DependencyContainer instance has no shutdown method."
+                    )
 
             except Exception as shutdown_e:
                 # Use error logger from the main scope
                 if error_logger:
-                    error_logger.error(f"Error during DependencyContainer shutdown: {shutdown_e}", exc_info=True)
+                    error_logger.error(
+                        f"Error during DependencyContainer shutdown: {shutdown_e}",
+                        exc_info=True,
+                    )
                 else:
-                    print(f"ERROR: Error during DependencyContainer shutdown: {shutdown_e}", file=sys.stderr)
+                    print(
+                        f"ERROR: Error during DependencyContainer shutdown: {shutdown_e}",
+                        file=sys.stderr,
+                    )
 
         # Stop the QueueListener when the script finishes or encounters a critical error
         # Check if the listener was successfully initialized before trying to stop it
@@ -385,7 +442,9 @@ def main() -> None:
         if console_logger:
             console_logger.info("Explicitly closing logger handlers (dry run)...")
         else:
-            print("INFO: Explicitly closing logger handlers (dry run)...", file=sys.stderr)
+            print(
+                "INFO: Explicitly closing logger handlers (dry run)...", file=sys.stderr
+            )
 
         # Use module-level loggers or root logger to get handlers
         all_handlers = []
@@ -395,7 +454,12 @@ def main() -> None:
             logging.root.removeHandler(handler)
         # Close handlers attached to specific loggers (console, error, analytics, year_updates)
         # Use the names of the loggers initialized by get_loggers
-        for name in ['console_logger', 'main_logger', 'analytics_logger', 'year_updates']:
+        for name in [
+            "console_logger",
+            "main_logger",
+            "analytics_logger",
+            "year_updates",
+        ]:
             logger = logging.getLogger(name)
             for handler in logger.handlers[:]:
                 all_handlers.append(handler)
