@@ -1,0 +1,145 @@
+###############################################################################
+# AUTO-VERSIONING (git tag → __version__)                                     #
+###############################################################################
+[tool.setuptools-git-versioning]
+enabled = true
+
+###############################################################################
+# PYTHON LINTING / TYPING (Ruff + MyPy)                                       #
+###############################################################################
+[tool.ruff]
+line-length = 150
+target-version = "py312"
+
+exclude = [
+  ".git",
+  ".hg",
+  ".mypy_cache",
+  ".tox",
+  ".venv",
+  "_build",
+  "buck-out",
+  "build",
+  "dist",
+  "__pycache__",
+  "*/__init__.py",
+]
+
+# Formatting
+[tool.ruff.format]
+indent-style = "space"
+line-ending = "auto"
+quote-style = "double"
+skip-magic-trailing-comma = false
+docstring-code-line-length = 100
+
+# Linting
+[tool.ruff.lint]
+select = [
+  "E",   # Pycodestyle errors
+  "F",   # PyFlakes
+  "W",   # Pycodestyle warnings
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "D",   # pydocstyle
+  "A",   # flake8-annotations
+  "UP",  # pyupgrade
+  "S",   # flake8-bandit
+  "ARG", # flake8-unused-arguments
+  "RUF", # Ruff-specific
+  "PL",  # Pylint
+  "N",   # pep8-naming
+]
+
+ignore = [
+  "E203", # conflict with Black.
+  "I001", # sorting of imports deleted isort
+  "I002", # sorting of imports deleted isort
+]
+
+fixable = ["ALL"]
+mccabe.max-complexity = 15
+
+[tool.pydocstyle]
+convention = "google"
+add-ignore = [
+  "D203",
+  "D213",
+  "D215",
+  "D400",
+  "D401",
+  "D404",
+  "D406",
+  "D407",
+  "D408",
+  "D409",
+  "D413",
+]
+
+# isort configuration
+[tool.ruff.lint.isort]
+combine-as-imports = true
+order-by-type = true
+required-imports = []
+force-sort-within-sections = false
+lines-after-imports = 1
+lines-between-types = 1
+known-first-party = ["GSeparatedDocsCreator"]
+section-order = [
+  "future",
+  "typing",
+  "standard-library",
+  "third-party",
+  "first-party",
+  "local-folder",
+]
+
+# Additional plugin configurations
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["pydantic.BaseModel"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+strict_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_no_return = true
+warn_return_any = true
+warn_unreachable = true
+warn_unused_ignores = true
+warn_unused_configs = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = ["google.*", "boto3.*", "googleapiclient.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["*.services.*"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+
+###############################################################################
+# BASH / SHELL (shfmt + shellcheck)                                            #
+###############################################################################
+[tool.shfmt]
+indent = 4
+simplify = true
+
+[tool.shellcheck]
+severity = "warning"
+
+###############################################################################
+# TERRAFORM (tflint)                                                           #
+###############################################################################
+[tool.tflint]
+enable-rule = [".*"]
+disable-rule = ["terraform_documented_outputs"]

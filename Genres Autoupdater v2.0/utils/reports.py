@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-"""
-Reports Module
+"""Reports Module.
 
 Provides functions for CSV/HTML report generation and track data management
 for music library operations. Handles both file operations and formatted console output.
@@ -29,12 +28,14 @@ Note: Album year caching and metadata integration is now handled by CacheService
 import csv
 import logging
 import os
-
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
-from services.cache_service import CacheService  # Import CacheService
-from utils.logger import ensure_directory, get_full_log_path  # Ensure get_full_log_path is imported if used here
+from services.cache_service import CacheService
+from utils.logger import (
+    ensure_directory,
+    get_full_log_path,
+)
 
 # ANSI color codes for console output
 RED = "\033[31m"
@@ -44,15 +45,14 @@ RESET = "\033[0m"
 
 
 def _save_csv(
-    data: List[Dict[str, str]],
-    fieldnames: List[str],
+    data: list[dict[str, str]],
+    fieldnames: list[str],
     file_path: str,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
     data_type: str,
 ) -> None:
-    """
-    Save the provided data to a CSV file.
+    """Save the provided data to a CSV file.
 
     Checks if the target directory for the CSV file exists, and creates it if not.
     Uses atomic write pattern with a temporary file.
@@ -83,7 +83,9 @@ def _save_csv(
         # On POSIX, os.rename is atomic
         os.replace(temp_file_path, file_path)
 
-        console_logger.info(f"{data_type.capitalize()} saved to {file_path} ({len(data)} entries).")
+        console_logger.info(
+            f"{data_type.capitalize()} saved to {file_path} ({len(data)} entries)."
+        )
     except Exception as e:
         error_logger.error(f"Failed to save {data_type}: {e}")
         # Clean up temporary file in case of error
@@ -91,18 +93,18 @@ def _save_csv(
             try:
                 os.remove(temp_file_path)
             except OSError as cleanup_e:
-                error_logger.warning(f"Failed to remove temporary file {temp_file_path}: {cleanup_e}")
+                error_logger.warning(
+                    f"Failed to remove temporary file {temp_file_path}: {cleanup_e}"
+                )
 
 
 def save_to_csv(
-    tracks: List[Dict[str, str]],
+    tracks: list[dict[str, str]],
     file_path: str,
-    console_logger: Optional[logging.Logger] = None,
-    error_logger: Optional[logging.Logger] = None,
+    console_logger: logging.Logger | None = None,
+    error_logger: logging.Logger | None = None,
 ) -> None:
-    """
-    Save the list of track dictionaries to a CSV file.
-    """
+    """Save the list of track dictionaries to a CSV file."""
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
@@ -110,19 +112,29 @@ def save_to_csv(
 
     # Updated fieldnames to ensure we capture all necessary fields
     # These fields should match the structure expected by load_track_list
-    fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+    fieldnames = [
+        "id",
+        "name",
+        "artist",
+        "album",
+        "genre",
+        "dateAdded",
+        "trackStatus",
+        "old_year",
+        "new_year",
+    ]
     _save_csv(tracks, fieldnames, file_path, console_logger, error_logger, "tracks")
 
 
 def save_unified_changes_report(
-    changes: List[Dict[str, str]],
+    changes: list[dict[str, str]],
     file_path: str,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
     force_mode: bool = False,
 ) -> None:
-    """
-    Save consolidated changes report combining genre, year, and other changes.
+    """Save consolidated changes report combining genre, year, and other changes.
+
     In force mode, prints changes to console instead of saving to file.
 
     Args:
@@ -150,7 +162,9 @@ def save_unified_changes_report(
     ]
 
     # Sort changes by artist and album for readability
-    changes_sorted = sorted(changes, key=lambda x: (x.get("artist", "Unknown"), x.get("album", "Unknown")))
+    changes_sorted = sorted(
+        changes, key=lambda x: (x.get("artist", "Unknown"), x.get("album", "Unknown"))
+    )
 
     # For force mode, print a formatted report to console
     if force_mode:
@@ -158,7 +172,7 @@ def save_unified_changes_report(
         console_logger.info("-" * 80)
 
         # Group changes by type for better presentation
-        changes_by_type = {}
+        changes_by_type: dict[str, list[dict[str, str]]] = {}
         for change in changes_sorted:
             change_type = change.get("change_type", "other")
             if change_type not in changes_by_type:
@@ -169,7 +183,11 @@ def save_unified_changes_report(
         # This filtering logic might be better placed where changes are generated,
         # but keeping it here for console report consistency with previous code.
         if "year" in changes_by_type:
-            changes_by_type["year"] = [change for change in changes_by_type["year"] if change.get("old_year", "") != change.get("new_year", "")]
+            changes_by_type["year"] = [
+                change
+                for change in changes_by_type["year"]
+                if change.get("old_year", "") != change.get("new_year", "")
+            ]
 
         # Print each change type with its own header
         for change_type, type_changes in changes_by_type.items():
@@ -177,47 +195,89 @@ def save_unified_changes_report(
             if not type_changes:
                 continue
 
-            console_logger.info(f"\n🔄 {change_type.upper()} Changes ({len(type_changes)}):")
+            console_logger.info(
+                f"\n🔄 {change_type.upper()} Changes ({len(type_changes)}):"
+            )
 
             # Print table header for this type
             if change_type == "genre":
-                console_logger.info(f"{'Artist':<30} {'Album':<30} {'Track':<30} {'Old → New'}")
+                console_logger.info(
+                    f"{'Artist':<30} {'Album':<30} {'Track':<30} {'Old → New'}"
+                )
                 console_logger.info("-" * 100)
                 for change in type_changes:
-                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
-                    album = change.get("album", "")[:28] + ".." if len(change.get("album", "")) > 30 else change.get("album", "")
-                    track = change.get("track_name", "")[:28] + ".." if len(change.get("track_name", "")) > 30 else change.get("track_name", "")
+                    artist = (
+                        change.get("artist", "")[:28] + ".."
+                        if len(change.get("artist", "")) > 30
+                        else change.get("artist", "")
+                    )
+                    album = (
+                        change.get("album", "")[:28] + ".."
+                        if len(change.get("album", "")) > 30
+                        else change.get("album", "")
+                    )
+                    track = (
+                        change.get("track_name", "")[:28] + ".."
+                        if len(change.get("track_name", "")) > 30
+                        else change.get("track_name", "")
+                    )
                     old_genre = change.get("old_genre", "")
                     new_genre = change.get("new_genre", "")
-                    console_logger.info(f"{artist:<30} {album:<30} {track:<30} {old_genre} → {new_genre}")
+                    console_logger.info(
+                        f"{artist:<30} {album:<30} {track:<30} {old_genre} → {new_genre}"
+                    )
 
             elif change_type == "year":
                 # Already filtered for actual year changes above
                 console_logger.info(f"{'Artist':<30} {'Album':<40} {'Old → New'}")
                 console_logger.info("-" * 80)
                 for change in type_changes:
-                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
-                    album = change.get("album", "")[:38] + ".." if len(change.get("album", "")) > 40 else change.get("album", "")
+                    artist = (
+                        change.get("artist", "")[:28] + ".."
+                        if len(change.get("artist", "")) > 30
+                        else change.get("artist", "")
+                    )
+                    album = (
+                        change.get("album", "")[:38] + ".."
+                        if len(change.get("album", "")) > 40
+                        else change.get("album", "")
+                    )
                     old_year = change.get("old_year", "")
                     new_year = change.get("new_year", "")
                     year_display = f"{YELLOW}{old_year} → {new_year}{RESET}"
                     console_logger.info(f"{artist:<30} {album:<40} {year_display}")
 
             elif change_type == "name":
-                console_logger.info(f"{'Artist':<30} {'Item Type':<10} {'Item Name':<30} {'Old → New'}")  # Added Item Type column
+                console_logger.info(
+                    f"{'Artist':<30} {'Item Type':<10} {'Item Name':<30} {'Old → New'}"
+                )  # Added Item Type column
                 console_logger.info("-" * 100)  # Adjusted separator length
                 for change in type_changes:
-                    artist = change.get("artist", "")[:28] + ".." if len(change.get("artist", "")) > 30 else change.get("artist", "")
-                    if change.get("old_track_name") is not None or change.get("new_track_name") is not None:  # Check if it's a track name change
+                    artist = (
+                        change.get("artist", "")[:28] + ".."
+                        if len(change.get("artist", "")) > 30
+                        else change.get("artist", "")
+                    )
+                    if (
+                        change.get("old_track_name") is not None
+                        or change.get("new_track_name") is not None
+                    ):  # Check if it's a track name change
                         item_type = "Track"
                         old_name = change.get("old_track_name", "")
                         new_name = change.get("new_track_name", "")
-                        item_name_display = change.get("track_name", "")  # Display the track name being changed
-                    elif change.get("old_album_name") is not None or change.get("new_album_name") is not None:  # Check if it's an album name change
+                        item_name_display = change.get(
+                            "track_name", ""
+                        )  # Display the track name being changed
+                    elif (
+                        change.get("old_album_name") is not None
+                        or change.get("new_album_name") is not None
+                    ):  # Check if it's an album name change
                         item_type = "Album"
                         old_name = change.get("old_album_name", "")
                         new_name = change.get("new_album_name", "")
-                        item_name_display = change.get("album", "")  # Display the album name being changed
+                        item_name_display = change.get(
+                            "album", ""
+                        )  # Display the album name being changed
                     else:
                         item_type = "Other"
                         old_name = ""
@@ -225,12 +285,20 @@ def save_unified_changes_report(
                         item_name_display = ""  # No specific item name for 'other' type
 
                     item_name_display = (
-                        item_name_display[:28] + ".." if len(item_name_display) > 30 else item_name_display
+                        item_name_display[:28] + ".."
+                        if len(item_name_display) > 30
+                        else item_name_display
                     )  # Truncate item name display
-                    old_name_display = old_name[:28] + ".." if len(old_name) > 30 else old_name  # Truncate old name display
-                    new_name_display = new_name[:28] + ".." if len(new_name) > 30 else new_name  # Truncate new name display
+                    old_name_display = (
+                        old_name[:28] + ".." if len(old_name) > 30 else old_name
+                    )  # Truncate old name display
+                    new_name_display = (
+                        new_name[:28] + ".." if len(new_name) > 30 else new_name
+                    )  # Truncate new name display
 
-                    console_logger.info(f"{artist:<30} {item_type:<10} {item_name_display:<30} {old_name_display} → {new_name_display}")
+                    console_logger.info(
+                        f"{artist:<30} {item_type:<10} {item_name_display:<30} {old_name_display} → {new_name_display}"
+                    )
 
             # If we have an unknown change type, show generic info
             else:  # change_type == "other"
@@ -239,26 +307,34 @@ def save_unified_changes_report(
                     artist = change.get("artist", "Unknown Artist")
                     album = change.get("album", "Unknown Album")
                     track_name = change.get("track_name", "Unknown Track")
-                    console_logger.info(f"Other change for: Artist='{artist}', Album='{album}', Track='{track_name}' - Details: {change}")
+                    console_logger.info(
+                        f"Other change for: Artist='{artist}', Album='{album}', Track='{track_name}' - Details: {change}"
+                    )
 
         console_logger.info(f"\nTotal: {len(changes)} changes")
-        return
-
-    # For normal mode, save to CSV file
-    # Ensure directory exists before saving
-    ensure_directory(os.path.dirname(file_path), error_logger)
-    _save_csv(changes_sorted, fieldnames, file_path, console_logger, error_logger, "changes report")
+    else:
+        # For normal mode, save to CSV file
+        # Ensure directory exists before saving
+        ensure_directory(os.path.dirname(file_path), error_logger)
+        _save_csv(
+            changes_sorted,
+            fieldnames,
+            file_path,
+            console_logger,
+            error_logger,
+            "changes report",
+        )
 
 
 def save_changes_report(
-    changes: List[Dict[str, str]],
+    changes: list[dict[str, str]],
     file_path: str,
-    console_logger: logging.Logger,
-    error_logger: logging.Logger,
+    console_logger: logging.Logger | None = None,
+    error_logger: logging.Logger | None = None,
     force_mode: bool = False,
 ) -> None:
-    """
-    Save the list of change dictionaries to a CSV file.
+    """Save the list of change dictionaries to a CSV file.
+
     Enhanced version that supports force mode for console output.
     Calls save_unified_changes_report internally.
 
@@ -289,18 +365,19 @@ def save_changes_report(
 
     # Use the unified changes report function for the core logic
     # Pass force_mode to save_unified_changes_report to handle console output
-    save_unified_changes_report(changes, file_path, console_logger, error_logger, force_mode)
+    save_unified_changes_report(
+        changes, file_path, console_logger, error_logger, force_mode
+    )
 
 
 def save_unified_dry_run(
-    cleaning_changes: List[Dict[str, str]],
-    genre_changes: List[Dict[str, str]],
+    cleaning_changes: list[dict[str, str]],
+    genre_changes: list[dict[str, str]],
     file_path: str,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
 ) -> None:
-    """
-    Save unified dry run report combining cleaning and genre changes.
+    """Save unified dry run report combining cleaning and genre changes.
 
     Args:
         cleaning_changes: List of dictionaries with cleaning changes
@@ -354,31 +431,52 @@ def save_unified_dry_run(
         combined_changes.append(change_copy)
 
     # Sort changes by artist and album
-    combined_changes.sort(key=lambda x: (x.get("artist", "Unknown"), x.get("album", "Unknown")))
+    combined_changes.sort(
+        key=lambda x: (x.get("artist", "Unknown"), x.get("album", "Unknown"))
+    )
 
     # Save to CSV
     # Ensure directory exists before saving
     ensure_directory(os.path.dirname(file_path), error_logger)
-    _save_csv(combined_changes, fieldnames, file_path, console_logger, error_logger, "dry run report")
+    _save_csv(
+        combined_changes,
+        fieldnames,
+        file_path,
+        console_logger,
+        error_logger,
+        "dry run report",
+    )
 
 
-def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
-    """
-    Load the track list from the CSV file into a dictionary. The track ID is used as the key.
+def load_track_list(csv_path: str) -> dict[str, dict[str, str]]:
+    """Load the track list from the CSV file into a dictionary. The track ID is used as the key.
+
     Reads columns: id, name, artist, album, genre, dateAdded, trackStatus, old_year, new_year.
 
     :param csv_path: Path to the CSV file.
     :return: Dictionary of track dictionaries.
     """
-    track_map = {}
+    track_map: dict[str, dict[str, str]] = {}
     if not os.path.exists(csv_path):
         return track_map
-    logger = logging.getLogger("console_logger")  # Use console_logger for loading info/errors
+    logger = logging.getLogger(
+        "console_logger"
+    )  # Use console_logger for loading info/errors
     try:
-        with open(csv_path, "r", encoding="utf-8") as f:
+        with open(csv_path, encoding="utf-8") as f:
             reader = csv.DictReader(f)
             # Define expected fieldnames to read, including old_year and new_year
-            expected_fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+            expected_fieldnames = [
+                "id",
+                "name",
+                "artist",
+                "album",
+                "genre",
+                "dateAdded",
+                "trackStatus",
+                "old_year",
+                "new_year",
+            ]
             # Check if the CSV header matches expected fieldnames
             if reader.fieldnames is None:
                 logger.warning(f"CSV file {csv_path} is empty or has no header.")
@@ -392,15 +490,21 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
                 )
                 # Adjust expected fieldnames to only include those found in the CSV header
                 actual_fieldnames = reader.fieldnames if reader.fieldnames else []
-                fields_to_read = [field for field in expected_fieldnames if field in actual_fieldnames]
+                fields_to_read = [
+                    field for field in expected_fieldnames if field in actual_fieldnames
+                ]
             else:
-                fields_to_read = expected_fieldnames  # Use all expected fields if header matches
+                fields_to_read = (
+                    expected_fieldnames  # Use all expected fields if header matches
+                )
 
             for row in reader:
                 tid = row.get("id", "").strip()
                 if tid:
                     # Create track dictionary, getting values for fields_to_read
-                    track = {field: row.get(field, "").strip() for field in fields_to_read}
+                    track = {
+                        field: row.get(field, "").strip() for field in fields_to_read
+                    }
                     # Ensure all expected fields are present in the track dictionary, even if empty
                     for field in expected_fieldnames:
                         track.setdefault(field, "")
@@ -413,15 +517,15 @@ def load_track_list(csv_path: str) -> Dict[str, Dict[str, str]]:
 
 
 async def sync_track_list_with_current(
-    all_tracks: List[Dict[str, str]],
+    all_tracks: list[dict[str, str]],
     csv_path: str,
     cache_service: CacheService,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
     partial_sync: bool = False,
 ) -> None:
-    """
-    Synchronizes the current track list with the data in a CSV file.
+    """Synchronizes the current track list with the data in a CSV file.
+
     Uses CacheService to interact with album year cache.
 
     This function ensures that album years are stored correctly between runs.
@@ -436,7 +540,9 @@ async def sync_track_list_with_current(
     :param error_logger: Logger for error output.
     :param partial_sync: Whether to perform a partial sync (only update new_year if missing).
     """
-    console_logger.info(f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}")
+    console_logger.info(
+        f"Starting sync: fetched {len(all_tracks)} tracks; CSV file: {csv_path}"
+    )
     # Loading an existing database from the main track list CSV
     csv_map = load_track_list(csv_path)
     console_logger.info(f"CSV currently contains {len(csv_map)} tracks before sync.")
@@ -484,12 +590,18 @@ async def sync_track_list_with_current(
             # Also ensure this year is in the CacheService's in-memory cache if it's not already
             # This helps keep the CacheService's in-memory data consistent with the CSV
             try:
-                cached_year = await cache_service.get_album_year_from_cache(artist, album)
+                cached_year = await cache_service.get_album_year_from_cache(
+                    artist, album
+                )
                 if not cached_year or cached_year != tr["new_year"]:
-                    await cache_service.store_album_year_in_cache(artist, album, tr["new_year"])
+                    await cache_service.store_album_year_in_cache(
+                        artist, album, tr["new_year"]
+                    )
                     # console_logger.debug(f"Synced year {tr['new_year']} from CSV to cache for '{artist} - {album}'") # Optional debug log
             except Exception as e:
-                error_logger.error(f"Error syncing year from CSV to cache for {artist} - {album}: {e}")
+                error_logger.error(
+                    f"Error syncing year from CSV to cache for {artist} - {album}: {e}"
+                )
 
         # Add the track data from the current run to the map
         current_map[tid] = {
@@ -501,7 +613,9 @@ async def sync_track_list_with_current(
             "dateAdded": tr.get("dateAdded", "").strip(),
             "trackStatus": tr.get("trackStatus", "").strip(),
             "old_year": tr.get("old_year", "").strip(),
-            "new_year": tr.get("new_year", "").strip(),  # Use the new_year value, potentially updated by partial_sync logic above
+            "new_year": tr.get(
+                "new_year", ""
+            ).strip(),  # Use the new_year value, potentially updated by partial_sync logic above
         }
 
     # Update or add data to CSV-map based on current_map
@@ -515,11 +629,22 @@ async def sync_track_list_with_current(
             # Update an existing track if any relevant field has changed
             changed = False
             # List of fields to check for changes when updating an existing track
-            fields_to_check = ["name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+            fields_to_check = [
+                "name",
+                "artist",
+                "album",
+                "genre",
+                "dateAdded",
+                "trackStatus",
+                "old_year",
+                "new_year",
+            ]
             for field in fields_to_check:
                 # Use .get() with a default to handle cases where a field might be missing in old_data
                 if old_data.get(field, "") != new_data.get(field, ""):
-                    old_data[field] = new_data.get(field, "")  # Update the field in the old_data dict
+                    old_data[field] = new_data.get(
+                        field, ""
+                    )  # Update the field in the old_data dict
                     changed = True
             if changed:
                 added_or_updated_count += 1
@@ -530,7 +655,17 @@ async def sync_track_list_with_current(
     final_list = list(csv_map.values())
     console_logger.info(f"Final CSV track count after sync: {len(final_list)}")
     # Define the fieldnames for the output CSV file
-    fieldnames = ["id", "name", "artist", "album", "genre", "dateAdded", "trackStatus", "old_year", "new_year"]
+    fieldnames = [
+        "id",
+        "name",
+        "artist",
+        "album",
+        "genre",
+        "dateAdded",
+        "trackStatus",
+        "old_year",
+        "new_year",
+    ]
     _save_csv(final_list, fieldnames, csv_path, console_logger, error_logger, "tracks")
 
     # Removed the call to extract_album_cache_from_tracks
@@ -546,18 +681,18 @@ async def sync_track_list_with_current(
 
 
 def save_html_report(
-    events: List[Dict[str, Any]],
-    call_counts: Dict[str, int],
-    success_counts: Dict[str, int],
-    decorator_overhead: Dict[str, float],
-    config: Dict[str, Any],
-    console_logger: Optional[logging.Logger] = None,
-    error_logger: Optional[logging.Logger] = None,
+    events: list[dict[str, Any]],
+    call_counts: dict[str, int],
+    success_counts: dict[str, int],
+    decorator_overhead: dict[str, float],
+    config: dict[str, Any],
+    console_logger: logging.Logger | None = None,
+    error_logger: logging.Logger | None = None,
     group_successful_short_calls: bool = False,
     force_mode: bool = False,
 ) -> None:
-    """
-    Generate an HTML report from the provided analytics data.
+    """Generate an HTML report from the provided analytics data.
+
     The report includes a summary of function call counts, success rates, and decorator overhead,
     as well as detailed event data and grouped short successful calls.
 
@@ -577,7 +712,9 @@ def save_html_report(
         error_logger = logging.getLogger("error_logger")
 
     # Additional logging for diagnostics
-    console_logger.info(f"Starting HTML report generation with {len(events)} events, {len(call_counts)} function counts")
+    console_logger.info(
+        f"Starting HTML report generation with {len(events)} events, {len(call_counts)} function counts"
+    )
 
     date_str = datetime.now().strftime("%Y-%m-%d")
     logs_base_dir = config.get("logs_base_dir", ".")
@@ -589,20 +726,27 @@ def save_html_report(
     report_file = get_full_log_path(
         config,
         "analytics_html_report_file",
-        os.path.join("analytics", "analytics_full.html" if force_mode else "analytics_incremental.html"),
+        os.path.join(
+            "analytics",
+            "analytics_full.html" if force_mode else "analytics_incremental.html",
+        ),
         error_logger,
     )
 
     console_logger.debug(f"Will save HTML report to: {report_file}")
 
     # Setting colors and thresholds
-    duration_thresholds = config.get("analytics", {}).get("duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10})
+    duration_thresholds = config.get("analytics", {}).get(
+        "duration_thresholds", {"short_max": 2, "medium_max": 5, "long_max": 10}
+    )
     # Removed colors as per user's plan
     # colors = config.get("analytics", {}).get("colors", {"short": "#90EE90", "medium": "#D3D3D3", "long": "#FFB6C1"})
 
     # Check for data availability
     if not events and not call_counts:
-        console_logger.warning("No analytics data available for report - creating empty template")
+        console_logger.warning(
+            "No analytics data available for report - creating empty template"
+        )
         # Create an empty template with a message
         html_content = f"""<!DOCTYPE html>
 <html>
@@ -675,7 +819,10 @@ def save_html_report(
 
                 # Group only successful calls that are within the 'short' threshold
                 if success and duration <= short_max:
-                    key = (ev.get("Function", "Unknown"), ev.get("Event Type", "Unknown"))
+                    key = (
+                        ev.get("Function", "Unknown"),
+                        ev.get("Event Type", "Unknown"),
+                    )
                     if key not in grouped_short_success:
                         grouped_short_success[key] = {"count": 0, "total_duration": 0.0}
                     grouped_short_success[key]["count"] += 1
@@ -685,7 +832,9 @@ def save_html_report(
                     big_or_fail_events.append(ev)
 
             except KeyError as e:
-                error_logger.error(f"Missing key in event data during grouping: {e}, event: {ev}")
+                error_logger.error(
+                    f"Missing key in event data during grouping: {e}, event: {ev}"
+                )
                 big_or_fail_events.append(ev)  # Add an event if it has missing data
 
     else:
@@ -751,12 +900,10 @@ def save_html_report(
 <body>
     <h2>Analytics Report for {date_str}</h2>
     <div class="summary">
-        <p class="run-type">Run type: {'Full scan' if force_mode else 'Incremental update'}</p>
+        <p class="run-type">Run type: {"Full scan" if force_mode else "Incremental update"}</p>
         <p><strong>Total functions:</strong> {len(call_counts)}</p>
         <p><strong>Total events:</strong> {len(events)}</p>
-        <p><strong>Success rate:</strong> {sum(success_counts.values())/sum(call_counts.values())*100 if sum(call_counts.values()) else 0:.1f}%</p>
-    </div>
-
+        <p><strong>Success rate:</strong> {sum(success_counts.values()) / sum(call_counts.values()) * 100 if sum(call_counts.values()) else 0:.1f}%</p>
     <h3>Grouped Short & Successful Calls</h3>
     <table>
         <tr>
@@ -765,7 +912,7 @@ def save_html_report(
             <th>Count</th>
             <th>Avg Duration (s)</th>
             <th>Total Duration (s)</th>
-        </tr>"""
+        </tr>"""  # noqa: E501
 
     # Adding groups of successful calls
     if group_successful_short_calls and grouped_short_success:
@@ -818,15 +965,17 @@ def save_html_report(
 
                 html_content += f"""
         <tr class="{row_class}">
-            <td>{ev.get('Function', 'Unknown')}</td>
-            <td>{ev.get('Event Type', 'Unknown')}</td>
-            <td>{ev.get('Start Time', 'Unknown')}</td>
-            <td>{ev.get('End Time', 'Unknown')}</td>
+            <td>{ev.get("Function", "Unknown")}</td>
+            <td>{ev.get("Event Type", "Unknown")}</td>
+            <td>{ev.get("Start Time", "Unknown")}</td>
+            <td>{ev.get("End Time", "Unknown")}</td>
             <td>{duration}</td>
             <td>{success_display}</td>
         </tr>"""
             except KeyError as e:
-                error_logger.error(f"Error formatting event for detailed list: {e}, event data: {ev}")
+                error_logger.error(
+                    f"Error formatting event for detailed list: {e}, event data: {ev}"
+                )
     else:
         html_content += """
         <tr><td colspan="6">No detailed calls to display.</td></tr>"""

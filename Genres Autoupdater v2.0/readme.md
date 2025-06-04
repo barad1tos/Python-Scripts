@@ -1496,17 +1496,3 @@ A: Album years are cached both in-memory and in a persistent CSV (`cache_albums.
 **Q: What is the difference between `old_year` and `new_year` in the CSV?**
 
 A: `old_year` represents the year previously stored in the library or fetched from Music.app, while `new_year` is the year determined by the script (from APIs or cache). This allows for clear tracking of changes and prevents accidental overwrites.
-
-# test
-
-# test
-
-# test
-
-# test
-
-# test
-
-# test
-
-# test
