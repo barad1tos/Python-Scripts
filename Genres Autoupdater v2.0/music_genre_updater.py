@@ -43,9 +43,11 @@ import sys
 import time
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+# trunk-ignore(mypy/import-untyped)
+# trunk-ignore(mypy/note)
 import yaml
 
 from dotenv import load_dotenv
@@ -163,6 +165,9 @@ def check_paths(paths: list[str], logger: logging.Logger) -> None:
 # This class will contain the core logic previously in top-level async functions
 class MusicUpdater:
     """Orchestrates the music library update process, using injected dependencies."""
+
+    YEAR_LENGTH = 4  # Year must be a 4-digit string
+
     def __init__(
         self,
         config: dict[str, Any],
@@ -175,7 +180,7 @@ class MusicUpdater:
         pending_verification_service: "PendingVerificationService",
         # Add other services here if needed in the future
     ):
-        """Initializes the MusicUpdater with its dependencies."""
+        """Initialize the MusicUpdater with its dependencies."""
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
@@ -190,7 +195,7 @@ class MusicUpdater:
 
     # Checks if the given string is a valid 4-digit year.
     def _is_valid_year(self, year_str: str | int | float | None) -> bool:
-        """Checks if the given string is a valid 4-digit year."""
+        """Check if the given string is a valid 4-digit year."""
         if not year_str:
             return False
         if isinstance(
@@ -198,7 +203,7 @@ class MusicUpdater:
             int | float,
         ):  # If it's already a number, convert to string
             year_str = str(int(year_str))
-        return len(year_str) == 4 and year_str.isdigit()
+        return len(year_str) == self.YEAR_LENGTH and year_str.isdigit()
 
     # Logic moved from old fetch_tracks_async
     # Correctly using the classmethod decorator from Analytics
@@ -236,6 +241,7 @@ class MusicUpdater:
             # Check cache service availability
             if self.cache_service is None:
                 # Use error_logger if available, otherwise fall back to console_logger
+                # trunk-ignore(mypy/unreachable)
                 logger = self.error_logger or self.console_logger
                 logger.critical("fetch_tracks_async: self.cache_service is None!")
                 return []  # Return empty list if no cache service available
@@ -252,30 +258,30 @@ class MusicUpdater:
                 self.cache_service.invalidate(cache_key)
             else:
                 # Try to use cache
-                    self.console_logger.debug(
-                        "fetch_tracks_async: Calling cache_service.get_async...",
-                    )
-                    cached_tracks = await self.cache_service.get_async(cache_key)
+                self.console_logger.debug(
+                    "fetch_tracks_async: Calling cache_service.get_async...",
+                )
+                cached_tracks = await self.cache_service.get_async(cache_key)
 
-                    # Check if we got valid cached data
-                    if cached_tracks and isinstance(cached_tracks, list):
-                        self.console_logger.info(
-                            "Using cached data for %s, found %d tracks",
-                            cache_key,
-                            len(cached_tracks),
-                        )
-                        should_fetch_from_app = False
-                    elif cached_tracks:
-                        self.console_logger.warning(
-                            "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.",
-                            cache_key,
-                            type(cached_tracks).__name__
-                        )
-                    else:
-                        self.console_logger.info(
-                            "No cache found for %s, fetching from Music.app",
-                            cache_key,
-                        )
+                # Check if we got valid cached data
+                if cached_tracks and isinstance(cached_tracks, list):
+                    self.console_logger.info(
+                        "Using cached data for %s, found %d tracks",
+                        cache_key,
+                        len(cached_tracks),
+                    )
+                    should_fetch_from_app = False
+                elif cached_tracks:
+                    self.console_logger.warning(
+                        "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.",
+                        cache_key,
+                        type(cached_tracks).__name__
+                    )
+                else:
+                    self.console_logger.info(
+                        "No cache found for %s, fetching from Music.app",
+                        cache_key,
+                    )
 
             # Initialize raw_data with empty string as default
             raw_data = ""
@@ -347,7 +353,7 @@ class MusicUpdater:
         new_genre: str | None = None,
         new_year: str | None = None,
     ) -> bool:
-        """Updates the track properties asynchronously via AppleScript using injected AppleScriptClient."""
+        """Update the track properties asynchronously via AppleScript using injected AppleScriptClient."""
         try:
             if not track_id:
                 self.error_logger.error("No track_id provided.")
@@ -1096,90 +1102,89 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Can Run Incremental")
     async def can_run_incremental(self, force_run: bool = False) -> bool:
-        """Checks if the incremental interval has passed since the last run using injected CacheService."""
+        """Check if the incremental interval has passed since the last run using injected CacheService."""
+        result = True
         if force_run:
             self.console_logger.info(
                 "Force run requested. Bypassing incremental interval check.",
             )
-            return True
-
-        # Use config from self.config
-        last_file_path = get_full_log_path(
+            result = True
+        elif not os.path.exists(get_full_log_path(
             self.config,
             "last_incremental_run_file",
             "last_incremental_run.log",
             self.error_logger,
-        )  # Pass error_logger
-        interval = self.config.get("incremental_interval_minutes", 60)
-
-        # If the file does not exist, allow it to run
-        if not os.path.exists(last_file_path):
+        )):
+            last_file_path = get_full_log_path(
+                self.config,
+                "last_incremental_run_file",
+                "last_incremental_run.log",
+                self.error_logger,
+            )
             self.console_logger.info(
                 "Last incremental run file not found at %s. Proceeding.",
                 last_file_path,
             )
-            return True
-
-        # Trying to read a file with repeated attempts
-        max_retries = 3
-        retry_delay = 0.5  # seconds
-
-        for attempt in range(max_retries):
-            try:
-                # Trying to read a file with rollback on failure
-                with open(last_file_path, encoding="utf-8") as f:
-                    last_run_str = f.read().strip()
-
+            result = True
+        else:
+            last_file_path = get_full_log_path(
+                self.config,
+                "last_incremental_run_file",
+                "last_incremental_run.log",
+                self.error_logger,
+            )
+            interval = self.config.get("incremental_interval_minutes", 60)
+            max_retries = 3
+            retry_delay = 0.5  # seconds
+            for attempt in range(max_retries):
                 try:
-                    last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
-                except ValueError:
-                    self.error_logger.error(
-                        f"Invalid date format '{last_run_str}' in {last_file_path}. Proceeding with execution assuming first run.",
-                    )  # Log invalid format
-                    return True
-
-                next_run_time = last_run_time + timedelta(minutes=interval)
-                now = datetime.now()
-
-                if now >= next_run_time:
-                    self.console_logger.info(
-                        "Incremental interval (%d mins) elapsed since last run (%s). Proceeding.",
-                        interval,
-                        last_run_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    )  # Log full timestamp
-                    return True
-                diff = next_run_time - now
-                minutes_remaining = (
-                    diff.total_seconds() // 60
-                )  # Use total_seconds for more accurate difference
-                self.console_logger.info(
-                    "Last run: %s. Next run in %d mins.",
-                    last_run_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    minutes_remaining,
-                )  # Log full timestamp
-                return False
-
-            except OSError as e:
-                if attempt < max_retries - 1:
-                    # If this is not the last attempt, we wait and try again
-                    self.console_logger.warning(
-                        f"Error reading last run file (attempt {attempt + 1}/{max_retries}): "
-                        f"{e}. Retrying in {retry_delay:.1f}s...",  # Use :.1f for float
+                    with open(last_file_path, encoding="utf-8") as f:
+                        last_run_str = f.read().strip()
+                    try:
+                        last_run_time = datetime.strptime(last_run_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        self.error_logger.error(
+                            f"Invalid date format in last run file: '{last_run_str}'. Allowing execution.",
+                        )
+                        result = True
+                        break
+                    now = datetime.now()
+                    elapsed_minutes = (now - last_run_time).total_seconds() / 60
+                    if elapsed_minutes < interval:
+                        self.console_logger.info(
+                            "Incremental interval not reached yet: %.2f/%.2f minutes.",
+                            elapsed_minutes,
+                            interval,
+                        )
+                        result = False
+                        break
+                    else:
+                        self.console_logger.info(
+                            "Incremental interval passed: %.2f/%.2f minutes.",
+                            elapsed_minutes,
+                            interval,
+                        )
+                        result = True
+                        break
+                except OSError as e:
+                    self.error_logger.warning(
+                        f"Error accessing last run file at {last_file_path} (attempt {attempt + 1}/{max_retries}): {e}",
                     )
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential increase in latency
-                else:
-                    # If all attempts fail, log and allow launch
-                    self.error_logger.error(
-                        f"Error accessing last run file at {last_file_path} after {max_retries} attempts: {e}. Allowing execution.",
-                    )  # Log file path
-                    return True
-
-        # Should not be reached, but for safety:
-        self.error_logger.error(
-            "Unexpected logic path reached in can_run_incremental. Allowing execution.",
-        )  # Log unexpected path
-        return True
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        self.error_logger.error(
+                            f"Error accessing last run file at {last_file_path} after {max_retries} attempts: {e}. Allowing execution.",
+                        )
+                        result = True
+                        break
+            else:
+                # If we exit the loop without break, this is unexpected
+                self.error_logger.error(
+                    "Unexpected logic path reached in can_run_incremental. Allowing execution.",
+                )
+                result = True
+        return result
 
     # Logic moved from old update_last_incremental_run
     # Correctly using the classmethod decorator from Analytics
@@ -1215,11 +1220,11 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Database Verification")
     async def verify_and_clean_track_database(self, force: bool = False) -> int:
-        """Verifies tracks in the CSV database against Music.app.
+        """Verify tracks in the CSV database against Music.app.
 
-        Also removes entries for tracks that no longer exist.
-        Respects the 'development.test_artists' config setting.
-        Uses injected AppleScriptClient and config from self.config.
+        Also remove entries for tracks that no longer exist.
+        Respect the 'development.test_artists' config setting.
+        Use injected AppleScriptClient and config from self.config.
         """
         removed_count = 0
         try:
@@ -1341,7 +1346,7 @@ class MusicUpdater:
             # --- Async verification helper ---
             # This helper needs access to the AppleScript client
             async def verify_track_exists(track_id: str) -> bool:
-                """Checks if a track ID exists in the Music library using injected AppleScriptClient."""
+                """Check if a track ID exists in the Music library using injected AppleScriptClient."""
                 if not track_id or not track_id.isdigit():
                     self.error_logger.warning(
                         f"Invalid track ID '{track_id}' passed to verify_track_exists.",
@@ -1509,7 +1514,7 @@ class MusicUpdater:
         tracks: list[dict[str, str]],
         last_run_time: datetime,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-        """Updates the genres for tracks based on the earliest genre of each artist.
+        """Update the genres for tracks based on the earliest genre of each artist.
 
         Uses injected AppleScriptClient and config from self.config.
         """
@@ -1737,7 +1742,7 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Clean Artist")
     async def run_clean_artist(self, artist: str, force: bool) -> None:
-        """Executes the cleaning process for a specific artist.
+        """Execute the cleaning process for a specific artist.
 
         Uses injected services and utility functions.
         """
@@ -1888,7 +1893,7 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Update Years")
     async def run_update_years(self, artist: str | None, force: bool) -> None:
-        """Executes the album year update process.
+        """Execute the album year update process.
 
         Uses injected services and config from self.config.
         """
@@ -2168,7 +2173,7 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Verify Database")
     async def run_verify_database(self, force: bool) -> None:
-        """Executes the database verification process.
+        """Execute the database verification process.
 
         Uses injected verify_and_clean_track_database method.
         """
@@ -2194,7 +2199,7 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Verify Pending")
     async def run_verify_pending(self, force: bool) -> None:
-        """Executes verification for all pending albums regardless of timeframe if force is True.
+        """Execute verification for all pending albums regardless of timeframe if force is True.
 
         Or only those due for verification based on the pending interval if force is False.
         Uses injected services and config from self.config.
@@ -2421,7 +2426,7 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Full Process")
     async def run_full_process(self, args: argparse.Namespace) -> None:
-        """Runs the default full update process (cleaning, genres, years, pending verification).
+        """Run the default full update process (cleaning, genres, years, pending verification).
 
         Uses injected services and config from self.config.
         """
@@ -2730,10 +2735,10 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Main synchronous function to parse arguments and run the async main logic.
+    """Parse arguments and run the async main logic.
 
-    Handles top-level setup, teardown, exception handling, and listener shutdown.
-    Initializes loggers and DependencyContainer, orchestrates command execution.
+    Handle top-level setup, teardown, exception handling, and listener shutdown.
+    Initialize loggers and DependencyContainer, orchestrate command execution.
     """
     # Import DependencyContainer here to break the circular import and make it available to main's scope
     # Ensure DependencyContainer is imported at the function level if needed only here,

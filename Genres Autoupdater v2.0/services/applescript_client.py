@@ -35,12 +35,15 @@ Example:
     ...
     >>> # Run the test in an event loop
     >>> # asyncio.run(test())
+
 """
 
 import asyncio
 import logging
 import os
 import re
+
+# trunk-ignore(bandit/B404)
 import subprocess
 import time
 
@@ -133,7 +136,7 @@ class EnhancedRateLimiter:
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
-        """Internal method to check rate limits and wait if necessary."""
+        """Check rate limits and wait if necessary."""
         now = time.monotonic()  # Use monotonic clock for interval timing
 
         # Clean up old timestamps outside the window
@@ -199,6 +202,7 @@ class AppleScriptClient:
         console_logger (logging.Logger): Logger for console output.
         error_logger (logging.Logger): Logger for error output.
         semaphore (Optional[asyncio.Semaphore]): Semaphore to limit concurrent AppleScript executions (initialized asynchronously).
+
     """
 
     def __init__(
@@ -207,6 +211,7 @@ class AppleScriptClient:
         console_logger: logging.Logger | None = None,
         error_logger: logging.Logger | None = None,
     ):
+        """Initialize the AppleScript client."""
         self.config = config
         self.console_logger = (
             console_logger
