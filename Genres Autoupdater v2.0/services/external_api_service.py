@@ -96,7 +96,7 @@ class EnhancedRateLimiter:
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
-        """Internal method to check rate limits and wait if necessary."""
+        """Check rate limits and wait if necessary."""
         now = time.monotonic()  # Use monotonic clock for interval timing
 
         # Clean up old timestamps outside the window
@@ -397,12 +397,10 @@ class ExternalApiService:
         headers_override: dict[str, str] | None = None,
         max_retries: int = 3,
         base_delay: float = 1.0,
-        timeout_override: int | None = None,
+        timeout_override: float | None = None,
     ) -> dict[str, Any] | None:
         """Make an API request with rate limiting, error handling, and retry logic."""
         if not self.session or self.session.closed:
-            # The calling code should ensure the session is initialized.
-            # If we reach here without a session, it's a logic error.
             self.error_logger.error(
                 f"[{api_name}] Session not available for request to {url}. Initialize method was not called or failed."
             )
@@ -416,8 +414,6 @@ class ExternalApiService:
                 )
                 return None
             request_headers["Authorization"] = f"Discogs token={self.discogs_token}"
-
-            # Додаємо User-Agent, якщо він не встановлений
             if "User-Agent" not in request_headers and hasattr(self, "user_agent"):
                 request_headers["User-Agent"] = self.user_agent
 
@@ -435,17 +431,15 @@ class ExternalApiService:
             else self.session.timeout
         )
         last_exception: Exception | None = None
-        # Construct full URL with params for logging *before* the loop
-        log_url = url + (
-            f"?{urllib.parse.urlencode(params or {}, safe=':/')}" if params else ""
-        )
+        log_url = url + (f"?{urllib.parse.urlencode(params or {}, safe=':/')}" if params else "")
+        result = None
 
         for attempt in range(max_retries + 1):
             wait_time = 0.0
             start_time = 0.0
             elapsed = 0.0
             response_status = -1
-            response_text_snippet = "[No Response Body]"  # Default snippet
+            response_text_snippet = "[No Response Body]"
 
             try:
                 wait_time = await limiter.acquire()
@@ -464,50 +458,35 @@ class ExternalApiService:
                     response_status = response.status
                     self.api_call_durations[api_name].append(elapsed)
 
-                    # Log headers being sent for Discogs
                     if api_name == "discogs":
                         self.console_logger.debug(
                             f"[discogs] Sending Headers: {request_headers}"
                         )
 
+                    # Read response text
                     response_text_snippet = "[Could not read text]"
                     try:
-                        # Read limited text for logging ALL Discogs responses
+                        raw_text = await response.text(encoding="utf-8", errors="ignore")
+                        response_text_snippet = raw_text[:500] if api_name == "discogs" else raw_text[:200]
+
                         if api_name == "discogs":
-                            raw_text = await response.text(
-                                encoding="utf-8", errors="ignore"
-                            )
-                            response_text_snippet = raw_text[
-                                :500
-                            ]  # Log more characters for Discogs
-                            # Fixed typo in log message
                             self.console_logger.debug(
                                 f"====== DISCOGS RAW RESPONSE (Status: {response_status}) ======"
                             )
                             self.console_logger.debug(response_text_snippet)
-                            # Fixed typo in log message
-                            self.console_logger.debug(
-                                "====== END DISCOGS RAW RESPONSE ====== "
-                            )
-                        else:
-                            # Keep shorter snippet for other APIs unless needed
-                            response_text_snippet = await response.text(
-                                encoding="utf-8", errors="ignore"
-                            )
-                            response_text_snippet = response_text_snippet[:200]
+                            self.console_logger.debug("====== END DISCOGS RAW RESPONSE ====== ")
                     except Exception as read_err:
                         response_text_snippet = f"[Error Reading Response: {read_err}]"
                         self.error_logger.warning(
                             f"[{api_name}] Failed to read response body: {read_err}"
                         )
 
-                    # Log basic request outcome
                     self.console_logger.debug(
-                        f"[{api_name}] Request (Attempt {attempt + 1}): {log_url} - Status: {response_status} ({elapsed:.3f}s)"
+                        f"[{api_name}] Request (Attempt {attempt + 1}): {log_url} - "
+                        f"Status: {response_status} ({elapsed:.3f}s)"
                     )
 
-                    # --- Handle Response Status ---
-                    # Retry on 429 or 5xx
+                    # Handle response status
                     if response_status == 429 or response_status >= 500:
                         last_exception = aiohttp.ClientResponseError(
                             response.request_info,
@@ -516,118 +495,118 @@ class ExternalApiService:
                             message=response_text_snippet,
                         )
                         if attempt < max_retries:
-                            delay = (
-                                base_delay
-                                * (2**attempt)
-                                * (0.8 + random.random() * 0.4)
-                            )
-                            retry_after_header = response.headers.get("Retry-After")
-                            if retry_after_header:
+                            delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                            if retry_after := response.headers.get("Retry-After"):
                                 try:
-                                    retry_after_seconds = int(retry_after_header)
-                                    delay = max(delay, retry_after_seconds)
+                                    delay = max(delay, int(retry_after))
                                     self.console_logger.warning(
-                                        f"[{api_name}] Respecting Retry-After header: {retry_after_seconds}s"
+                                        f"[{api_name}] Respecting Retry-After header: {retry_after}s"
                                     )
                                 except ValueError:
                                     pass
                             self.console_logger.warning(
                                 f"[{api_name}] Status {response_status}, retrying {attempt + 1}/{max_retries} "
-                                f"in {delay:.2f}s. URL: {url}. Snippet: {response_text_snippet}"
+                                f"in {delay:.2f}s. URL: {url}"
                             )
                             await asyncio.sleep(delay)
                             continue
-                        else:
-                            self.error_logger.error(
-                                f"[{api_name}] Request failed after {max_retries + 1} attempts with status {response_status}. "
-                                f"URL: {url}. Snippet: {response_text_snippet}"
-                            )
-                            return None
+                        break
 
-                    # Fail definitively on other errors (e.g., 404, 401, 403)
                     if not response.ok:
-                        self.error_logger.warning(
-                            f"[{api_name}] API request failed with status {response_status}. URL: {url}. Snippet: {response_text_snippet}"
-                        )
                         last_exception = aiohttp.ClientResponseError(
                             response.request_info,
                             response.history,
                             status=response_status,
                             message=response_text_snippet,
                         )
-                        return None
-
-                    # Success (2xx) - Try to parse JSON
-                    try:
-                        if "application/json" in response.headers.get(
-                            "Content-Type", ""
-                        ):
-                            return await response.json()
-                        else:
-                            self.error_logger.warning(
-                                f"[{api_name}] Received non-JSON response from {url}. "
-                                f"Content-Type: {response.headers.get('Content-Type')}. Snippet: {response_text_snippet}"
-                            )
-                            return None
-                    except (
-                        aiohttp.ContentTypeError,
-                        ValueError,
-                        Exception,
-                    ) as json_error:
-                        self.error_logger.error(
-                            f"[{api_name}] Error parsing JSON response from {url}: {json_error}. Snippet: {response_text_snippet}"
+                        self.error_logger.warning(
+                            f"[{api_name}] API request failed with status {response_status}. "
+                            f"URL: {url}. Snippet: {response_text_snippet}"
                         )
-                        last_exception = json_error
-                        return None
+                        break
 
-            except TimeoutError as timeout_error:
+                    # Process successful response
+                    if "application/json" in response.headers.get("Content-Type", ""):
+                        result = await self._parse_json_response(response, api_name, url, response_text_snippet)
+                    else:
+                        self.error_logger.warning(
+                            f"[{api_name}] Received non-JSON response from {url}. "
+                            f"Content-Type: {response.headers.get('Content-Type')}"
+                        )
+                    break
+
+            except (TimeoutError, aiohttp.ClientError) as e:
                 elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
                 self.api_call_durations[api_name].append(elapsed)
-                last_exception = timeout_error
-                if attempt < max_retries:
+                last_exception = e
+
+                if attempt >= max_retries:
+                    self.error_logger.error(
+                        f"[{api_name}] Request failed after {max_retries + 1} attempts: {e}"
+                    )
+                    break
+
+                if isinstance(e, aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError) or \
+                   isinstance(e, asyncio.TimeoutError):
                     delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
                     self.console_logger.warning(
-                        f"[{api_name}] Request timed out after {elapsed:.2f}s (Attempt {attempt + 1}), retrying in {delay:.2f}s: {url}"
+                        f"[{api_name}] {type(e).__name__}, retrying {attempt + 1}/{max_retries} in {delay:.2f}s"
                     )
                     await asyncio.sleep(delay)
                     continue
-                else:
-                    self.error_logger.error(
-                        f"[{api_name}] Request timed out after {max_retries + 1} attempts ({elapsed:.2f}s): {url}"
-                    )
-                    return None
-            except aiohttp.ClientError as client_error:
-                elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
-                self.api_call_durations[api_name].append(elapsed)
-                self.error_logger.error(
-                    f"[{api_name}] Client error during request to {url} (Attempt {attempt + 1}): {client_error}"
-                )
-                last_exception = client_error
-                if attempt < max_retries and isinstance(
-                    client_error,
-                    aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError,
-                ):
-                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
-                    await asyncio.sleep(delay)
-                    continue
-                else:
-                    return None
+                break
+
             except Exception as e:
                 elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
                 self.api_call_durations[api_name].append(elapsed)
                 self.error_logger.exception(
-                    f"[{api_name}] Unexpected error making request to {url} (Attempt {attempt + 1}): {e}"
+                    f"[{api_name}] Unexpected error making request to {url}: {e}"
                 )
                 last_exception = e
-                return None
+                break
+
             finally:
                 if limiter:
                     limiter.release()
 
-        # Should not be reached in normal flow if retries are exhausted
-        self.error_logger.error(
-            f"[{api_name}] Request loop ended without returning for URL: {url}. Last exception: {last_exception}"
-        )
+        if result is None and last_exception:
+            self.error_logger.error(
+                f"[{api_name}] Request failed for URL: {url}. Last exception: {last_exception}"
+            )
+        return result
+
+    async def _parse_json_response(
+        self,
+        response: aiohttp.ClientResponse,
+        api_name: str,
+        url: str,
+        snippet: str
+    ) -> dict[str, Any] | None:
+        """Parse JSON response and ensure it is a dict, logging if not.
+
+        Args:
+            response: The aiohttp response object
+            api_name: Name of the API for logging
+            url: The request URL for logging
+            snippet: Response text snippet for error logging
+
+        Returns:
+            Parsed JSON as dict if successful, None otherwise
+
+        """
+        try:
+            data = await response.json()
+            if isinstance(data, dict):
+                return data
+            self.error_logger.warning(
+                f"[{api_name}] JSON response is not a dict (type: {type(data).__name__}) from {url}. "
+                f"Snippet: {str(data)[:200]}"
+            )
+        except Exception as exc:
+            self.error_logger.error(
+                f"[{api_name}] Error parsing JSON response from {url}: {exc}. "
+                f"Snippet: {snippet[:200]}"
+            )
         return None
 
     def should_update_album_year(
@@ -639,7 +618,7 @@ class ExternalApiService:
         # Removed pending_verification_service from here, use self.pending_verification_service
         # pending_verification_service=None,
     ) -> bool:
-        """Determines whether to update the year for an album based on the status of its tracks."""
+        """Determine whether to update the year for an album based on the status of its tracks."""
         if not tracks:
             return True
 
@@ -2039,19 +2018,17 @@ class ExternalApiService:
 
             # Prepare API request parameters
             url = "https://ws.audioscrobbler.com/2.0/"
-            params = {
+            params: dict[str, str] = {
                 "method": "album.getInfo",
-                "artist": artist_norm,  # Use normalized names for lookup consistency
-                "album": album_norm,
-                "api_key": self.lastfm_api_key,
+                "artist": str(artist_norm),  # Ensure string type
+                "album": str(album_norm),    # Ensure string type
+                "api_key": str(self.lastfm_api_key),  # Ensure string type
                 "format": "json",
                 "autocorrect": "1",  # Enable Last.fm autocorrection
             }
 
-            # Convert all values in params to strings
-            params = {k: str(v) for k, v in params.items()}
 
-            # Make the API request
+            # Make the API request with properly typed params
             data = await self._make_api_request("lastfm", url, params=params)
 
             # Validate response
@@ -2289,7 +2266,7 @@ class ExternalApiService:
     def _clean_expired_cache(
         self, cache: dict[str, tuple[Any, float]] | Any, ttl_seconds: float, cache_name: str = "Generic"
     ) -> None:
-        """Removes expired entries from a timestamped cache dictionary.
+        """Remove expired entries from a timestamped cache dictionary.
 
         This method is no longer strictly necessary for activity/region cache
         as CacheService.get_async handles TTL, but kept for potential other uses
@@ -2320,7 +2297,7 @@ class ExternalApiService:
             )
 
     def _is_valid_year(self, year_str: str | None) -> bool:
-        """Basic check if a string represents a plausible release year (4 digits, within range)."""
+        """Check if a string represents a valid release year."""
         if (
             not year_str
             or not isinstance(year_str, str)

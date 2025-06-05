@@ -51,6 +51,7 @@ class Logger(Protocol):
     must provide to be compatible with the PendingVerificationService.
     Implementations should handle different log levels appropriately.
     """
+
     def info(self, msg: str, *args: Any, **kwargs: Any) -> None:
         """Log an informational message."""
         ...
@@ -80,6 +81,7 @@ class PendingVerificationService:
         verification_interval_days (int): Days to wait before re-checking an album
         pending_albums: Cache of pending albums using hash keys.
         _lock: asyncio.Lock for synchronizing access to pending_albums cache
+
     """
 
     def __init__(self, config: dict[str, Any], console_logger: logging.Logger, error_logger: logging.Logger):
@@ -92,6 +94,7 @@ class PendingVerificationService:
             config: Application configuration dictionary
             console_logger: Logger for console output
             error_logger: Logger for error logging.
+
         """
         self.config = config
         self.console_logger = console_logger
@@ -136,7 +139,7 @@ class PendingVerificationService:
         )
 
     def _generate_album_key(self, artist: str, album: str) -> str:
-        """Generates a unique hash key for an album based on artist and album names.
+        """Generate a unique hash key for an album based on artist and album names.
 
         Uses SHA256 to avoid issues with separator characters in names.
         (Duplicated from CacheService for independence, could be moved to a shared utility).
@@ -356,6 +359,7 @@ class PendingVerificationService:
 
         Example:
             >>> await service.mark_for_verification("Pink Floyd", "The Dark Side of the Moon")
+
         """
         # Acquire lock before modifying the in-memory cache
         async with self._lock:
@@ -391,6 +395,7 @@ class PendingVerificationService:
         Example:
             >>> if await service.is_verification_needed("Pink Floyd", "The Dark Side of the Moon"):
             >>>     # Perform verification
+
         """
         # Acquire lock before reading from the in-memory cache
         async with self._lock:
@@ -437,6 +442,7 @@ class PendingVerificationService:
 
         Example:
             >>> await service.remove_from_pending("Pink Floyd", "The Dark Side of the Moon")
+
         """
         # Acquire lock before modifying the in-memory cache
         async with self._lock:
@@ -480,6 +486,7 @@ class PendingVerificationService:
             >>> pending_list = await service.get_all_pending_albums()
             >>> for timestamp, artist, album in pending_list: # Correct order
             >>>     print(f"{artist} - {album}: {timestamp}")
+
         """
         result = []
         # Acquire lock before accessing the in-memory cache
@@ -506,6 +513,7 @@ class PendingVerificationService:
             >>>     # You would need to retrieve artist/album names separately if needed
             >>>     # For example, by looking up the hash in the cache or another source
             >>>     pass # Perform verification based on hash key
+
         """
         now = datetime.now()
         verified_keys = set()

@@ -94,7 +94,7 @@ class CacheService:
         self.console_logger.info("CacheService asynchronous initialization complete.")
 
     def _generate_album_key(self, artist: str, album: str) -> str:
-        """Generates a unique hash key for an album based on artist and album names.
+        """Generate a unique hash key for an album based on artist and album names.
 
         Uses SHA256 to avoid issues with separator characters in names.
 
@@ -115,7 +115,7 @@ class CacheService:
         return time.time() > expiry_time
 
     def _hash_key(self, key_data: Any) -> str:
-        """Generates a SHA256 hash for a general cache key.
+        """Generate a SHA256 hash for a general cache key.
 
         Used for the generic in-memory cache.
 
@@ -423,6 +423,7 @@ class CacheService:
 
         Returns:
             datetime: The timestamp of the last incremental run, or datetime.min if not found or error occurs.
+
         """
         loop = asyncio.get_event_loop()
 

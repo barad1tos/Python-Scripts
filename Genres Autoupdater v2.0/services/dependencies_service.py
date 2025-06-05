@@ -22,7 +22,9 @@ from logging.handlers import QueueListener
 # Import necessary types for type hinting
 from typing import TYPE_CHECKING, Any
 
-import yaml  # Import yaml for configuration loading
+# trunk-ignore(mypy/import-untyped)
+# trunk-ignore(mypy/note)
+import yaml
 
 
 # Import concrete service implementations
@@ -63,7 +65,7 @@ class DependencyContainer:
         analytics_logger: logging.Logger,
         logging_listener: QueueListener | None,
     ):
-        """Initializes the dependency container, receiving loggers and config path.
+        """Initialize the dependency container, receiving loggers and config path.
 
         Does NOT perform asynchronous setup here. Use the async initialize method.
 
@@ -73,6 +75,7 @@ class DependencyContainer:
             error_logger: The logger for error messages.
             analytics_logger: The logger for analytics data.
             logging_listener: The initialized QueueListener for logging.
+
         """
         self._config_path = config_path
         # Store the passed logger instances and the listener
@@ -230,25 +233,25 @@ class DependencyContainer:
 
     # Use a forward reference 'MusicUpdater' for the type hint
     def get_music_updater(self) -> "MusicUpdater":
-        """Provides access to the configured MusicUpdater instance."""
+        "Provide access to the configured MusicUpdater instance."""
         return self._music_updater_instance
 
     def get_analytics(self) -> Analytics:
-        """Provides access to the configured Analytics instance."""
+        """Provide access to the configured Analytics instance."""
         return self.analytics
 
     def get_error_logger(self) -> logging.Logger:
-        """Provides access to the configured error logger."""
+        """Provide access to the configured error logger."""
         return self.error_logger
 
     def get_console_logger(self) -> logging.Logger:
-        """Provides access to the configured console logger."""
+        """Provide access to the configured console logger."""
         return self.console_logger
 
     # Add other getter methods for other services if needed by the main script
 
     def shutdown(self) -> None:
-        """Performs necessary cleanup, such as stopping the logging listener and shutting down services that require cleanup.
+        """Perform necessary cleanup, such as stopping the logging listener and shutting down services that require cleanup.
 
         This method is called from a synchronous context (main function finally block).
         If service shutdown is async, need to handle it using _async_run helper.
@@ -311,16 +314,14 @@ class DependencyContainer:
     # Helper to run async methods from sync context (like shutdown)
     # Correctly implemented helper
     def _async_run(self, coro: Coroutine[Any, Any, Any]) -> Any:
-        """Helper to run a coroutine in the current event loop or a new one if needed.
-
-        This helper is called from the sync shutdown method.
-        It needs to ensure the coroutine runs to completion.
+        """Run a coroutine in the current event loop or a new one if needed.
 
         Args:
             coro: The coroutine to run.
 
         Returns:
             Any: The result of the coroutine.
+
         """
         try:
             # Get the current running loop or create a new one
