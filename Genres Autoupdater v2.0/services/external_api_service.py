@@ -411,6 +411,25 @@ class ExternalApiService:
         timeout_override: float | None = None,
     ) -> dict[str, Any] | None:
         """Make an API request with rate limiting, error handling, and retry logic."""
+        cache_key = (
+            "api_request",
+            api_name,
+            url,
+            tuple(sorted((params or {}).items())),
+        )
+        cache_ttl_seconds = self.cache_ttl_days * 86400
+
+        cached_response = await self.cache_service.get_async(cache_key)
+        if cached_response is not None:
+            if cached_response != {}:
+                self.console_logger.debug(
+                    f"Using cached response for {api_name} request to {url}"
+                )
+                return cached_response
+            self.console_logger.debug(
+                f"Cached empty response for {api_name} request to {url}"
+            )
+            return None
         if not self.session or self.session.closed:
             self.error_logger.error(
                 f"[{api_name}] Session not available for request to {url}. Initialize method was not called or failed."
@@ -584,6 +603,11 @@ class ExternalApiService:
             self.error_logger.error(
                 f"[{api_name}] Request failed for URL: {url}. Last exception: {last_exception}"
             )
+        await self.cache_service.set_async(
+            cache_key,
+            result if result is not None else {},
+            ttl=cache_ttl_seconds,
+        )
         return result
 
     async def _parse_json_response(
@@ -1759,6 +1783,20 @@ class ExternalApiService:
 
         Uses a combined query parameter 'q' and includes basic result validation with improved artist matching.
         """
+        cache_key = f"discogs_{artist_norm}_{album_norm}"
+        cache_ttl_seconds = self.cache_ttl_days * 86400
+
+        cached_data = await self.cache_service.get_async(cache_key)
+        if cached_data is not None:
+            if isinstance(cached_data, list):
+                self.console_logger.debug(
+                    f"Using cached Discogs results for '{artist_norm} - {album_norm}'"
+                )
+                return cached_data
+            self.console_logger.warning(
+                f"Cached Discogs data for '{artist_norm} - {album_norm}' has unexpected type. Ignoring cache."
+            )
+
         scored_releases: list[dict[str, Any]] = []
         try:
             # Use combined query parameter 'q'
@@ -1798,6 +1836,7 @@ class ExternalApiService:
                 self.console_logger.warning(
                     f"[discogs] Search failed or no results key in data for query: '{search_query}'"
                 )
+                await self.cache_service.set_async(cache_key, [], ttl=cache_ttl_seconds)
                 return []
 
             results = data.get("results", [])
@@ -1805,6 +1844,7 @@ class ExternalApiService:
                 self.console_logger.info(
                     f"[discogs] No results found for query: '{search_query}'"
                 )
+                await self.cache_service.set_async(cache_key, [], ttl=cache_ttl_seconds)
                 return []
 
             self.console_logger.debug(
@@ -1985,12 +2025,16 @@ class ExternalApiService:
                     f"Score: {r.get('score')}"
                 )
 
+            await self.cache_service.set_async(
+                cache_key, scored_releases, ttl=cache_ttl_seconds
+            )
             return scored_releases
 
         except Exception as e:
             self.error_logger.exception(
                 f"Error retrieving/scoring from Discogs for '{artist_norm} - {album_norm}': {e}"
             )
+            await self.cache_service.set_async(cache_key, [], ttl=cache_ttl_seconds)
             return []
 
     async def _get_scored_releases_from_lastfm(
