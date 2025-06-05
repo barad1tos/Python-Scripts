@@ -833,8 +833,9 @@ class Analytics:
             function_count = len(self.call_counts)
 
             # Generate summary log
-            if event_count > 0:
-                self.log_summary()
+            # self.log_summary() is now called explicitly by the caller
+            # to avoid duplicate summary output when generate_reports() is used
+            # together with a standalone summary call.
 
             # Only proceed if we have data
             if event_count == 0 and function_count == 0:
