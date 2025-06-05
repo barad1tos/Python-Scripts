@@ -22,6 +22,7 @@ import queue
 import re
 import sys
 import time
+
 from datetime import datetime
 from logging.handlers import QueueHandler, QueueListener
 from pathlib import Path
@@ -65,13 +66,13 @@ class RunHandler:
     """Handles tracking of script runs, adding separators between runs, and limiting logs to max number of runs."""
 
     def __init__(self, max_runs: int = 3):
-        """Initializes the RunHandler."""
+        " Initialize the RunHandler."""
         self.max_runs = max_runs
         self.current_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_start_time = time.monotonic()  # Use monotonic for duration
 
     def format_run_header(self, logger_name: str) -> str:
-        """Creates a formatted header for a new run."""
+        "Create a formatted header for a new run."""
         # Use local time for now.
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Use ANSI colors for file headers for readability in terminals that support them
@@ -81,7 +82,7 @@ class RunHandler:
         return header
 
     def format_run_footer(self, logger_name: str) -> str:
-        """Creates a formatted footer for the end of a run."""
+        "Create a formatted footer for the end of a run."""
         elapsed = time.monotonic() - self.run_start_time
         # Use ANSI colors for file footers
         footer = f"\n\n{BLUE}{'=' * 80}{RESET}\n"
@@ -165,7 +166,7 @@ def ensure_directory(path: str, error_logger: logging.Logger | None = None) -> N
 def get_full_log_path(
     config: dict[str, Any] | None, key: str, default: str, error_logger: logging.Logger | None = None
 ) -> str:
-    """Returns the full log path by joining the base logs directory with the relative path.
+    """Return the full log path by joining the base logs directory with the relative path.
 
     Ensures the base directory and the log file's directory exist. Logs errors using the provided logger.
     """
@@ -231,67 +232,57 @@ def shorten_path(
     Replaces known base directories (from config or common locations) with aliases.
     Logs errors using the provided loggers.
     """
+    # Initialize result with default value (original path)
     if not path or not isinstance(path, str):
-        return str(path)  # Return original if None or not a string
+        return str(path) if path is not None else ""
 
     # Normalize path separators for consistency
     norm_path = os.path.normpath(path)
+    result = norm_path  # Default to normalized path if no shortening is needed
 
-    # Use config for path replacements if available
+    # Check config-based path replacements
     if config and isinstance(config, dict):
-        # Use os.path.normpath for consistent separator handling
         scripts_dir = os.path.normpath(config.get("apple_scripts_dir", ""))
         music_lib = os.path.normpath(config.get("music_library_path", ""))
         logs_dir = os.path.normpath(config.get("logs_base_dir", ""))
 
-        # Check for replacements - order matters (more specific first)
+        # Check for script directory match
         if scripts_dir and norm_path.startswith(scripts_dir + os.sep):
-            # Use basename to just get the script file name if it's directly in the scripts dir
-            # Otherwise, show path relative to scripts dir
-            relative_to_scripts = os.path.relpath(norm_path, scripts_dir)
-            return f"$SCRIPTS{os.sep}{relative_to_scripts}"
-        if logs_dir and norm_path.startswith(logs_dir + os.sep):
-            relative_to_logs = os.path.relpath(norm_path, logs_dir)
-            return f"$LOGS{os.sep}{relative_to_logs}"
-        # Music library path might be a file or directory, check startswith carefully
-        if music_lib and norm_path.startswith(music_lib):
-            # If it's the library file itself, use alias
+            relative = os.path.relpath(norm_path, scripts_dir)
+            result = f"$SCRIPTS{os.sep}{relative}"
+        # Check for logs directory match
+        elif logs_dir and norm_path.startswith(logs_dir + os.sep):
+            relative = os.path.relpath(norm_path, logs_dir)
+            result = f"$LOGS{os.sep}{relative}"
+        # Check for music library match
+        elif music_lib and norm_path.startswith(music_lib):
             if norm_path == music_lib:
-                return "$MUSIC_LIB"
-            # If it's inside the library directory, show path relative to it
-            if norm_path.startswith(music_lib + os.sep):
-                relative_to_music_lib = os.path.relpath(norm_path, music_lib)
-                return f"$MUSIC_LIB{os.sep}{relative_to_music_lib}"
+                result = "$MUSIC_LIB"
+            elif norm_path.startswith(music_lib + os.sep):
+                relative = os.path.relpath(norm_path, music_lib)
+                result = f"$MUSIC_LIB{os.sep}{relative}"
 
-    # Fallback to common directory replacements
-    try:
-        home = str(Path.home())
-        norm_home = os.path.normpath(home)
-        if norm_path.startswith(norm_home + os.sep):
-            return norm_path.replace(norm_home, "~", 1)
-        # Handle the home directory itself
-        if norm_path == norm_home:
-            return "~"
-    except Exception as e:
-        # Log the error instead of passing silently
-        if error_logger:
-            error_logger.warning(f"Could not get home directory to shorten path: {e}")
-        else:
-            # Fallback print if error_logger is not available
-            print(
-                f"WARNING: Could not get home directory to shorten path: {e}",
-                file=sys.stderr,
-            )
-        # Allow the function to continue to the next part, which returns the original path
-        pass  # Keep pass here to allow execution flow to continue outside the try/except block
+    # If no config matches, try home directory replacement
+    if result == norm_path:
+        try:
+            home = str(Path.home())
+            norm_home = os.path.normpath(home)
+            if norm_path == norm_home:
+                result = "~"
+            elif norm_path.startswith(norm_home + os.sep):
+                result = norm_path.replace(norm_home, "~", 1)
+        except Exception as e:
+            warning_msg = f"Could not get home directory to shorten path: {e}"
+            if error_logger:
+                error_logger.warning(warning_msg)
+            else:
+                print(f"WARNING: {warning_msg}", file=sys.stderr)
 
     # If it's an absolute path not matched above, return just the filename
-    # Check if it's an absolute path and not just a single file in the current dir
-    if os.path.isabs(norm_path) and os.path.dirname(norm_path) != ".":
-        return os.path.basename(norm_path)
+    if result == norm_path and os.path.isabs(norm_path) and os.path.dirname(norm_path) != ".":
+        result = os.path.basename(norm_path)
 
-    # Otherwise, return the path as is (likely relative or not easily shortened)
-    return path
+    return result
 
 
 class CompactFormatter(logging.Formatter):
@@ -329,7 +320,7 @@ class CompactFormatter(logging.Formatter):
         self.config = config or {}  # Ensure config is at least an empty dict
 
     def format(self, record: logging.LogRecord) -> str:
-        """Formats the LogRecord into a compact string, applying path shortening to specific attributes before standard formatting."""
+        """Format the LogRecord into a compact string, applying path shortening to specific attributes before standard formatting."""
         # Store original level name for abbreviation lookup
         original_levelname = record.levelname
 
@@ -455,7 +446,7 @@ class RunTrackingHandler(logging.FileHandler):
         super().emit(record)
 
     def close(self) -> None:
-        """Closes the stream, writes run footer, and trims the log file."""
+        """Close the stream, writes run footer, and trims the log file."""
         # Check if already closed to prevent recursion or multiple writes
         # Use a flag to prevent multiple close calls
         if getattr(self, "_closed", False):
@@ -509,7 +500,7 @@ class RunTrackingHandler(logging.FileHandler):
 def get_loggers(
     config: dict[str, Any],
 ) -> tuple[logging.Logger, logging.Logger, logging.Logger, QueueListener | None]:
-    """Creates and returns loggers using QueueHandler for non-blocking file logging, and RichHandler for console output.
+    """Create and returns loggers using QueueHandler for non-blocking file logging, and RichHandler for console output.
 
     Ensures log directories exist and sets levels based on config.
     """
@@ -522,7 +513,7 @@ def get_loggers(
 
         # Helper function to get level from config string safely using logging.getLevelName
         def get_level_from_config(level_name: str, default_level: int = logging.INFO) -> int:
-            """Gets logging level constant from a string name, with fallback.
+            """Get logging level constant from a string name, with fallback.
 
             Args:
                 level_name: String name of the log level (e.g., 'INFO', 'DEBUG')
@@ -530,6 +521,7 @@ def get_loggers(
 
             Returns:
                 int: Logging level constant from logging module
+
             """
             # logging.getLevelName returns the level constant if found, or the string name if not found
             level = logging.getLevelName(level_name.upper())

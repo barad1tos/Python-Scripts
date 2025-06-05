@@ -16,22 +16,25 @@ import logging
 import os
 import sys
 import time
+
 from datetime import datetime
 from typing import Any
 
+# trunk-ignore(mypy/import-untyped)
+# trunk-ignore(mypy/note)
 import yaml
+
 from services.applescript_client import AppleScriptClient
 from services.dependencies_service import DependencyContainer
 from utils.config import load_config
 from utils.logger import get_full_log_path, get_loggers
 from utils.metadata import (
     clean_names,
-    parse_tracks,
-    group_tracks_by_artist,
     determine_dominant_genre_for_artist,
+    group_tracks_by_artist,
     is_music_app_running,
+    parse_tracks,
 )
-
 from utils.reports import save_unified_dry_run
 
 # Adjusting path to the project root directory where my-config.yaml is located
@@ -62,14 +65,14 @@ class DryRunProcessor:
         error_logger: logging.Logger,
         ap_client: AppleScriptClient,
     ):
-        """Initializes the DryRunProcessor with necessary services."""
+        """Initialize the DryRunProcessor with necessary services."""
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.ap_client = ap_client
 
     async def fetch_tracks(self, artist: str | None = None) -> list[dict[str, str]]:
-        """Fetches tracks asynchronously from Music.app via AppleScript using the injected client.
+        """Fetch tracks asynchronously from Music.app via AppleScript using the injected client.
 
         This replaces the old fetch_tracks_direct function.
         Uses the parse_tracks utility from metadata_helpers.py.
@@ -126,6 +129,7 @@ class DryRunProcessor:
         Returns:
             list[dict[str, str]]: A list of dictionaries containing cleaning changes.
             Each dictionary has string keys and string values.
+
         """
         simulated_changes: list[dict[str, str]] = []
 
@@ -194,6 +198,7 @@ class DryRunProcessor:
         Returns:
             list[dict[str, str]]: A list of simulated 'genre_update' changes.
             Uses group_tracks_by_artist and determine_dominant_genre_for_artist.
+
         """
         simulated_changes: list[dict[str, str]] = []
 
@@ -291,7 +296,7 @@ class DryRunProcessor:
 
 # --- Main Execution Block ---
 def main() -> None:
-    """Main synchronous function to run the dry run simulation.
+    """Run the dry run simulation.
 
     Initializes dependencies and orchestrates the simulation process.
     """

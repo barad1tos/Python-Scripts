@@ -10,11 +10,16 @@ Handles loading configuration from YAML files with strict validation.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+
 from typing import Any
 
+# trunk-ignore(mypy/import-untyped)
+# trunk-ignore(mypy/note)
 import yaml
+
 from dotenv import load_dotenv
 
 try:
@@ -25,6 +30,19 @@ except ImportError as e:
         file=sys.stderr,
     )
     raise ImportError("Cerberus library is required") from e
+
+# Define constants
+LOG_LEVELS = [
+    "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET"
+]
+REQUIRED_ENV_VARS = ["DISCOGS_TOKEN", "CONTACT_EMAIL"]
+
+# Set up logger
+logger = logging.getLogger("config")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
+)
 
 # Define the schema for the configuration file
 # This schema describes the expected structure, data types, and constraints
@@ -396,6 +414,7 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
 
     Returns:
         The processed configuration with environment variables resolved.
+
     """
     if isinstance(config, dict):
         return {k: resolve_env_vars(v) for k, v in config.items()}
@@ -405,6 +424,34 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
         env_var = config[2:-1]  # Remove ${ and }
         return os.getenv(env_var, "")
     return config
+
+
+def _format_cerberus_errors(errors: dict, indent: int = 2) -> str:
+    lines = []
+    for field, errs in errors.items():
+        prefix = ' ' * indent
+        if isinstance(errs, list):
+            lines.append(f"{prefix}Field '{field}': {', '.join(str(e) for e in errs)}")
+        elif isinstance(errs, dict):
+            for subfield, suberrs in errs.items():
+                lines.append(f"{prefix}Field '{field}.{subfield}': {', '.join(str(e) for e in suberrs)}")
+    return "\n".join(lines)
+
+
+def validate_required_env_vars():
+    """Validate required environment variables."""
+    missing = []
+    for var in REQUIRED_ENV_VARS:
+        value = os.getenv(var)
+        if not value or value.startswith("${"):
+            logger.error(f"Environment variable '{var}' is missing or not set.")
+            missing.append(var)
+        else:
+            logger.debug(f"Environment variable '{var}' is set.")
+    if missing:
+        raise OSError(
+            f"Required environment variables missing or invalid: {', '.join(missing)}"
+        )
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -420,85 +467,74 @@ def load_config(config_path: str) -> dict[str, Any]:
         FileNotFoundError: If the config file does not exist.
         ValueError: If the configuration is invalid according to the schema.
         yaml.YAMLError: If there is an error parsing the YAML file.
+        RuntimeError: For unexpected errors during additional validation steps.
+
     """
     # Load environment variables from .env file if it exists
     env_loaded = load_dotenv()
-    print(
-        f"[CONFIG] .env file {'found and loaded' if env_loaded else 'not found, using system environment variables'}"
+    logger.info(
+        f".env file {'found and loaded' if env_loaded else 'not found, using system environment variables'}"
     )
 
-    # Check for required environment variables
-    required_env_vars = ["DISCOGS_TOKEN", "CONTACT_EMAIL"]
-    for var in required_env_vars:
-        value = os.getenv(var)
-        print(
-            f"[CONFIG] {var}: {'***set***' if value and not value.startswith('${') else 'MISSING OR INVALID'}"
-        )
+    # Validate required environment variables
+    validate_required_env_vars()
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file {config_path} does not exist.")
 
     try:
-        print(f"[CONFIG] Loading config from: {config_path}")
+        logger.info(f"Loading config from: {config_path}")
         with open(config_path, encoding="utf-8") as f:
             config_data = yaml.safe_load(f)
             # Log raw config before resolving env vars
-            print("[CONFIG] Raw config (before env var resolution):")
-            print(yaml.dump(config_data, default_flow_style=False))
+            logger.debug("[CONFIG] Raw config (before env var resolution):")
+            logger.debug(yaml.dump(config_data, default_flow_style=False))
 
             # Resolve environment variables in the config
             config_data = resolve_env_vars(config_data)
 
             # Log resolved config
-            print("\n[CONFIG] Resolved config (after env var resolution):")
-            print(yaml.dump(config_data, default_flow_style=False))
+            logger.debug("[CONFIG] Resolved config (after env var resolution):")
+            logger.debug(yaml.dump(config_data, default_flow_style=False))
 
     except yaml.YAMLError as e:
-        # Re-raise YAML parsing errors
-        print(
-            f"ERROR: Failed to parse YAML config file {config_path}: {e}",
-            file=sys.stderr,
-        )
+        logger.critical(f"Failed to parse YAML config: {e}")
         raise
 
-    # Validate the loaded data against the schema
-    validator = Validator()
+    #1: Initialization and basic validation according to the scheme
+    validator = Validator(schema=CONFIG_SCHEMA, allow_unknown=False)
 
-    # Validate the configuration against the schema
+    if not validator.validate(config_data):
+        error_details = _format_cerberus_errors(validator.errors)
+        logger.critical(f"Configuration validation failed:\n{error_details}")
+        raise ValueError(f"Configuration validation failed:\n{error_details}")
+
+    # 2. Additional checks (executed only if basic validation passed successfully)
     try:
-        if not validator.validate(document=config_data, schema=CONFIG_SCHEMA):  # type: ignore
-            # Format validation errors
-            error_messages = ["Configuration validation failed:"]
-            for field, errors in validator.errors.items():  # type: ignore
-                errors_list = errors if isinstance(errors, list) else [str(errors)]
-                error_messages.append(f"  Field '{field}': {', '.join(errors_list)}")
-            
-            full_error_message = "\n".join(error_messages)
-            print(f"ERROR: {full_error_message}", file=sys.stderr)
-            raise ValueError(full_error_message) from None
-
-        # Additional validation for required API keys if year retrieval is enabled
         year_retrieval = config_data.get("year_retrieval", {})
         if year_retrieval.get("enabled", False):
             validate_api_auth(year_retrieval.get("api_auth", {}))
 
-        return config_data
-
     except Exception as e:
-        print(f"ERROR: Failed to validate configuration: {e}", file=sys.stderr)
-        raise
+        error_message = f"An unexpected error occurred during additional validation: {e}"
+        logger.critical(error_message)
+        raise RuntimeError(error_message) from e
+
+    logger.info("Configuration successfully loaded and validated.")
+    # 3. Return validated data
+    # Create a copy that is safe practice and satisfies type checker
+    return dict(config_data)
+
 
 def validate_api_auth(api_auth: dict[str, Any]) -> None:
     """Validate API authentication configuration.
-    
+
     Args:
         api_auth: Dictionary containing API authentication settings.
+
     """
     if not api_auth:
-        print(
-            "WARNING: 'api_auth' section is missing in year_retrieval config",
-            file=sys.stderr,
-        )
+        logger.warning("'api_auth' section is missing in year_retrieval config")
         return
 
     missing_fields = []
@@ -510,4 +546,6 @@ def validate_api_auth(api_auth: dict[str, Any]) -> None:
         missing_fields.append("LASTFM_API_KEY (required when use_lastfm is enabled)")
 
     for field in missing_fields:
-        print(f"WARNING: {field} is not set in .env file", file=sys.stderr)
+        logger.warning(f"{field} is not set in .env file")
+    if missing_fields:
+        raise ValueError(f"API authentication config incomplete: {', '.join(missing_fields)}")

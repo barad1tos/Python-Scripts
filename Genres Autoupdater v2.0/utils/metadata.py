@@ -18,16 +18,31 @@ Functions:
 import logging
 import re
 import subprocess  # trunk-ignore(bandit/B404)
+
 from collections import defaultdict
 from datetime import datetime
+from enum import IntEnum, auto
 from typing import Any
 
-# --- Utility Functions moved from music_genre_updater.py ---
-# These functions now accept logger instances as arguments
+class TrackField(IntEnum):
+    """Enumeration of track data field indices with auto-incrementing values."""
 
+    ID = 0
+    NAME = auto()
+    ARTIST = auto()
+    ALBUM = auto()
+    GENRE = auto()
+    DATE_ADDED = auto()
+    TRACK_STATUS = auto()
+    OLD_YEAR = auto()
+    NEW_YEAR = auto()
+
+
+# Minimum required fields (TRACK_STATUS index + 1)
+MIN_REQUIRED_FIELDS = TrackField.TRACK_STATUS + 1
 
 def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, str]]:
-    """Parses the raw data from AppleScript into a list of track dictionaries.
+    """Parse the raw data from AppleScript into a list of track dictionaries.
 
     Uses the Record Separator (U+001E) as the field delimiter.
 
@@ -56,25 +71,24 @@ def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, 
         # Split each row into fields using the new field separator
         fields = row.split(field_separator)
 
-        # The AppleScript is assumed to output at least 7 fields for standard properties
+        # The AppleScript is assumed to output at least MIN_REQUIRED_FIELDS fields for standard properties
         # and potentially more for old_year and new_year.
-        if len(fields) >= 7:
+        if len(fields) >= MIN_REQUIRED_FIELDS:
+            # Create track with required fields
             track = {
-                "id": fields[0].strip(),
-                "name": fields[1].strip(),
-                "artist": fields[2].strip(),
-                "album": fields[3].strip(),
-                "genre": fields[4].strip(),
-                "dateAdded": fields[5].strip(),
-                "trackStatus": fields[6].strip(),
+                "id": fields[TrackField.ID].strip(),
+                "name": fields[TrackField.NAME].strip(),
+                "artist": fields[TrackField.ARTIST].strip(),
+                "album": fields[TrackField.ALBUM].strip(),
+                "genre": fields[TrackField.GENRE].strip(),
+                "dateAdded": fields[TrackField.DATE_ADDED].strip(),
+                "trackStatus": fields[TrackField.TRACK_STATUS].strip(),
             }
-            # Adding old_year and new_year fields based on the structure
-            # provided in the original code, assuming they are read from fields 7 and 8.
-            # The AppleScript outputs standardYear at index 7 and an empty string at index 8.
-            track["old_year"] = fields[7].strip() if len(fields) > 7 else ""
-            track["new_year"] = (
-                fields[8].strip() if len(fields) > 8 else ""
-            )  # Assuming index 8 is intended for new_year
+
+            # Add optional fields if they exist
+            for field in [TrackField.OLD_YEAR, TrackField.NEW_YEAR]:
+                field_name = field.name.lower().replace('_', '')
+                track[field_name] = fields[field].strip() if len(fields) > field else ""
 
             tracks.append(track)
         else:
@@ -304,7 +318,7 @@ def clean_names(
     console_logger: logging.Logger,
     error_logger: logging.Logger,
 ) -> tuple[str, str]:
-    """Cleans the track name and album name based on the configuration settings.
+    """Clean the track name and album name based on the configuration settings.
 
     Requires config and loggers.
 
@@ -390,7 +404,7 @@ def clean_names(
 
 
 def is_music_app_running(error_logger: logging.Logger) -> bool:
-    """Checks if the Music.app is currently running using subprocess. Logs errors.
+    """Check if the Music.app is currently running using subprocess. Logs errors.
 
     :param error_logger: Logger for error output.
     :return: True if Music.app is running, False otherwise.

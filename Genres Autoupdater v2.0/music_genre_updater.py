@@ -235,10 +235,12 @@ class MusicUpdater:
 
             # Check cache service availability
             if self.cache_service is None:
-                self.error_logger.critical(
-                    "fetch_tracks_async: ERROR: self.cache_service is None!",
-                )
-            elif force_refresh:
+                # Use error_logger if available, otherwise fall back to console_logger
+                logger = self.error_logger or self.console_logger
+                logger.critical("fetch_tracks_async: self.cache_service is None!")
+                return []  # Return empty list if no cache service available
+
+            if force_refresh:
                 # Handle force refresh vs normal cache check
                 self.console_logger.info(
                     "Force refresh requested, ignoring cache for %s",

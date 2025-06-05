@@ -24,8 +24,7 @@ Usage:
     7. Manage memory with analytics.clear_old_events()
     8. Merge data from multiple instances with analytics.merge_with()
 
-Example:
-    ```python
+Example:    ```python
     from utils.analytics import Analytics
     import logging
 
@@ -124,7 +123,7 @@ except ImportError:
     )
 
     # Provide a dummy function if the import fails
-    def save_html_report(  # noqa: PLR0913
+    def save_html_report(
         events: list[dict[str, Any]],  # Removed noqa: ARG001
         call_counts: dict[str, int],  # noqa: ARG001
         success_counts: dict[str, int],  # noqa: ARG001
@@ -135,7 +134,7 @@ except ImportError:
         group_successful_short_calls: bool = False,  # noqa: ARG001
         force_mode: bool = False  # noqa: ARG001
         ) -> None:
-            """Placeholder function for report generation."""
+            """Generate a placeholder report."""
             print(
                 f"Report generation skipped: save_html_report function not available. "
                 f"Would have processed {len(events)} events.",
@@ -206,10 +205,7 @@ class Analytics:
             self.console_logger.debug(f"📊 Analytics #{self.instance_id} initialized")
 
     def track(self, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator factory that tracks function performance and success.
-
-        This is for decorating regular functions (not methods).
-        """
+        """Create a decorator that tracks function performance and success."""
 
         def decorator_function(func: Callable[..., Any]) -> Callable[..., Any]:
             if asyncio.iscoroutinefunction(func):
@@ -224,10 +220,7 @@ class Analytics:
     # --- Classmethod decorator factory for instance methods ---
     @classmethod
     def track_instance_method(cls, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Decorator factory for tracking instance method performance and success.
-
-        This is applied as @Analytics.track_instance_method("Event Type").
-        """
+        """Create a decorator that tracks instance method performance and success."""
 
         def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
             # 'func' is the method being decorated (e.g., MusicUpdater.fetch_tracks_async)
@@ -373,10 +366,7 @@ class Analytics:
         return self.track(event_type)  # Just call the track method
 
     def _create_sync_wrapper(self, func: Callable[..., Any], event_type: str) -> Callable[..., Any]:
-        """Creates a synchronous wrapper for tracking function performance.
-
-        Used by self.track for regular sync functions.
-        """
+        """Create a synchronous wrapper for tracking function performance."""
 
         @wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -415,10 +405,7 @@ class Analytics:
         return sync_wrapper
 
     def _create_async_wrapper(self, func: Callable[..., Any], event_type: str) -> Callable[..., Any]:
-        """Creates an asynchronous wrapper for tracking function performance.
-
-        Used by self.track for regular async functions.
-        """
+        """Create an asynchronous wrapper for tracking function performance."""
 
         @wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
@@ -466,7 +453,7 @@ class Analytics:
         success: bool,
         overhead: float,  # Keep overhead parameter even if simplified
     ) -> None:
-        """Records performance data for a function call."""
+        """Record performance data for a function call."""
         # Manage memory by removing oldest events if needed
         if self.max_events > 0 and len(self.events) >= self.max_events:
             # Remove oldest 10% of events when limit is reached
@@ -538,7 +525,7 @@ class Analytics:
                 self.console_logger.warning(log_message)
 
     def _get_duration_symbol(self, duration: float) -> str:
-        """Returns a symbol representing the duration category."""
+        """Return a symbol representing the duration category."""
         if duration <= self.short_max:
             return "⚡"  # Fast
         elif duration <= self.medium_max:
@@ -588,10 +575,7 @@ class Analytics:
     def get_stats(
         self, function_filter: str | list[str] | None = None
     ) -> dict[str, Any]:
-        """Get summary statistics for tracked functions.
-
-        Returns a dictionary including overall stats and per-function stats.
-        """
+        """Get summary statistics for tracked functions."""
         # Ensure events list is processed even if filter is None
         if function_filter:
             if isinstance(function_filter, str):
