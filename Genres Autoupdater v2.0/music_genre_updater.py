@@ -671,7 +671,7 @@ class MusicUpdater:
                     partial_sync=True,
                 )
                 # Use injected console_logger, error_logger
-                save_unified_changes_report(
+                save_changes_report(
                     changes,
                     changes_report_file_path,
                     self.console_logger,
@@ -1859,7 +1859,7 @@ class MusicUpdater:
             )
             # Save a report of the specific changes made (utility function)
             # Use config from self.config, injected loggers
-            save_unified_changes_report(
+            save_changes_report(
                 changes_log_cleaning,
                 get_full_log_path(
                     self.config,
@@ -2133,7 +2133,7 @@ class MusicUpdater:
             )
             # Save a report of the year changes (utility function)
             # Use config from self.config, injected loggers
-            save_unified_changes_report(
+            save_changes_report(
                 changes_y,
                 get_full_log_path(
                     self.config,
@@ -2397,7 +2397,7 @@ class MusicUpdater:
 
             # Append the verification changes to the changes report file
             # save_unified_changes_report appends if file exists, or creates new.
-            save_unified_changes_report(
+            save_changes_report(
                 verification_changes,
                 changes_report_file_path,
                 self.console_logger,
@@ -2651,7 +2651,7 @@ class MusicUpdater:
             )
             # Use utility function save_unified_changes_report
             # Use config from self.config, injected loggers
-            save_unified_changes_report(
+            save_changes_report(
                 all_changes,
                 get_full_log_path(
                     self.config,
