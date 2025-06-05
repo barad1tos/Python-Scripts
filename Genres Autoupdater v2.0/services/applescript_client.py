@@ -50,6 +50,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+RESULT_PREVIEW_LEN = 50
+DANGEROUS_ARG_CHARS = [";", "&", "|", "`", "$", ">", "<", "!"]
+
 class EnhancedRateLimiter:
     """Advanced rate limiter using a moving window approach.
 
@@ -304,6 +307,100 @@ class AppleScriptClient:
             self.error_logger.error("Invalid script path %s: %s", script_path, e)
             return False
 
+    async def _run_osascript(
+        self,
+        cmd: list[str],
+        label: str,
+        timeout: float,
+    ) -> str | None:
+        """Run an osascript command and return output."""
+        if self.semaphore is None:
+            self.error_logger.error(
+                "AppleScriptClient semaphore not initialized. Call initialize() first."
+            )
+            return None
+
+        result: str | None = None
+        async with self.semaphore:
+            try:
+                start_time = time.time()
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    elapsed = time.time() - start_time
+
+                    if stderr:
+                        stderr_text = stderr.decode("utf-8", errors="ignore").strip()
+                        self.console_logger.warning("◁ %s stderr: %s", label, stderr_text[:200])
+
+                    if proc.returncode == 0:
+                        result = stdout.decode("utf-8", errors="ignore").strip()
+                        preview = (
+                            result[:RESULT_PREVIEW_LEN] + "..."
+                            if len(result) > RESULT_PREVIEW_LEN
+                            else result
+                        )
+                        self.console_logger.info(
+                            "◁ %s (%dB, %.1fs) %s",
+                            label,
+                            len(result.encode("utf-8")),
+                            elapsed,
+                            preview,
+                        )
+                    else:
+                        self.error_logger.error(
+                            "◁ %s failed with return code %s: %s",
+                            label,
+                            proc.returncode,
+                            stderr.decode("utf-8", errors="ignore").strip(),
+                        )
+                except TimeoutError:
+                    self.error_logger.error("⊗ %s timeout: %ss exceeded", label, timeout)
+                    try:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                        self.console_logger.debug("Process for %s killed after timeout.", label)
+                    except (TimeoutError, ProcessLookupError):
+                        self.console_logger.warning(
+                            "Could not kill or wait for process %s after timeout.", label
+                        )
+                except asyncio.CancelledError:
+                    self.console_logger.info("⊗ %s cancelled", label)
+                    try:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                        self.console_logger.debug("Process for %s killed after cancellation.", label)
+                    except (TimeoutError, ProcessLookupError):
+                        self.console_logger.warning(
+                            "Could not kill or wait for process %s after cancellation.", label
+                        )
+                    raise
+                except (subprocess.SubprocessError, OSError) as e:
+                    self.error_logger.error("⊗ %s error during execution: %s", label, e)
+                    try:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except (TimeoutError, ProcessLookupError):
+                        pass
+                except Exception as e:
+                    self.error_logger.exception(
+                        f"⊗ {label} unexpected error during communicate/wait: {e}"
+                    )
+                    try:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except (TimeoutError, ProcessLookupError):
+                        pass
+            except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+                self.error_logger.error("⊗ %s subprocess error: %s", label, e)
+            except Exception as e:  # pragma: no cover - unexpected errors
+                self.error_logger.exception(
+                    f"⊗ {label} unexpected error before process creation: {e}"
+                )
+        return result
+
     async def run_script(
         self,
         script_name: str,
@@ -325,15 +422,11 @@ class AppleScriptClient:
             )
             return None
 
-        # Set timeout from configuration, if not explicitly specified
         if timeout is None:
-            timeout = self.config.get(
-                "applescript_timeout_seconds", 600
-            )  # 10 minutes by default
+            timeout = self.config.get("applescript_timeout_seconds", 600)
 
         script_path = os.path.join(self.apple_scripts_dir, script_name)
 
-        # Validate script path
         if not self._validate_script_path(script_path):
             self.error_logger.error("Invalid script path: %s", script_path)
             return None
@@ -342,164 +435,22 @@ class AppleScriptClient:
             self.error_logger.error("AppleScript file does not exist: %s", script_path)
             return None
 
-        # Build command list with safe arguments
         cmd = ["osascript", script_path]
         if arguments:
-            # Sanitize each argument to prevent injection
-            safe_arguments = []
             for arg in arguments:
-                if not isinstance(arg, str):
-                    self.error_logger.error(
-                        "Invalid argument type: %s", type(arg).__name__
-                    )
-                    return None
-                # Basic check for potentially dangerous characters
-                if any(c in arg for c in [";", "&", "|", "`", "$", ">", "<", "!"]):
+                if any(c in arg for c in DANGEROUS_ARG_CHARS):
                     self.error_logger.error(
                         "Potentially dangerous characters in argument: %s", arg
                     )
                     return None
-                safe_arguments.append(arg)
-            cmd.extend(safe_arguments)
+            cmd.extend(arguments)
 
-        # Format arguments for logging
-        # Safely format arguments string
         args_str = (
-            f"args: {', '.join(f'{arg}' for arg in arguments)}"
-            if arguments
-            else "no args"
+            f"args: {', '.join(f'{arg}' for arg in arguments)}" if arguments else "no args"
         )
         self.console_logger.info("▷ %s (%s) [t:%ss]", script_name, args_str, timeout)
 
-        # Ensure semaphore is initialized before using it
-        if self.semaphore is None:
-            self.error_logger.error(
-                "AppleScriptClient semaphore not initialized. Call initialize() first."
-            )
-            return None  # Cannot proceed without semaphore
-
-        async with self.semaphore:
-            try:
-                # First, create a process
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-
-                # Then we wait for the result with Timeout
-                try:
-                    start_time = time.time()
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout
-                    )
-                    elapsed = time.time() - start_time
-
-                    if stderr:
-                        stderr_text = stderr.decode(
-                            "utf-8", errors="ignore"
-                        ).strip()  # Decode safely
-                        # Log stderr as warning, might contain useful info even on success
-                        self.console_logger.warning(
-                            "◁ %s stderr: %s", script_name, stderr_text[:200]
-                        )  # Log a bit more for debug
-
-                    if proc.returncode != 0:
-                        # Log the full stderr on failure
-                        self.error_logger.error(
-                            "◁ %s failed with return code %s: %s",
-                            script_name,
-                            proc.returncode,
-                            stderr.decode("utf-8", errors="ignore").strip(),
-                        )
-                        return None
-
-                    result = stdout.decode(
-                        "utf-8", errors="ignore"
-                    ).strip()  # Decode safely
-                    result_preview = result[:50] + "..." if len(result) > 50 else result
-                    self.console_logger.info(
-                        "◁ %s (%dB, %.1fs) %s",
-                        script_name,
-                        len(result),
-                        elapsed,
-                        result_preview,
-                    )
-                    return result
-
-                except TimeoutError:
-                    self.error_logger.error(
-                        "⊗ %s timeout: %ss exceeded", script_name, timeout
-                    )
-                    # Ensure process is terminated on timeout
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(
-                            proc.wait(), timeout=5
-                        )  # Wait a bit for process to terminate
-                        self.console_logger.debug(
-                            "Process for %s killed after timeout.", script_name
-                        )
-                    except (TimeoutError, ProcessLookupError):
-                        self.console_logger.warning(
-                            "Could not kill or wait for process %s after timeout.",
-                            script_name,
-                        )
-
-                    return None
-                except asyncio.CancelledError:
-                    self.console_logger.info("⊗ %s cancelled", script_name)
-                    # Ensure process is terminated on cancellation
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                        self.console_logger.debug(
-                            "Process for %s killed after cancellation.", script_name
-                        )
-                    except (TimeoutError, ProcessLookupError):
-                        self.console_logger.warning(
-                            "Could not kill or wait for process %s after cancellation.",
-                            script_name,
-                        )
-
-                    raise  # Re-raise cancellation
-                except (subprocess.CalledProcessError, OSError) as e:
-                    # These exceptions might occur during communicate() or process creation
-                    self.error_logger.error(
-                        "⊗ %s error during execution: %s", script_name, e
-                    )
-                    # Ensure process is terminated in case of OSError during execution
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                    except (TimeoutError, ProcessLookupError):
-                        pass  # Ignore errors if process already finished or can't be killed
-
-                    return None
-                except (
-                    Exception
-                ) as e:  # Catch any other unexpected errors during communication/waiting
-                    self.error_logger.exception(
-                        f"⊗ {script_name} unexpected error during communicate/wait: {e}"
-                    )
-                    # Attempt to kill the process
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                    except (TimeoutError, ProcessLookupError):
-                        pass  # Ignore errors if process already finished or can't be killed
-
-                    return None
-
-            except (FileNotFoundError, OSError) as e:
-                # These exceptions occur if osascript command is not found or other system errors before process creation
-                self.error_logger.error("⊗ %s subprocess error: %s", script_name, e)
-                return None
-            except (
-                Exception
-            ) as e:  # Catch any other unexpected errors before process creation
-                self.error_logger.exception(
-                    f"⊗ {script_name} unexpected error before process creation: {e}"
-                )
-                return None
+        return await self._run_osascript(cmd, script_name, timeout)
 
     def _format_script_preview(self, script_code):
         """Format AppleScript code for log output, showing only essential parts."""
@@ -523,7 +474,9 @@ class AppleScriptClient:
 
         # Fallback if pattern not found
         return (
-            script_code[:50] + "..." if len(script_code) > 50 else script_code
+            script_code[:RESULT_PREVIEW_LEN] + "..."
+            if len(script_code) > RESULT_PREVIEW_LEN
+            else script_code
         )  # Show a bit more fallback context
 
     async def run_script_code(
@@ -541,19 +494,13 @@ class AppleScriptClient:
         :param timeout: Timeout in seconds for script execution
         :return: The output of the script, or None if an error occurred
         """
-        if (
-            not isinstance(script_code, str) or not script_code.strip()
-        ):  # Basic validation
+        if not isinstance(script_code, str) or not script_code.strip():
             self.error_logger.error("No script code provided.")
             return None
 
-        # Set timeout from configuration, if not explicitly specified
         if timeout is None:
-            timeout = self.config.get(
-                "applescript_timeout_seconds", 600
-            )  # 10 minutes by default
+            timeout = self.config.get("applescript_timeout_seconds", 600)
 
-        # Build command list
         cmd = ["osascript", "-e", script_code]
         if arguments:
             cmd.extend(arguments)
@@ -564,123 +511,6 @@ class AppleScriptClient:
             code_preview,
             len(script_code.encode("utf-8")),
             timeout,
-        )  # Use byte length
+        )
 
-        # Ensure semaphore is initialized before using it
-        if self.semaphore is None:
-            self.error_logger.error(
-                "AppleScriptClient semaphore not initialized. Call initialize() first."
-            )
-            return None  # Cannot proceed without semaphore
-
-        async with self.semaphore:
-            try:
-                start_time = time.time()
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-
-                # Wait with timeout
-                try:
-                    stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(), timeout=timeout
-                    )
-                    elapsed = time.time() - start_time
-
-                    if stderr:
-                        stderr_text = stderr.decode(
-                            "utf-8", errors="ignore"
-                        ).strip()  # Decode safely
-                        self.console_logger.warning(
-                            "◁ inline-script stderr: %s", stderr_text[:200]
-                        )  # Log a bit more
-
-                    if proc.returncode != 0:
-                        self.error_logger.error(
-                            "◁ inline-script failed with return code %s: %s",
-                            proc.returncode,
-                            stderr.decode("utf-8", errors="ignore").strip(),
-                        )
-                        return None
-
-                    result = stdout.decode(
-                        "utf-8", errors="ignore"
-                    ).strip()  # Decode safely
-                    result_preview = result[:50] + "..." if len(result) > 50 else result
-                    self.console_logger.info(
-                        "◁ inline-script (%dB, %.1fs) %s",
-                        len(result.encode("utf-8")),
-                        elapsed,
-                        result_preview,
-                    )  # Use byte length
-                    return result
-
-                except TimeoutError:
-                    self.error_logger.error(
-                        "⊗ inline-script timeout: %ss exceeded", timeout
-                    )
-                    # Ensure process is terminated on timeout
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                        self.console_logger.debug(
-                            "Process for inline-script killed after timeout."
-                        )
-                    except (TimeoutError, ProcessLookupError):
-                        self.console_logger.warning(
-                            "Could not kill or wait for process for inline-script after timeout."
-                        )
-                    return None
-                except asyncio.CancelledError:
-                    self.console_logger.info("⊗ inline-script cancelled")
-                    # Ensure process is terminated on cancellation
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                        self.console_logger.debug(
-                            "Process for inline-script killed after cancellation."
-                        )
-                    except (TimeoutError, ProcessLookupError):
-                        self.console_logger.warning(
-                            "Could not kill or wait for process for inline-script after cancellation."
-                        )
-
-                    raise  # Re-raise cancellation
-                except (subprocess.SubprocessError, OSError) as e:
-                    self.error_logger.error(
-                        "⊗ inline-script error during execution: %s", e
-                    )
-                    # Ensure process is terminated
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                    except (TimeoutError, ProcessLookupError):
-                        pass  # Ignore errors
-
-                    return None
-                except (
-                    Exception
-                ) as e:  # Catch any other unexpected errors during communication/waiting
-                    self.error_logger.exception(
-                        f"⊗ inline-script unexpected error during communicate/wait: {e}"
-                    )
-                    # Attempt to kill the process
-                    try:
-                        proc.kill()
-                        await asyncio.wait_for(proc.wait(), timeout=5)  # Wait a bit
-                    except (TimeoutError, ProcessLookupError):
-                        pass  # Ignore errors
-
-                    return None
-
-            except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
-                # These exceptions occur if osascript command is not found or other system errors before process creation
-                self.error_logger.error("⊗ inline-script subprocess error: %s", e)
-                return None
-            except (
-                Exception
-            ) as e:  # Catch any other unexpected errors before process creation
-                self.error_logger.exception(
-                    f"⊗ inline-script unexpected error before process creation: {e}"
-                )
-                return None
+        return await self._run_osascript(cmd, "inline-script", timeout)
