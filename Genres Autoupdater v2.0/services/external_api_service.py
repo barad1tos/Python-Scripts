@@ -570,20 +570,18 @@ class ExternalApiService:
                 self.api_call_durations[api_name].append(elapsed)
                 last_exception = e
 
-                if attempt >= max_retries:
-                    self.error_logger.error(
-                        f"[{api_name}] Request failed after {max_retries + 1} attempts: {e}"
-                    )
-                    break
-
-                    if isinstance(e, aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError) or \
-                     isinstance(e, asyncio.TimeoutError):
-                      delay = base_delay * (2**attempt) * (0.8 + SECURE_RANDOM.random() * 0.4)
+                if attempt < max_retries and isinstance(e, aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError | asyncio.TimeoutError):
+                    delay = base_delay * (2**attempt) * (0.8 + SECURE_RANDOM.random() * 0.4)
                     self.console_logger.warning(
                         f"[{api_name}] {type(e).__name__}, retrying {attempt + 1}/{max_retries} in {delay:.2f}s"
                     )
                     await asyncio.sleep(delay)
                     continue
+
+                # If we get here, we've either exceeded max retries or it's not a retryable error
+                self.error_logger.error(
+                    f"[{api_name}] Request failed after {attempt + 1} attempts: {e}"
+                )
                 break
 
             except Exception as e:

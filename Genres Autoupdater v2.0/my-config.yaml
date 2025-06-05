@@ -4,11 +4,11 @@
 # 1. MAIN PATHS AND ENVIRONMENT
 # -----------------------------------------------------------------------
 # Essential paths for the application to function
-music_library_path: "/Users/romanborodavkin/Music/Music/Music Library.musiclibrary"
-apple_scripts_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts"
+music_library_path: /Users/romanborodavkin/Music/Music/Music Library.musiclibrary
+apple_scripts_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/3. Git/Own/Apple Scripts" # trunk-ignore(yamllint/quoted-strings)
 # Base directory for all generated files (logs, reports, caches, etc.)
 # RECOMMENDATION: Consider using a local folder instead of iCloud Drive to avoid potential syncing delays or errors.
-logs_base_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/4. Dev/MGU logs"
+logs_base_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudDocs/4. Dev/MGU logs" # trunk-ignore(yamllint/quoted-strings)
 
 # Python specific settings
 python_settings:
