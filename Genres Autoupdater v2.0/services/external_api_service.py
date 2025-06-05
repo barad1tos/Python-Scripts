@@ -49,6 +49,17 @@ import aiohttp
 from services.cache_service import CacheService
 from services.pending_verification import PendingVerificationService
 
+# --- Constants ---
+WAIT_TIME_LOG_THRESHOLD = 0.1
+HTTP_TOO_MANY_REQUESTS = 429
+HTTP_SERVER_ERROR = 500
+MAX_LOGGED_YEARS = 5
+YEAR_LENGTH = 4
+REGION_CODE_LENGTH = 2
+
+# Use a cryptographically secure random generator for jitter
+SECURE_RANDOM = random.SystemRandom()
+
 class EnhancedRateLimiter:
     """Advanced rate limiter using a moving window approach.
 
@@ -443,7 +454,7 @@ class ExternalApiService:
 
             try:
                 wait_time = await limiter.acquire()
-                if wait_time > 0.1:
+                if wait_time > WAIT_TIME_LOG_THRESHOLD:
                     self.console_logger.debug(
                         f"[{api_name}] Waited {wait_time:.3f}s for rate limiting"
                     )
@@ -487,7 +498,7 @@ class ExternalApiService:
                     )
 
                     # Handle response status
-                    if response_status == 429 or response_status >= 500:
+                    if response_status == HTTP_TOO_MANY_REQUESTS or response_status >= HTTP_SERVER_ERROR:
                         last_exception = aiohttp.ClientResponseError(
                             response.request_info,
                             response.history,
@@ -495,7 +506,7 @@ class ExternalApiService:
                             message=response_text_snippet,
                         )
                         if attempt < max_retries:
-                            delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                            delay = base_delay * (2**attempt) * (0.8 + SECURE_RANDOM.random() * 0.4)
                             if retry_after := response.headers.get("Retry-After"):
                                 try:
                                     delay = max(delay, int(retry_after))
@@ -546,9 +557,9 @@ class ExternalApiService:
                     )
                     break
 
-                if isinstance(e, aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError) or \
-                   isinstance(e, asyncio.TimeoutError):
-                    delay = base_delay * (2**attempt) * (0.8 + random.random() * 0.4)
+                    if isinstance(e, aiohttp.ClientConnectorError | aiohttp.ServerDisconnectedError) or \
+                     isinstance(e, asyncio.TimeoutError):
+                      delay = base_delay * (2**attempt) * (0.8 + SECURE_RANDOM.random() * 0.4)
                     self.console_logger.warning(
                         f"[{api_name}] {type(e).__name__}, retrying {attempt + 1}/{max_retries} in {delay:.2f}s"
                     )
@@ -609,6 +620,38 @@ class ExternalApiService:
             )
         return None
 
+    async def _safe_mark_for_verification(
+        self,
+        artist: str,
+        album: str,
+        *,
+        fire_and_forget: bool = False,
+    ) -> None:
+        """Safely mark an album for verification, optionally fire-and-forget."""
+        if not self.pending_verification_service:
+            return
+        try:
+            if fire_and_forget:
+                task = asyncio.create_task(
+                    self.pending_verification_service.mark_for_verification(
+                        artist,
+                        album,
+                    )
+                )
+                if not hasattr(self, "_pending_tasks"):
+                    self._pending_tasks = set()
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+            else:
+                await self.pending_verification_service.mark_for_verification(
+                    artist,
+                    album,
+                )
+        except Exception as exc:
+            self.error_logger.error(
+                f"Failed to mark '{artist} - {album}' for verification: {exc}"
+            )
+
     def should_update_album_year(
         self,
         tracks: list[dict[str, str]],
@@ -643,25 +686,18 @@ class ExternalApiService:
                     f"Keeping current year: {current_library_year or 'N/A'}"
                 )
 
-                # Mark for future verification using the instance attribute
-                if self.pending_verification_service:
-                    try:
-                        # Use original artist/album names for consistency if available, else normalized
-                        task = asyncio.create_task(
-                            self.pending_verification_service.mark_for_verification(
-                                artist, album
-                            )
-                        )
-                        # Store the task in an instance attribute to prevent garbage collection
-                        if not hasattr(self, '_pending_tasks'):
-                            self._pending_tasks = set()
-                        self._pending_tasks.add(task)
-                        # Remove the task from the set once it's done
-                        task.add_done_callback(self._pending_tasks.discard)
-                    except Exception as e_pvs:
-                        self.error_logger.error(
-                            f"Failed to mark '{artist} - {album}' for verification: {e_pvs}"
-                        )
+                # Mark for future verification using the helper
+                task = asyncio.create_task(
+                    self._safe_mark_for_verification(
+                        artist,
+                        album,
+                        fire_and_forget=True,
+                    )
+                )
+                if not hasattr(self, "_pending_tasks"):
+                    self._pending_tasks = set()
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
                 return False  # Do not update year if prerelease conditions met
 
@@ -721,26 +757,28 @@ class ExternalApiService:
             # Continue without context, scoring will be less accurate
 
         # --- Fetch Data Concurrently ---
+        result_year: str | None = None
+        is_definitive = False
         try:
             api_tasks = [
-                # Pass artist_region context to API methods
                 self._get_scored_releases_from_musicbrainz(
-                    artist_norm, album_norm, artist_region
+                    artist_norm,
+                    album_norm,
+                    artist_region,
                 ),
                 self._get_scored_releases_from_discogs(
-                    artist_norm, album_norm, artist_region
+                    artist_norm,
+                    album_norm,
+                    artist_region,
                 ),
             ]
             if self.use_lastfm:
-                # Last.fm method doesn't use region context currently
                 api_tasks.append(
                     self._get_scored_releases_from_lastfm(artist_norm, album_norm)
                 )
 
-            # Wait for all API calls to complete, collecting results or exceptions
             results = await asyncio.gather(*api_tasks, return_exceptions=True)
 
-            # --- Process Results ---
             all_releases: list[dict[str, Any]] = []
             api_sources_found: set[str] = set()
 
@@ -771,31 +809,10 @@ class ExternalApiService:
                 self.console_logger.warning(
                     f"No release data found from any API for '{log_artist} - {log_album}'"
                 )
-                # Mark for verification only if we have a potential year to keep
-                # Use self.pending_verification_service
-                if (
-                    self.pending_verification_service
-                    and current_library_year
-                    and self._is_valid_year(current_library_year)
-                ):
-                    try:
-                        await self.pending_verification_service.mark_for_verification(
-                            artist, album
-                        )
-                        self.console_logger.info(
-                            f"Marked '{log_artist} - {log_album}' for future verification (no API data). Using current year: {current_library_year}"
-                        )
-                    except Exception as e_pvs:
-                        self.error_logger.error(
-                            f"Failed to mark '{artist} - {album}' for verification: {e_pvs}"
-                        )
-                    return (
-                        current_library_year,
-                        False,
-                    )  # Return current year, not definitive
-                else:
-                    # No current year or it's invalid, and no API data -> cannot determine
-                    return None, False
+                await self._safe_mark_for_verification(artist, album)
+                if current_library_year and self._is_valid_year(current_library_year):
+                    result_year = current_library_year
+                return result_year, is_definitive
 
             # --- Aggregate Scores by Year ---
             year_scores = defaultdict(list)  # Store list of scores for each year
@@ -815,23 +832,10 @@ class ExternalApiService:
                 self.console_logger.warning(
                     f"No valid years found after processing API results for '{log_artist} - {log_album}'"
                 )
-                # Use self.pending_verification_service
-                if (
-                    self.pending_verification_service
-                    and current_library_year
-                    and self._is_valid_year(current_library_year)
-                ):
-                    try:
-                        await self.pending_verification_service.mark_for_verification(
-                            artist, album
-                        )
-                    except Exception as e_pvs:
-                        self.error_logger.error(
-                            f"Failed to mark '{artist} - {album}' for verification: {e_pvs}"
-                        )
-                    return current_library_year, False
-                else:
-                    return None, False
+                await self._safe_mark_for_verification(artist, album)
+                if current_library_year and self._is_valid_year(current_library_year):
+                    result_year = current_library_year
+                return result_year, is_definitive
 
             # --- Determine Best Year based on Aggregated Scores ---
 
@@ -847,11 +851,11 @@ class ExternalApiService:
 
             # Log the ranked years and their highest scores
             log_scores = ", ".join(
-                [f"{y}:{s}" for y, s in sorted_years[:5]]
-            )  # Log top 5 for brevity
+                [f"{y}:{s}" for y, s in sorted_years[:MAX_LOGGED_YEARS]]
+            )  # Log top entries for brevity
             self.console_logger.info(
                 f"Ranked year scores (Year:MaxScore): {log_scores}"
-                + ("..." if len(sorted_years) > 5 else "")
+                + ("..." if len(sorted_years) > MAX_LOGGED_YEARS else "")
             )
 
             # --- Select Final Year and Determine Confidence ---
@@ -881,37 +885,23 @@ class ExternalApiService:
                 f"Definitive? {is_definitive} (Score Met: {high_score_met}, Diff Met: {significant_diff_met})"
             )
 
-            # If not definitive, mark for potential future verification
-            # Use self.pending_verification_service
-            if not is_definitive and self.pending_verification_service:
-                try:
-                    await self.pending_verification_service.mark_for_verification(
-                        artist, album
-                    )
-                    self.console_logger.info(
-                        f"Result for '{log_artist} - {log_album}' is not definitive. Marked for future verification."
-                    )
-                except Exception as e_pvs:
-                    self.error_logger.error(
-                        f"Failed to mark '{artist} - {album}' for verification: {e_pvs}"
-                    )
+            if not is_definitive:
+                await self._safe_mark_for_verification(artist, album)
 
-            # Return the best year found and whether it's considered definitive
-            return best_year, is_definitive
+            result_year = best_year
 
         except Exception as e:
-            # Catch unexpected errors during the main processing logic
             self.error_logger.exception(
                 f"Unexpected error in get_album_year for '{log_artist} - {log_album}': {e}"
             )
-            # Fallback: return current library year if valid, otherwise None; mark as not definitive
             if current_library_year and self._is_valid_year(current_library_year):
-                return current_library_year, False
-            else:
-                return None, False
+                result_year = current_library_year
+            is_definitive = False
         finally:
             # Crucial: Clear the context after the function finishes or errors out
             self.artist_period_context = None
+
+        return result_year, is_definitive
 
     async def get_artist_activity_period(
         self, artist_norm: str
@@ -984,7 +974,7 @@ class ExternalApiService:
                     try:
                         # Extract only the year part (YYYY)
                         year_part = begin_date_str.split("-")[0]
-                        if len(year_part) == 4 and year_part.isdigit():
+                        if len(year_part) == YEAR_LENGTH and year_part.isdigit():
                             start_year_result = int(year_part)
                         else:
                             self.console_logger.warning(
@@ -999,7 +989,7 @@ class ExternalApiService:
                 if end_date_str:
                     try:
                         year_part = end_date_str.split("-")[0]
-                        if len(year_part) == 4 and year_part.isdigit():
+                        if len(year_part) == YEAR_LENGTH and year_part.isdigit():
                             end_year_result = int(year_part)
                         else:
                             self.console_logger.warning(
@@ -1087,7 +1077,7 @@ class ExternalApiService:
                 if (
                     country_code
                     and isinstance(country_code, str)
-                    and len(country_code) == 2
+                    and len(country_code) == REGION_CODE_LENGTH
                 ):
                     region_result = country_code.lower()
                     self.console_logger.debug(
@@ -1231,7 +1221,7 @@ class ExternalApiService:
         if source == "musicbrainz" and rg_first_date_str:
             try:
                 rg_year_str = rg_first_date_str.split("-")[0]
-                if len(rg_year_str) == 4 and rg_year_str.isdigit():
+                if len(rg_year_str) == YEAR_LENGTH and rg_year_str.isdigit():
                     rg_first_year = int(rg_year_str)
                     # Strong bonus if release year matches the RG first year
                     if year_str and rg_year_str == year_str:
@@ -1287,7 +1277,7 @@ class ExternalApiService:
         year = -1
         year_diff_penalty = 0
         is_valid_year_format = False
-        if year_str and year_str.isdigit() and len(year_str) == 4:
+        if year_str and year_str.isdigit() and len(year_str) == YEAR_LENGTH:
             is_valid_year_format = True
             try:
                 year = int(year_str)
@@ -2202,7 +2192,7 @@ class ExternalApiService:
             tag_name = str(tag["name"]).strip()
             # Check if tag is a 4-digit string representing a valid year
             if (
-                len(tag_name) == 4
+                len(tag_name) == YEAR_LENGTH
                 and tag_name.isdigit()
                 and self._is_valid_year(tag_name)
             ):
@@ -2302,7 +2292,7 @@ class ExternalApiService:
             not year_str
             or not isinstance(year_str, str)
             or not year_str.isdigit()
-            or len(year_str) != 4
+            or len(year_str) != YEAR_LENGTH
         ):
             return False
         try:
