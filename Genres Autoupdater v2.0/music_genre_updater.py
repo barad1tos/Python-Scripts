@@ -788,7 +788,7 @@ class MusicUpdater:
             # New logic to determine if API fetch is needed based on cache and pending status
             needs_api_fetch = False
             year = None  # Variable to hold the determined year (from cache or API)
-            is_definitive = False  # Variable to hold definitive status
+            is_definitive = False  # Variable to track if the year is definitive
 
             # Option 1: Force update - always fetch from API, bypass cache and pending logic
             if force:
@@ -820,7 +820,7 @@ class MusicUpdater:
                         album,
                     )
                     year = cached_year
-                    is_definitive = True  # Cached year is considered definitive by definition of this cache
+                    is_definitive = True  # Cached years are always considered definitive
                     needs_api_fetch = False  # No API call needed
 
                 else:
@@ -847,10 +847,7 @@ class MusicUpdater:
                             artist,
                             album,
                         )
-                        (
-                            year,
-                            is_definitive,
-                        ) = await self.external_api_service.get_album_year(
+                        year, is_definitive = await self.external_api_service.get_album_year(
                             artist,
                             album,
                             current_library_year,
@@ -871,6 +868,15 @@ class MusicUpdater:
 
             # --- Process Result (whether from cache or API) ---
             # Now, 'year' holds the best year found (or None), and 'is_definitive' its status (if API called or cache hit)
+
+            # Mark for verification if the result is not definitive
+            if year and not is_definitive and self.pending_verification_service:
+                await self.pending_verification_service.mark_for_verification(artist, album)
+                self.console_logger.debug(
+                    "Marked '%s - %s' for verification (non-definitive result)",
+                    artist,
+                    album,
+                )
 
             # If a year was determined (either from cache hit or successful API fetch)
             if year and self._is_valid_year(
@@ -1098,6 +1104,9 @@ class MusicUpdater:
         # Note: updated_tracks list is populated inside the inner process_album function
         return updated_tracks, changes_log
 
+    # Constants for log filenames
+    INCREMENTAL_RUN_LOG = "last_incremental_run.log"
+
     # Logic moved from old can_run_incremental
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Can Run Incremental")
@@ -1112,13 +1121,13 @@ class MusicUpdater:
         elif not os.path.exists(get_full_log_path(
             self.config,
             "last_incremental_run_file",
-            "last_incremental_run.log",
+            self.INCREMENTAL_RUN_LOG,
             self.error_logger,
         )):
             last_file_path = get_full_log_path(
                 self.config,
                 "last_incremental_run_file",
-                "last_incremental_run.log",
+                self.INCREMENTAL_RUN_LOG,
                 self.error_logger,
             )
             self.console_logger.info(
@@ -1130,7 +1139,7 @@ class MusicUpdater:
             last_file_path = get_full_log_path(
                 self.config,
                 "last_incremental_run_file",
-                "last_incremental_run.log",
+                self.INCREMENTAL_RUN_LOG,
                 self.error_logger,
             )
             interval = self.config.get("incremental_interval_minutes", 60)
@@ -1198,7 +1207,7 @@ class MusicUpdater:
         last_file_path = get_full_log_path(
             self.config,
             "last_incremental_run_file",
-            "last_incremental_run.log",
+            self.INCREMENTAL_RUN_LOG,
             self.error_logger,
         )  # Pass error_logger
         try:
@@ -1284,7 +1293,7 @@ class MusicUpdater:
                             f"Skipping verification (interval: {auto_verify_days} days). Use --force to override.",
                         )
                         return 0  # Verification not needed yet
-                except (OSError, FileNotFoundError, PermissionError, ValueError) as e:
+                except (FileNotFoundError, PermissionError, ValueError) as e:
                     self.error_logger.warning(
                         f"Could not read or parse last verification date ({last_verify_file}): {e}. Proceeding with verification.",
                     )

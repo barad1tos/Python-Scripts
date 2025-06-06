@@ -400,14 +400,8 @@ class AppleScriptClient:
                 finally:
                     await self._cleanup_process(proc, label)
 
-            except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+            except OSError as e:
                 self.error_logger.error("⊗ %s subprocess error: %s", label, e)
-                should_continue = False
-
-            except Exception as e:
-                self.error_logger.exception(
-                    f"⊗ {label} unexpected error before process creation: {e}"
-                )
                 should_continue = False
 
             return result, should_continue

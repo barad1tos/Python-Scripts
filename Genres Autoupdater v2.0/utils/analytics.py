@@ -1,110 +1,24 @@
 #!/usr/bin/env python3
+"""Analytics Module..
 
-r"""Analytics Module.
+Provides performance tracking and analysis for Python applications.
+Uses decorators to measure execution time, success rates, and patterns.
 
-Provides a comprehensive performance tracking and analysis system for Python applications.
-Uses decorators to automatically measure execution time, success rates, and execution patterns.
-
-Features:
-    - Function performance tracking (sync and async)
-    - Success/failure monitoring
-    - Performance categorization (fast/medium/slow)
-    - HTML report generation
-    - Memory management for long-running applications
-    - Statistical aggregation and filtering
-    - Decorator factory for tracking instance methods
-
-Usage:
-    1. Create an instance of the Analytics class
-    2. Decorate functions with @analytics.track("Event Type")
-    3. Decorate instance methods with @Analytics.track_instance_method("Event Type")
-    4. Access statistics via analytics.get_stats()
-    5. Generate HTML reports with analytics.generate_reports()
-    6. Get summaries with analytics.log_summary()
-    7. Manage memory with analytics.clear_old_events()
-    8. Merge data from multiple instances with analytics.merge_with()
-
-Example:    ```python
-    from utils.analytics import Analytics
-    import logging
-
-    # Initialize with configuration and loggers (assuming config, loggers are defined)
-    # config, console_logger, error_logger, analytics_logger = ...
-    # For this example, using dummy loggers:
-    console_logger = logging.getLogger('console')
-    error_logger = logging.getLogger('error')
-    analytics_logger = logging.getLogger('analytics')
-    for logger in [console_logger, error_logger, analytics_logger]:
-        if not logger.handlers:
-            logger.addHandler(logging.StreamHandler())
-            logger.setLevel(logging.DEBUG)
-
-    analytics = Analytics({}, console_logger, error_logger, analytics_logger)
-
-    # Track function performance
-    @analytics.track("API Call")
-    async def fetch_data(url):
-        # Your code here
-        awaits asyncio.sleep(0.1) # Simulate async work
-        return "some data"
-
-    # Track instance method performance
-    class MyService:
-        def __init__(self, analytics_instance: Analytics):
-            self.analytics = analytics_instance
-            self.error_logger = logging.getLogger('my_service_error')
-            if not self.error_logger.handlers:
-                self.error_logger.addHandler(logging.StreamHandler())
-                self.error_logger.setLevel(logging.WARNING)
-
-
-        @Analytics.track_instance_method("Service Method")
-        async def process_item(self, item):
-            # Your code here
-            await asyncio.sleep(0.05) # Simulate async work
-            print(f"Processing item: {item}")
-            if "error" in item:
-                raise ValueError("Simulated processing error")
-
-
-    # Example Usage
-    async def run_example():
-        await fetch_data("[http://example.com/api](http://example.com/api)")
-        service_instance = MyService(analytics)
-        await service_instance.process_item("item1")
-        try:
-            await service_instance.process_item("item_with_error")
-        except ValueError as e:
-            print(f"Caught expected error: {e}")
-
-        # Get statistics for specific functions
-        stats = analytics.get_stats() # Get stats for all tracked functions
-        print("\nAnalytics Stats:")
-        for func_name, func_stats in stats['functions'].items():
-            print(f"  {func_name}: Calls={func_stats['total_calls']},
-            Success Rate={func_stats['success_rate']:.1f}%, Avg Duration={func_stats['avg_duration']:.3f}s")
-
-        # Generate HTML reports (requires utils.reports.save_html_report)
-        # analytics.generate_reports()
-
-        # Print summary to logs
-        analytics.log_summary()
-
-    # import asyncio
-    # asyncio.run(run_example())
-    ```
-
-Memory Management:
-    The Analytics class includes safeguards against unbounded memory growth:
-    - Configurable max_events limit with automatic pruning
-    - Manual cleanup of old events with clear_old_events()
-    - Support for merging and consolidating data from multiple instances
+Features
+--------
+- Function performance tracking (sync & async)
+- Success / failure monitoring
+- Duration categorisation (fast / medium / slow)
+- HTML report generation (via utils.reports.save_html_report)
+- Memory-safe event storage with pruning
+- Aggregated statistics & filtering
+- Merging data from multiple Analytics instances
 """
+
+from __future__ import annotations
 
 import asyncio
 import gc
-import logging
-import sys
 import time
 
 from collections.abc import Callable
@@ -112,770 +26,373 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import Any
 
-# Assuming utils.reports.save_html_report exists or is a placeholder
-# In a real scenario, you'd need a concrete implementation for reports.
 try:
     from utils.reports import save_html_report
 except ImportError:
-    print(
-        "Warning: utils.reports.save_html_report not found. Report generation will be skipped.",
-        flush=True,
-    )
-
-    # Provide a dummy function if the import fails
     def save_html_report(
-        events: list[dict[str, Any]],  # Removed noqa: ARG001
-        call_counts: dict[str, int],  # noqa: ARG001
-        success_counts: dict[str, int],  # noqa: ARG001
-        decorator_overhead: dict[str, float],  # noqa: ARG001
-        config: dict[str, Any],  # noqa: ARG001
-        console_logger: logging.Logger | None = None,  # noqa: ARG001
-        error_logger: logging.Logger | None = None,  # noqa: ARG001
-        group_successful_short_calls: bool = False,  # noqa: ARG001
-        force_mode: bool = False  # noqa: ARG001
-        ) -> None:
-            """Generate a placeholder report."""
-            print(
-                f"Report generation skipped: save_html_report function not available. "
-                f"Would have processed {len(events)} events.",
-                flush=True,
-            )
+        *_: Any,
+        **__: Any,
+    ) -> None:
+        """Fallback reporter - does nothing."""
+        pass
 
 
 class Analytics:
     """Tracks function performance, success rates, and execution patterns.
 
-    Provides decorators for tracking sync/async functions, aggregated statistics,
-    and HTML report generation. Includes memory management features to prevent
-    unbounded growth in long-running applications.
+    Attributes
+    ----------
+    instance_id      : unique identifier for this Analytics instance
+    events           : list of tracked call events
+    call_counts      : dict[func, int] - total calls
+    success_counts   : dict[func, int] - successful calls
+    decorator_overhead: dict[func, float] - seconds of wrapper overhead
+    max_events       : in-memory cap for events (pruned oldest when exceeded)
+
     """
 
-    # Constants
-    GC_COLLECTION_THRESHOLD: int = 5000  # Threshold for the number of events to trigger garbage collection
-
-    # Class-level counter for instance IDs
+    # Class-level counter for unique IDs
     _instances = 0
 
+    # Threshold after which GC is suggested post-report
+    GC_COLLECTION_THRESHOLD = 5_000
+
+    # Symbols for duration buckets
+    _FAST = "⚡"
+    _MEDIUM = "⏱️"
+    _SLOW = "🐢"
+    _DURATION_FIELD = "Duration (s)"  # Field name for duration in analytics events
+
+    # --- Init ---
     def __init__(
         self,
         config: dict[str, Any],
-        console_logger: logging.Logger,
-        error_logger: logging.Logger,
-        analytics_logger: logging.Logger,
-        max_events: int = 10000,  # Default value from config if not provided
-    ):
-        """Initialize the Analytics tracker."""
-        # Create unique instance identifier
+        console_logger,
+        error_logger,
+        analytics_logger,
+        max_events: int | None = None,
+    ) -> None:
+        """Initialise the Analytics instance."""
         Analytics._instances += 1
         self.instance_id = Analytics._instances
 
-        # Data storage
+        # Data stores
         self.events: list[dict[str, Any]] = []
         self.call_counts: dict[str, int] = {}
         self.success_counts: dict[str, int] = {}
         self.decorator_overhead: dict[str, float] = {}
 
-        # Configuration and loggers
+        # Config & loggers
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.analytics_logger = analytics_logger
 
-        # Memory management settings
-        self.max_events = max_events or config.get("analytics", {}).get(
-            "max_events", 10000
-        )
-
-        # Load thresholds from config
+        # Limits & thresholds
+        self.max_events = max_events or config.get("analytics", {}).get("max_events", 10_000)
         thresholds = config.get("analytics", {}).get("duration_thresholds", {})
-        # Use .get() with default values for safety
         self.short_max = thresholds.get("short_max", 2)
         self.medium_max = thresholds.get("medium_max", 5)
         self.long_max = thresholds.get("long_max", 10)
 
-        # Time format settings
-        self.time_format = config.get("analytics", {}).get(
-            "time_format", "%Y-%m-%d %H:%M:%S"
-        )
+        # Time formatting
+        self.time_format = config.get("analytics", {}).get("time_format", "%Y-%m-%d %H:%M:%S")
         self.compact_time = config.get("analytics", {}).get("compact_time", False)
 
-        # Log initialization
-        # Ensure loggers are not None before using
-        if self.console_logger:
-            self.console_logger.debug(f"📊 Analytics #{self.instance_id} initialized")
+        self.console_logger.debug(f"📊 Analytics #{self.instance_id} initialised")
 
+    # --- Public decorator helpers ---
     def track(self, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Create a decorator that tracks function performance and success."""
+        """Preferred decorator API - tracks sync/async functions."""
+        return self._decorator(event_type)
 
+    @classmethod
+    def track_instance_method(cls, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+        """Track instance methods by adding analytics tracking.
+
+        Requires the decorated class to expose `self.analytics` and optional `self.error_logger`.
+        """
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            is_async = asyncio.iscoroutinefunction(func)
+
+            @wraps(func)
+            async def async_wrapper(self, *args, **kwargs):
+                analytics_inst: Analytics | None = getattr(self, "analytics", None)
+                if not isinstance(analytics_inst, Analytics):
+                    (getattr(self, "error_logger", None) or cls._null_logger()).error(
+                        f"Analytics missing on {self.__class__.__name__}; {func.__name__} untracked"
+                    )
+                    return await func(self, *args, **kwargs)
+
+                return await analytics_inst._wrapped_call(
+                    func, event_type, True, self, *args, **kwargs
+                )
+
+            @wraps(func)
+            def sync_wrapper(self, *args, **kwargs):
+                analytics_inst: Analytics | None = getattr(self, "analytics", None)
+                if not isinstance(analytics_inst, Analytics):
+                    (getattr(self, "error_logger", None) or cls._null_logger()).error(
+                        f"Analytics missing on {self.__class__.__name__}; {func.__name__} untracked"
+                    )
+                    return func(self, *args, **kwargs)
+
+                return analytics_inst._wrapped_call(
+                    func, event_type, False, self, *args, **kwargs
+                )
+
+            return async_wrapper if is_async else sync_wrapper
+
+        return decorator
+
+    # --- Internal decorator factory ---
+    def _decorator(self, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         def decorator_function(func: Callable[..., Any]) -> Callable[..., Any]:
-            if asyncio.iscoroutinefunction(func):
-                # Use self's async wrapper factory
-                return self._create_async_wrapper(func, event_type)
+            is_async = asyncio.iscoroutinefunction(func)
+
+            if is_async:
+                async def async_wrapper(*args, **kwargs):
+                    return await self._wrapped_call(func, event_type, True, *args, **kwargs)
+                return wraps(func)(async_wrapper)
             else:
-                # Use self's sync wrapper factory
-                return self._create_sync_wrapper(func, event_type)
+                def sync_wrapper(*args, **kwargs):
+                    return self._wrapped_call(func, event_type, False, *args, **kwargs)
+                return wraps(func)(sync_wrapper)
 
         return decorator_function
 
-    # --- Classmethod decorator factory for instance methods ---
-    @classmethod
-    def track_instance_method(cls, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Create a decorator that tracks instance method performance and success."""
+    # --- Core wrapper executor ---
+    async def _wrapped_call(
+        self,
+        func: Callable[..., Any],
+        event_type: str,
+        is_async: bool,
+        *args,
+        **kwargs,
+    ):
+        func_name = func.__name__
+        decorator_start = time.time()
+        func_start = decorator_start
+        success = False
+        try:
+            result = await func(*args, **kwargs) if is_async else func(*args, **kwargs)
+            success = True
+            return result
+        except Exception as exc:
+            self.error_logger.error(f"❌ {func_name}: {exc}")
+            raise
+        finally:
+            func_end = time.time()
+            decorator_end = func_end
+            duration = func_end - func_start
+            overhead = decorator_end - decorator_start - duration
+            self._record_function_call(func_name, event_type, func_start, func_end, duration, success, overhead)
 
-        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
-            # 'func' is the method being decorated (e.g., MusicUpdater.fetch_tracks_async)
-            # It expects 'self' (the instance) as its first argument when called.
+    # --- Event recording & memory management ---
+    def _get_duration_symbol(self, duration: float) -> str:
+        """Get the appropriate symbol for a given duration.
 
-            # Check if the original function is async
-            is_async = asyncio.iscoroutinefunction(func)
+        Args:
+            duration: The duration in seconds
 
-            @wraps(func)  # Preserve original method's metadata
-            async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-                # 'self' here IS the instance of the class the method belongs to (e.g., MusicUpdater)
-                # We can now access self.analytics (which is an Analytics instance)
-                # and self.error_logger (which is a logger instance).
+        Returns:
+            str: Symbol representing the duration category (fast/medium/slow)
 
-                # Ensure the instance has an 'analytics' attribute, which is an Analytics instance
-                analytics_instance = getattr(self, "analytics", None)
-                if not isinstance(analytics_instance, Analytics):
-                    # Fallback if analytics is not available or not the correct type
-                    # Use a simple logger or print
-                    logger_fallback = getattr(
-                        self, "error_logger", None
-                    ) or logging.getLogger(__name__)
-                    logger_fallback.error(
-                        f"Analytics instance not found on {self.__class__.__name__} instance for method {func.__name__}. Tracking skipped."
-                    )
-                    # Call the original method without tracking
-                    # Need to await if the original function is async
-                    return (
-                        await func(self, *args, **kwargs)
-                        if is_async
-                        else func(self, *args, **kwargs)
-                    )
-
-                error_logger_instance = getattr(
-                    self, "error_logger", None
-                ) or logging.getLogger(
-                    __name__
-                )  # Get error logger from 'self' or use fallback
-
-                start_time = time.time()
-                success = False
-                try:
-                    # Call the original method 'func' with 'self' and arguments
-                    result = (
-                        await func(self, *args, **kwargs)
-                        if is_async
-                        else func(self, *args, **kwargs)
-                    )
-                    success = True
-                    return result
-                except Exception as e:
-                    # Log error using the instance's error logger
-                    if error_logger_instance:
-                        error_logger_instance.error(f"❌ {func.__name__}: {e!s}")
-                    else:
-                        print(f"ERROR: ❌ {func.__name__}: {e!s}", file=sys.stderr)
-                    raise  # Re-raise the exception
-                finally:
-                    end_time = time.time()
-                    duration = end_time - start_time
-                    # Simplified overhead for now
-                    overhead = 0.0
-                    # Call the recording logic on the analytics instance
-                    # We can call the private method directly as it's an internal helper
-                    # Ensure analytics_instance exists before calling
-                    if analytics_instance:
-                        analytics_instance._record_function_call(
-                            func.__name__,
-                            event_type,
-                            start_time,
-                            end_time,
-                            duration,
-                            success,
-                            overhead,
-                        )
-
-            @wraps(func)
-            def sync_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-                # 'self' here IS the instance of the class the method belongs to (e.g., MusicUpdater)
-                # We can now access self.analytics (which is an Analytics instance)
-                # and self.error_logger (which is a logger instance).
-
-                # Ensure the instance has an 'analytics' attribute which is an Analytics instance
-                analytics_instance = getattr(self, "analytics", None)
-                if not isinstance(analytics_instance, Analytics):
-                    # Fallback if analytics is not available or not the correct type
-                    # Use a simple logger or print
-                    logger_fallback = getattr(
-                        self, "error_logger", None
-                    ) or logging.getLogger(__name__)
-                    logger_fallback.error(
-                        f"Analytics instance not found on {self.__class__.__name__} instance for method {func.__name__}. Tracking skipped."
-                    )
-                    # Call the original method without tracking
-                    return func(self, *args, **kwargs)
-
-                error_logger_instance = getattr(
-                    self, "error_logger", None
-                ) or logging.getLogger(
-                    __name__
-                )  # Get error logger from 'self' or use fallback
-
-                start_time = time.time()
-                success = False
-                try:
-                    # Call the original method 'func' with 'self' and arguments
-                    result = func(self, *args, **kwargs)
-                    success = True
-                    return result
-                except Exception as e:
-                    # Log error using the instance's error logger
-                    if error_logger_instance:
-                        error_logger_instance.error(f"❌ {func.__name__}: {e!s}")
-                    else:
-                        print(f"ERROR: ❌ {func.__name__}: {e!s}", file=sys.stderr)
-                    raise  # Re-raise the exception
-                finally:
-                    end_time = time.time()
-                    duration = end_time - start_time
-                    # Simplified overhead for now
-                    overhead = 0.0
-                    # Call the recording logic on the analytics instance
-                    # We can call the private method directly as it's an internal helper
-                    # Ensure analytics_instance exists before calling
-                    if analytics_instance:
-                        analytics_instance._record_function_call(
-                            func.__name__,
-                            event_type,
-                            start_time,
-                            end_time,
-                            duration,
-                            success,
-                            overhead,
-                        )
-
-            # Return the appropriate wrapper based on the original function type
-            return async_wrapper if is_async else sync_wrapper
-
-        return decorator  # Return the decorator function
-
-    def decorator(self, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
-        """Legacy name for the track method. Provides same functionality."""
-        return self.track(event_type)  # Just call the track method
-
-    def _create_sync_wrapper(self, func: Callable[..., Any], event_type: str) -> Callable[..., Any]:
-        """Create a synchronous wrapper for tracking function performance."""
-
-        @wraps(func)
-        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            func_name = func.__name__
-            # Note: Decorator overhead timing is simplified here compared to original
-            # decorator_start = time.time()
-            function_start = time.time()
-            success = False
-            try:
-                result = func(*args, **kwargs)
-                success = True
-                return result
-            except Exception as e:
-                # Use the instance's error logger (self here is the Analytics instance)
-                if self.error_logger:
-                    self.error_logger.error(f"❌ {func_name}: {e!s}")
-                else:
-                    print(f"ERROR: ❌ {func_name}: {e!s}", file=sys.stderr)
-                raise
-            finally:
-                function_end = time.time()
-                # decorator_end = time.time()
-                duration = function_end - function_start
-                # overhead = decorator_end - decorator_start - duration # Simplified overhead
-                overhead = 0.0  # Simplified overhead
-                self._record_function_call(
-                    func_name,
-                    event_type,
-                    function_start,
-                    function_end,
-                    duration,
-                    success,
-                    overhead,
-                )
-
-        return sync_wrapper
-
-    def _create_async_wrapper(self, func: Callable[..., Any], event_type: str) -> Callable[..., Any]:
-        """Create an asynchronous wrapper for tracking function performance."""
-
-        @wraps(func)
-        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            func_name = func.__name__
-            # Note: Decorator overhead timing is simplified here compared to original
-            # decorator_start = time.time()
-            function_start = time.time()
-            success = False
-            try:
-                result = await func(*args, **kwargs)
-                success = True
-                return result
-            except Exception as e:
-                # Use the instance's error logger (self here is the Analytics instance)
-                if self.error_logger:
-                    self.error_logger.error(f"❌ {func_name}: {e!s}")
-                else:
-                    print(f"ERROR: ❌ {func_name}: {e!s}", file=sys.stderr)
-                raise
-            finally:
-                function_end = time.time()
-                # decorator_end = time.time()
-                duration = function_end - function_start
-                # overhead = decorator_end - decorator_start - duration # Simplified overhead
-                overhead = 0.0  # Simplified overhead
-                self._record_function_call(
-                    func_name,
-                    event_type,
-                    function_start,
-                    function_end,
-                    duration,
-                    success,
-                    overhead,
-                )
-
-        return async_wrapper
+        """
+        if duration <= self.short_max:
+            return self._FAST
+        if duration <= self.medium_max:
+            return self._MEDIUM
+        return self._SLOW
 
     def _record_function_call(
         self,
         func_name: str,
         event_type: str,
-        start_time: float,
-        end_time: float,
+        start: float,
+        end: float,
         duration: float,
         success: bool,
-        overhead: float,  # Keep overhead parameter even if simplified
+        overhead: float,
     ) -> None:
-        """Record performance data for a function call."""
-        # Manage memory by removing oldest events if needed
+
+        # Prune if exceeding cap
         if self.max_events > 0 and len(self.events) >= self.max_events:
-            # Remove oldest 10% of events when limit is reached
-            remove_count = max(1, int(self.max_events * 0.1))
-            self.events = self.events[remove_count:]
-            if remove_count > 0:  # Only log if pruning happens
-                if self.console_logger:
-                    self.console_logger.debug(f"📊 Pruned {remove_count} oldest events")
+            prune = max(1, int(self.max_events * 0.1))
+            self.events = self.events[prune:]
+            self.console_logger.debug(f"📊 Pruned {prune} old events")
 
-        # Format timestamp based on configuration
-        try:
-            start_dt = datetime.fromtimestamp(start_time)
-            end_dt = datetime.fromtimestamp(end_time)
-            if self.compact_time:
-                start_str = start_dt.strftime("%H:%M:%S")
-                end_str = end_dt.strftime("%H:%M:%S")
-            else:
-                start_str = start_dt.strftime(self.time_format)
-                end_str = end_dt.strftime(self.time_format)
-        except Exception as e:
-            # Handle potential errors during timestamp formatting
-            if self.error_logger:
-                self.error_logger.error(f"Error formatting timestamp: {e}")
-            else:
-                print(f"ERROR: Error formatting timestamp: {e}", file=sys.stderr)
-            start_str = "N/A"
-            end_str = "N/A"
+        # Timestamps
+        if self.compact_time:
+            fmt = "%H:%M:%S"
+            start_str = datetime.fromtimestamp(start).strftime(fmt)
+            end_str = datetime.fromtimestamp(end).strftime(fmt)
+        else:
+            start_str = datetime.fromtimestamp(start).strftime(self.time_format)
+            end_str = datetime.fromtimestamp(end).strftime(self.time_format)
 
-        # Add to events list
+        # Store event
         self.events.append(
             {
                 "Function": func_name,
                 "Event Type": event_type,
                 "Start Time": start_str,
                 "End Time": end_str,
-                "Duration (s)": round(duration, 4),
+                self._DURATION_FIELD: round(duration, 4),
                 "Success": success,
             }
         )
 
-        # Update counters - use get() with default 0 for safety
+        # Counters & overhead
         self.call_counts[func_name] = self.call_counts.get(func_name, 0) + 1
         if success:
             self.success_counts[func_name] = self.success_counts.get(func_name, 0) + 1
+        self.decorator_overhead[func_name] = self.decorator_overhead.get(func_name, 0.0) + overhead
 
-        # Track decorator overhead (simplified) - use get() with default 0.0 for safety
-        self.decorator_overhead[func_name] = (
-            self.decorator_overhead.get(func_name, 0.0) + overhead
-        )
-
-        # Log the outcome with appropriate duration category and symbol
+        # Logging
+        symbol = self._get_duration_symbol(duration)
         status = "✅" if success else "❌"
-        duration_symbol = self._get_duration_symbol(duration)
+        msg = f"{status} {symbol} {func_name}({event_type}) took {duration:.3f}s"
+        level = "info" if success and duration > self.long_max else "debug"
+        getattr(self.analytics_logger, level)(msg)
+        getattr(self.console_logger, level)(msg) if success else self.console_logger.warning(msg)
 
-        log_message = f"{status} {duration_symbol} {func_name} ({event_type}) took {duration:.3f}s"
-
-        # Log to analytics logger and console logger - check if loggers exist
-        if success:
-            log_level = "info" if duration > self.long_max else "debug"
-            if self.analytics_logger:
-                getattr(self.analytics_logger, log_level)(log_message)
-            if self.console_logger:
-                getattr(self.console_logger, log_level)(log_message)
-
-        else:  # Log failures as warnings
-            if self.analytics_logger:
-                self.analytics_logger.warning(log_message)
-            if self.console_logger:
-                self.console_logger.warning(log_message)
-
-    def _get_duration_symbol(self, duration: float) -> str:
-        """Return a symbol representing the duration category."""
-        if duration <= self.short_max:
-            return "⚡"  # Fast
-        elif duration <= self.medium_max:
-            return "⏱️"  # Medium
-        else:
-            return "🐢"  # Slow
-
-    def merge_with(self, other: "Analytics") -> None:
-        """Merge analytics data from another instance."""
-        if other is self:
-            return
-
-        if self.console_logger:
-            self.console_logger.debug(
-                f"📊 Merging data from Analytics #{other.instance_id}"
-            )
-
-        # Merge events with memory limit check
-        remaining_capacity = (
-            self.max_events - len(self.events) if self.max_events > 0 else float("inf")
-        )
-        events_to_add = (
-            other.events[: int(remaining_capacity)]
-            if remaining_capacity < len(other.events)
-            else other.events
-        )
-        self.events.extend(events_to_add)
-
-        # Merge counters - use get() with default 0 or 0.0 for safety
-        for fn, count in other.call_counts.items():
-            self.call_counts[fn] = self.call_counts.get(fn, 0) + count
-
-        for fn, count in other.success_counts.items():
-            self.success_counts[fn] = self.success_counts.get(fn, 0) + count
-
-        for fn, overhead in other.decorator_overhead.items():
-            self.decorator_overhead[fn] = (
-                self.decorator_overhead.get(fn, 0.0) + overhead
-            )
-
-        # Clean other instance data
-        other.events.clear()
-        other.call_counts.clear()
-        other.success_counts.clear()
-        other.decorator_overhead.clear()
-
-    def get_stats(
-        self, function_filter: str | list[str] | None = None
-    ) -> dict[str, Any]:
-        """Get summary statistics for tracked functions."""
-        # Ensure events list is processed even if filter is None
+    # --- Stats & summaries ---
+    def get_stats(self, function_filter: str | list[str] | None = None) -> dict[str, Any]:
+        """Get statistics for analytics data."""
         if function_filter:
-            if isinstance(function_filter, str):
-                function_names = {function_filter}
-            else:
-                function_names = set(function_filter)
-
-            # Filter events based on provided function names
-            filtered_events = [
-                e for e in self.events if e.get("Function") in function_names
-            ]
-            # Filter call and success counts as well
-            filtered_call_counts = {
-                k: v for k, v in self.call_counts.items() if k in function_names
-            }
-            filtered_success_counts = {
-                k: v for k, v in self.success_counts.items() if k in function_names
-            }
-
+            names = {function_filter} if isinstance(function_filter, str) else set(function_filter)
+            events = [e for e in self.events if e["Function"] in names]
         else:
-            # No filter, use all events and counts
-            filtered_events = self.events
-            filtered_call_counts = self.call_counts
-            filtered_success_counts = self.success_counts
-            function_names = set(
-                filtered_call_counts.keys()
-            )  # Get names from filtered counts
+            names = set(self.call_counts.keys())
+            events = self.events
 
-        # Calculate overall stats
-        total_calls = sum(filtered_call_counts.values())
-        total_success = sum(filtered_success_counts.values())
-        total_time = sum(
-            e.get("Duration (s)", 0.0) for e in filtered_events
-        )  # Use .get with default 0.0
-        total_overhead = sum(
-            self.decorator_overhead.get(fn, 0.0) for fn in function_names
-        )  # Sum filtered overhead
-
-        # Calculate overall rates and averages - handle division by zero
+        total_calls = sum(self.call_counts.get(fn, 0) for fn in names)
+        total_success = sum(self.success_counts.get(fn, 0) for fn in names)
+        total_time = sum(e[self._DURATION_FIELD] for e in events)
         success_rate = (total_success / total_calls * 100) if total_calls else 0
-        avg_duration = (total_time / len(filtered_events)) if filtered_events else 0
+        avg_duration = (total_time / len(events)) if events else 0
 
-        # Get slowest and fastest functions - requires filtering events first
-        slowest_event = None
-        fastest_event = None
-        if filtered_events:
-            try:
-                # Ensure keys exist and values are numeric before finding min/max
-                numeric_events = [
-                    e
-                    for e in filtered_events
-                    if isinstance(e.get("Duration (s)"), int | float)
-                ]
-                if numeric_events:
-                    slowest_event = max(numeric_events, key=lambda e: e["Duration (s)"])
-                    fastest_event = min(numeric_events, key=lambda e: e["Duration (s)"])
-            except (
-                ValueError
-            ):  # Handle case where filtered_events might become empty unexpectedly or has non-numeric durations
-                pass  # Slowest/fastest remain None
+        slowest = max(events, key=lambda e: e[self._DURATION_FIELD], default=None)
+        fastest = min(events, key=lambda e: e[self._DURATION_FIELD], default=None)
 
-        # Count by duration category - requires filtering events first
-        duration_counts = {"fast": 0, "medium": 0, "slow": 0}
-        if filtered_events:
-            try:
-                duration_counts = {
-                    "fast": sum(
-                        1
-                        for e in filtered_events
-                        if isinstance(e.get("Duration (s)"), int | float)
-                        and e["Duration (s)"] <= self.short_max
-                    ),
-                    "medium": sum(
-                        1
-                        for e in filtered_events
-                        if isinstance(e.get("Duration (s)"), int | float)
-                        and self.short_max < e["Duration (s)"] <= self.medium_max
-                    ),
-                    "slow": sum(
-                        1
-                        for e in filtered_events
-                        if isinstance(e.get("Duration (s)"), int | float)
-                        and e["Duration (s)"] > self.medium_max
-                    ),
-                }
-            except Exception as e:
-                # Log error if duration counting fails
-                if self.error_logger:
-                    self.error_logger.error(f"Error counting duration categories: {e}")
-                else:
-                    print(
-                        f"ERROR: Error counting duration categories: {e}",
-                        file=sys.stderr,
-                    )
+        duration_counts = {
+            "fast": sum(1 for e in events if e[self._DURATION_FIELD] <= self.short_max),
+            "medium": sum(1 for e in events if self.short_max < e[self._DURATION_FIELD] <= self.medium_max),
+            "slow": sum(1 for e in events if e[self._DURATION_FIELD] > self.medium_max),
+        }
 
-        # Calculate per-function stats
-        function_stats = {}
-        for fn in function_names:
-            calls = filtered_call_counts.get(fn, 0)
-            success = filtered_success_counts.get(fn, 0)
-            func_events = [e for e in filtered_events if e.get("Function") == fn]
-            func_time = sum(e.get("Duration (s)", 0.0) for e in func_events)
-            func_overhead = self.decorator_overhead.get(fn, 0.0)
-
-            func_success_rate = (success / calls * 100) if calls else 0
-            func_avg_duration = (func_time / len(func_events)) if func_events else 0
-
-            function_stats[fn] = {
-                "total_calls": calls,
-                "total_success": success,
-                "success_rate": func_success_rate,
-                "total_time": func_time,
-                "avg_duration": func_avg_duration,
-                "total_overhead": func_overhead,
-                "event_count": len(func_events),
-            }
-
-        # Build final stats dictionary
-        stats = {
+        return {
             "total_calls": total_calls,
             "total_success": total_success,
             "success_rate": success_rate,
             "total_time": total_time,
             "avg_duration": avg_duration,
-            "slowest_event": slowest_event,  # Renamed for clarity
-            "fastest_event": fastest_event,  # Renamed for clarity
+            "slowest": slowest,
+            "fastest": fastest,
             "duration_counts": duration_counts,
-            "function_count": len(function_names),
-            "event_count": len(filtered_events),
-            "total_decorator_overhead": total_overhead,  # Added total overhead
-            "functions": function_stats,  # Added per-function stats
+            "function_count": len(names),
+            "event_count": len(events),
         }
 
-        return stats
+    def log_summary(self) -> None:
+        """Log a summary of analytics data."""
+        stats = self.get_stats()
+        self.console_logger.info(
+            f"📊 Analytics Summary: {stats['total_calls']} calls | "
+            f"{stats['success_rate']:.1f}% success | "
+            f"avg {stats['avg_duration']:.3f}s"
+        )
 
+        dc = stats["duration_counts"]
+        total = sum(dc.values()) or 1
+        self.console_logger.info(
+            f"📊 Performance: "
+            f"{self._FAST} {dc['fast']/total*100:.0f}% | "
+            f"{self._MEDIUM} {dc['medium']/total*100:.0f}% | "
+            f"{self._SLOW} {dc['slow']/total*100:.0f}%"
+        )
+
+    # --- Maintenance helpers ---
     def clear_old_events(self, days: int = 7) -> int:
-        """Clear events older than specified number of days."""
+        """Clear old events from the analytics log."""
         if not self.events:
             return 0
 
-        # Use datetime.now() for current time comparison
-        cutoff_date = datetime.now() - timedelta(days=days)
-
-        # Handle compact time format - remove by count instead of date
         if self.compact_time:
-            remove_count = min(
-                len(self.events) // 2, 1000
-            )  # Remove up to half or 1000 events
-            if remove_count > 0:
-                self.events = self.events[remove_count:]
-                if self.console_logger:
-                    self.console_logger.debug(
-                        f"📊 Pruned {remove_count} oldest events (compact time)"
-                    )
-            return remove_count
+            prune = min(len(self.events) // 2, 1_000)
+            self.events = self.events[prune:]
+            return prune
 
-        # Regular date-based cleanup when we have full timestamps
-        # Ensure 'Start Time' is a string before trying to parse
-        # Filter for events with valid string timestamps within the cutoff
-        cleaned_events = []
-        removed_count = 0
-        for e in self.events:
-            start_time_str = e.get("Start Time")
-            if isinstance(start_time_str, str):
-                try:
-                    event_date = datetime.strptime(start_time_str, self.time_format)
-                    if event_date >= cutoff_date:
-                        cleaned_events.append(e)
-                    else:
-                        removed_count += 1
-                except ValueError:
-                    # Keep events with invalid date format, log a warning
-                    if self.error_logger:
-                        self.error_logger.warning(
-                            f"Skipping date-based pruning for event with invalid timestamp format: {start_time_str}"
-                        )
-                    else:
-                        print(
-                            f"WARNING: Skipping date-based pruning for event with invalid timestamp format: {start_time_str}",
-                            file=sys.stderr,
-                        )
-                    cleaned_events.append(e)  # Keep event on parsing error
-            else:
-                # Keep events where 'Start Time' is not a string, log a warning
-                if self.error_logger:
-                    self.error_logger.warning(
-                        f"Skipping date-based pruning for event with non-string timestamp: {start_time_str}"
-                    )
-                else:
-                    print(
-                        f"WARNING: Skipping date-based pruning for event with non-string timestamp: {start_time_str}",
-                        file=sys.stderr,
-                    )
-                cleaned_events.append(e)  # Keep event if timestamp is not a string
+        cutoff = datetime.now() - timedelta(days=days)
+        original = len(self.events)
+        self.events = [
+            e for e in self.events
+            if datetime.strptime(e["Start Time"], self.time_format) >= cutoff
+        ]
+        return original - len(self.events)
 
-        self.events = cleaned_events
-        if self.console_logger and removed_count > 0:
-            self.console_logger.debug(
-                f"📊 Removed {removed_count} events older than {days} days"
-            )
-
-        return removed_count
-
-    def log_summary(self) -> None:
-        """Log a summary of current analytics data."""
-        stats = self.get_stats()
-
-        if self.console_logger:
-            self.console_logger.info(
-                f"📊 Analytics Summary: {stats['total_calls']} calls, {stats['success_rate']:.1f}% success, avg {stats['avg_duration']:.3f}s"
-            )
-
-        # Log performance categories
-        if stats["event_count"] > 0 and self.console_logger:
-            dc = stats["duration_counts"]
-            total = sum(dc.values())
-            # Avoid division by zero if total is 0
-            if total > 0:
-                self.console_logger.info(
-                    f"📊 Performance: ⚡ {dc['fast'] / total * 100:.0f}% | ⏱️ {dc['medium'] / total * 100:.0f}% | 🐢 {dc['slow'] / total * 100:.0f}%"
-                )
-            else:
-                self.console_logger.info("📊 Performance: No events recorded.")
-        elif self.console_logger:
-            self.console_logger.info("📊 Performance: No events recorded.")
-
-    def generate_reports(self, force_mode: bool = False) -> None:
-        """Generate HTML reports from collected analytics data."""
-        # Check if the save_html_report function is actually available
-        if "save_html_report" not in globals() or not callable(save_html_report):
-            if self.console_logger:
-                self.console_logger.warning(
-                    "📊 HTML report generation skipped: save_html_report function not available."
-                )
+    def merge_with(self, other: Analytics) -> None:
+        """Merge analytics data from another Analytics instance."""
+        if other is self:
             return
 
-        try:
-            event_count = len(self.events)
-            function_count = len(self.call_counts)
+        # Handle events
+        if self.max_events > 0:
+            cap = max(0, self.max_events - len(self.events))
+            to_add = other.events[:min(cap, len(other.events))]
+        else:
+            to_add = other.events
+        self.events.extend(to_add)
 
-            # Generate summary log
-            # self.log_summary() is now called explicitly by the caller
-            # to avoid duplicate summary output when generate_reports() is used
-            # together with a standalone summary call.
+        # Merge call_counts (int values)
+        for func_name, count in other.call_counts.items():
+            self.call_counts[func_name] = self.call_counts.get(func_name, 0) + count
 
-            # Only proceed if we have data
-            if event_count == 0 and function_count == 0:
-                if self.console_logger:
-                    self.console_logger.warning(
-                        "📊 No analytics data to generate report"
-                    )
-                return
+        # Merge success_counts (int values)
+        for func_name, count in other.success_counts.items():
+            self.success_counts[func_name] = self.success_counts.get(func_name, 0) + count
 
-            if self.console_logger:
-                self.console_logger.info(
-                    f"📊 Generating HTML report ({event_count} events, {function_count} functions)"
-                )
+        # Merge decorator_overhead (float values)
+        for func_name, overhead in other.decorator_overhead.items():
+            current_overhead: float = self.decorator_overhead.get(func_name, 0.0)
+            self.decorator_overhead[func_name] = current_overhead + float(overhead)
 
-            # Generate HTML report using the utility function
-            # Pass self.config and self.loggers to the utility function
-            save_html_report(
-                self.events,
-                self.call_counts,
-                self.success_counts,
-                self.decorator_overhead,
-                self.config,
-                self.console_logger,
-                self.error_logger,
-                group_successful_short_calls=True,  # Assuming this option is intended
-                force_mode=force_mode,
-            )
+        other.events.clear()
+        other.call_counts.clear()
+        other.success_counts.clear()
+        other.decorator_overhead.clear()
 
-            # Log which report was generated
-            report_type = "full" if force_mode else "incremental"
-            if self.analytics_logger:
-                self.analytics_logger.info(
-                    f"📊 HTML {report_type} report generated successfully"
-                )
+    # --- Reports ---
+    def generate_reports(self, force_mode: bool = False) -> None:
+        """Generate analytics reports."""
+        if not self.events and not self.call_counts:
+            self.console_logger.warning("📊 No analytics data; skipping report")
+            return
 
-            # Suggest garbage collection after large report generation
-            if event_count > self.GC_COLLECTION_THRESHOLD:
-                gc.collect()
+        self.log_summary()
 
-        except (KeyboardInterrupt, SystemExit) as e:
-            # Log interruption using error logger
-            if self.error_logger:
-                self.error_logger.error(
-                    f"📊 HTML report generation interrupted: {e}", exc_info=True
-                )
-            if self.analytics_logger:
-                self.analytics_logger.error(
-                    f"📊 HTML report generation interrupted: {e}"
-                )
-            # Re-raise to ensure program exits
-            raise
-        except Exception as e:
-            # Log other errors during report generation
-            if self.error_logger:
-                self.error_logger.error(
-                    f"📊 Failed to generate HTML report: {e}", exc_info=True
-                )
-            if self.analytics_logger:
-                self.analytics_logger.error(f"📊 Failed to generate HTML report: {e}")
+        save_html_report(
+            self.events,
+            self.call_counts,
+            self.success_counts,
+            self.decorator_overhead,
+            self.config,
+            self.console_logger,
+            self.error_logger,
+            group_successful_short_calls=True,
+            force_mode=force_mode,
+        )
+
+        if len(self.events) > self.GC_COLLECTION_THRESHOLD:
+            gc.collect()
+
+    # --- Utilities ---
+    @staticmethod
+    def _null_logger():
+        import logging
+        logger = logging.getLogger("null")
+        if not logger.handlers:
+            logger.addHandler(logging.NullHandler())
+        return logger

@@ -243,16 +243,14 @@ class PendingVerificationService:
 
                 return pending_data
 
-            except (FileNotFoundError, OSError) as e:
-                # Use print for errors during file reading
+            except FileNotFoundError as e:
+                # Handle file not found error
                 print(
                     f"ERROR reading pending verification file {self.pending_file_path}: {e}",
                     file=sys.stderr,
                 )
                 return {}  # Return empty data on error
-            except (
-                Exception
-            ) as e:  # Catch other potential errors during blocking operation
+            except Exception as e:  # Catch other potential errors during blocking operation
                 print(
                     f"UNEXPECTED ERROR during blocking load of pending albums from {self.pending_file_path}: {e}",
                     file=sys.stderr,

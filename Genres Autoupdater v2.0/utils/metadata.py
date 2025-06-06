@@ -413,8 +413,8 @@ def is_music_app_running(error_logger: logging.Logger) -> bool:
         script = (
             'tell application "System Events" to (name of processes) contains "Music"'
         )
-        # trunk-ignore(bandit/B603)
         # trunk-ignore(ruff/S603)
+        # trunk-ignore(bandit/B603)
         result = subprocess.run(
             ["/usr/bin/osascript", "-e", script],
             capture_output=True,

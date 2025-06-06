@@ -66,29 +66,31 @@ class RunHandler:
     """Handles tracking of script runs, adding separators between runs, and limiting logs to max number of runs."""
 
     def __init__(self, max_runs: int = 3):
-        " Initialize the RunHandler."""
+        """Initialize the RunHandler."""
         self.max_runs = max_runs
         self.current_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.run_start_time = time.monotonic()  # Use monotonic for duration
 
     def format_run_header(self, logger_name: str) -> str:
-        "Create a formatted header for a new run."""
+        """Create a formatted header for a new run."""
         # Use local time for now.
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # Use ANSI colors for file headers for readability in terminals that support them
-        header = f"\n\n{BLUE}{'=' * 80}{RESET}\n"
-        header += f"噫 NEW RUN: {logger_name} - {now_str}\n"
-        header += f"{BLUE}{'=' * 80}{RESET}\n\n"
-        return header
+        return (
+            f"\n\n{BLUE}{'=' * 80}{RESET}\n"
+            f"\ue05e NEW RUN: {logger_name} - {now_str}\n"
+            f"{BLUE}{'=' * 80}{RESET}\n\n"
+        )
 
     def format_run_footer(self, logger_name: str) -> str:
-        "Create a formatted footer for the end of a run."""
+        """Create a formatted footer for the end of a run."""
         elapsed = time.monotonic() - self.run_start_time
         # Use ANSI colors for file footers
-        footer = f"\n\n{BLUE}{'=' * 80}{RESET}\n"
-        footer += f"潤 END RUN: {logger_name} - Total time: {elapsed:.2f}s\n"
-        footer += f"{BLUE}{'=' * 80}{RESET}\n\n"
-        return footer
+        return (
+            f"\n\n{BLUE}{'=' * 80}{RESET}\n"
+            f"\ue05e END RUN: {logger_name} - Total time: {elapsed:.2f}s\n"
+            f"{BLUE}{'=' * 80}{RESET}\n\n"
+        )
 
     def trim_log_to_max_runs(self, log_file: str) -> None:
         """Trims a log file to contain only the most recent N runs, identified by run headers."""
@@ -102,7 +104,7 @@ class RunHandler:
                 lines = f.readlines()
 
             # Find indices of run headers
-            # Look for the separator line followed by the "噫 NEW RUN:" line
+            # Look for the separator line followed by the " NEW RUN:" line
             header_indices = [
                 i
                 for i, line in enumerate(lines)
@@ -110,7 +112,7 @@ class RunHandler:
                 if re.match(r"^(\x1b\[\d+m)?={80}(\x1b\[0m)?$", line.strip())
                 and i + 1 < len(lines)
                 # Check for the run header line (handle potential color codes and emoji)
-                and re.match(r"^(\x1b\[\d+m)?噫 NEW RUN:", lines[i + 1].strip())
+                and re.match(r"^(\x1b\[\d+m)?\ue05e NEW RUN:", lines[i + 1].strip())
             ]
 
             if len(header_indices) <= self.max_runs:
@@ -172,7 +174,6 @@ def get_full_log_path(
     """
     # Initialize with default values
     logs_base_dir_value = "."
-    relative_path = default
 
     # Process config if it's a dictionary
     if isinstance(config, dict):
@@ -186,37 +187,24 @@ def get_full_log_path(
             relative_path = logging_config.get(key, default)
         elif error_logger:
             error_logger.error("Invalid 'logging' section in config.")
-    elif error_logger:
-        error_logger.error("Invalid config passed to get_full_log_path.")
+            relative_path = default
+        else:
+            relative_path = default
     else:
-        print("ERROR: Invalid config passed to get_full_log_path.", file=sys.stderr)
+        if error_logger:
+            error_logger.error("Invalid config passed to get_full_log_path.")
+        else:
+            print("ERROR: Invalid config passed to get_full_log_path.", file=sys.stderr)
+        relative_path = default
 
     # Ensure the base directory exists
     ensure_directory(logs_base_dir_value, error_logger)
 
-    # Initialize with default value
-    relative_path = default
-
-    # Only try to get logging config if config is a dictionary
-    if isinstance(config, dict):
-        logging_config = config.get("logging", {})
-        if not isinstance(logging_config, dict):
-            # Log error if logging config is invalid, use default relative path
-            if error_logger:
-                error_logger.error("Invalid 'logging' section in config.")
-        else:
-            # Get relative path from config, use default if key is missing
-            relative_path = logging_config.get(key, default)
-
     # Join base directory and relative path
-    # Use value directly, removing variable assignment that linter flagged
     full_path = os.path.join(logs_base_dir_value, relative_path)
 
     # Ensure the directory for the specific log file exists
-    # The path is constructed directly when calling get_full_log_path in get_loggers
-    ensure_directory(
-        os.path.dirname(full_path), error_logger
-    )  # This is correct place to ensure log file directory exists
+    ensure_directory(os.path.dirname(full_path), error_logger)
 
     return full_path
 
@@ -394,8 +382,8 @@ class CompactFormatter(logging.Formatter):
             delattr(record, "short_pathname")
         if hasattr(record, "short_filename"):
             delattr(record, "short_filename")
-        # if hasattr(record, 'short_module'): # If you added short_module
-        #     del record.short_module
+        if hasattr(record, 'short_module'):
+            delattr(record, 'short_module')
 
         # Add separator line if requested (for file logs)
         # This logic remains the same
@@ -403,7 +391,6 @@ class CompactFormatter(logging.Formatter):
             formatted += self.separator_line
 
         return formatted
-
 
 class RunTrackingHandler(logging.FileHandler):
     """A file handler that adds run separation headers/footers and trims the log to a maximum number of runs based on headers."""
@@ -523,14 +510,8 @@ def get_loggers(
                 int: Logging level constant from logging module
 
             """
-            # logging.getLevelName returns the level constant if found, or the string name if not found
             level = logging.getLevelName(level_name.upper())
-
-            if isinstance(level, str):  # If getLevelName returns a string, it means the name was not found
-                # Log a warning here if logger is available, using default
-                # print(f"WARNING: Unknown log level name '{level_name}' in config. Using {default_level}.", file=sys.stderr)
-                return default_level
-            return int(level)  # Ensure we return an int
+            return level if isinstance(level, int) else default_level
 
         # Get level for each logger/handler using the helper
         console_level = get_level_from_config(levels_config.get("console", "INFO"))
@@ -543,178 +524,133 @@ def get_loggers(
         )
 
         # --- Ensure Base Directories Exist ---
-        # get_full_log_path handles base directory and specific log directory creation
-        # Pass None for logger here, as loggers are not fully set up yet.
-        # get_full_log_path will use print as a fallback for errors.
-        main_log_file = get_full_log_path(
-            config, "main_log_file", "main/main.log", None
-        )
-        analytics_log_file = get_full_log_path(
-            config, "analytics_log_file", "analytics/analytics.log", None
-        )
-        year_changes_log_file = get_full_log_path(
-            config, "year_changes_log_file", "main/year_changes.log", None
-        )  # Ensure year changes log path is handled
-        # last_db_verify_log_file = get_full_log_path( # Unused variable
-        #     config, "last_db_verify_log", "main/last_db_verify.log", None
-        # )  # Ensure db verify log path is handled
+        # Get log file paths
+        log_files = {
+            'main': get_full_log_path(
+                config, "main_log_file", "main/main.log", None
+            ),
+            'analytics': get_full_log_path(
+                config, "analytics_log_file", "analytics/analytics.log", None
+            ),
+            'year_changes': get_full_log_path(
+                config, "year_changes_log_file", "main/year_changes.log", None
+            ),
+            'db_verify': get_full_log_path(
+                config, "last_db_verify_log", "main/last_db_verify.log", None
+            )
+        }
 
         # --- Common Setup ---
-        max_runs = logging_config.get(
-            "max_runs", 3
-        )  # Get max_runs from logging section of config
-        run_handler_instance = RunHandler(
-            max_runs=max_runs
-        )  # Single instance for run tracking
+        max_runs = logging_config.get("max_runs", 3)
+        run_handler = RunHandler(max_runs)
 
         # --- Formatters ---
-        # CompactFormatter is now primarily for file handlers
-        # Define the format string to use the new short_pathname and short_filename attributes
-        # Use %(short_pathname)s to show the shortened file path, %(lineno)d for line number
-        file_log_format_string = "%(asctime)s %(levelname)s [%(name)s] %(short_pathname)s:%(lineno)d - %(message)s"
-
         file_formatter = CompactFormatter(
-            file_log_format_string,  # Use the new format string
+            "%(asctime)s %(levelname)s [%(name)s] %(short_pathname)s:%(lineno)d - %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
-            include_separator=False,  # Separators added by RunTrackingHandler header/footer
+            include_separator=False,
             config=config,
         )
 
         # --- Console Logger (Using RichHandler) ---
         console_logger = logging.getLogger("console_logger")
-        # Prevent adding handlers multiple times if get_loggers is called more than once
         if not console_logger.handlers:
-            # Use RichHandler for console output
-            # Configure RichHandler for a compact look
             ch = RichHandler(
-                level=console_level,  # Set handler level from config
-                console=Console(),  # Use default console or pass a custom one
+                level=console_level,
+                console=Console(),
                 show_time=True,
                 show_level=True,
-                show_path=False,  # Hide default path/line number from RichHandler
-                enable_link_path=False,  # Disable clickable paths
-                log_time_format="%H:%M:%S",  # Compact time format
-                # RichHandler doesn't have a direct 'config' parameter for shorten_path
-                # Path shortening for console output would require a custom RichHandler subclass
-                # or applying shortening before logging (less ideal).
-                # For now, rely on RichHandler's default formatting which is usually clean for console.
+                show_path=False,
+                enable_link_path=False,
+                log_time_format="%H:%M:%S",
             )
-            ch.setLevel(console_level)  # Set handler level from config
+            ch.setLevel(console_level)
             console_logger.addHandler(ch)
-            console_logger.setLevel(console_level)  # Set logger level from config
-            console_logger.propagate = (
-                False  # Prevent messages from going to the root logger
-            )
+            console_logger.setLevel(console_level)
+            console_logger.propagate = False
 
         # --- File Logging Setup (Using Queue) ---
-        log_queue: queue.Queue[logging.LogRecord] = queue.Queue(-1)  # Create the queue
+        log_queue: queue.Queue[logging.LogRecord] = queue.Queue(-1)
 
-        # Create the actual file handlers that the listener will use
-        # Use RunTrackingHandler for run headers/footers and trimming
-        # Pass console_logger and error_logger to handlers if they need to log internally (RunTrackingHandler does not currently)
-        main_fh = RunTrackingHandler(
-            main_log_file,
-            mode="a",
-            encoding="utf-8",
-            run_handler=run_handler_instance,
-            logger_name="Main Logger",
-        )
-        main_fh.setFormatter(file_formatter)  # Use the file formatter
-        main_fh.setLevel(main_file_level)  # Set handler level from config
+        # Create and configure file handlers
+        handlers = [
+            (
+                RunTrackingHandler(
+                    log_files['main'],
+                    mode="a",
+                    encoding="utf-8",
+                    run_handler=run_handler,
+                    logger_name="Main Logger"
+                ),
+                main_file_level
+            ),
+            (
+                RunTrackingHandler(
+                    log_files['analytics'],
+                    mode="a",
+                    encoding="utf-8",
+                    run_handler=run_handler,
+                    logger_name="Analytics"
+                ),
+                analytics_file_level
+            ),
+            (
+                RunTrackingHandler(
+                    log_files['year_changes'],
+                    mode="a",
+                    encoding="utf-8",
+                    run_handler=run_handler,
+                    logger_name="Year Updates"
+                ),
+                year_updates_file_level
+            ),
+            (
+                RunTrackingHandler(
+                    log_files['db_verify'],
+                    mode="a",
+                    encoding="utf-8",
+                    run_handler=run_handler,
+                    logger_name="DB Verify"
+                ),
+                year_updates_file_level  # Use same level as year updates
+            )
+        ]
 
-        analytics_fh = RunTrackingHandler(
-            analytics_log_file,
-            mode="a",
-            encoding="utf-8",
-            run_handler=run_handler_instance,
-            logger_name="Analytics",
-        )
-        analytics_fh.setFormatter(file_formatter)  # Use the file formatter
-        analytics_fh.setLevel(analytics_file_level)  # Set handler level from config
-
-        # Add handler for year changes log
-        year_changes_fh = RunTrackingHandler(
-            year_changes_log_file,
-            mode="a",
-            encoding="utf-8",
-            run_handler=run_handler_instance,
-            logger_name="Year Updates",
-        )
-        year_changes_fh.setFormatter(file_formatter)  # Use the file formatter
-        year_changes_fh.setLevel(
-            year_updates_file_level
-        )  # Set handler level from config
+        # Configure all file handlers
+        file_handlers = []
+        for handler, level in handlers:
+            handler.setFormatter(file_formatter)
+            handler.setLevel(level)
+            file_handlers.append(handler)
 
         # --- Queue Listener (Background Thread) ---
-        # Pass all file handlers to the listener
-        listener = QueueListener(
-            log_queue,
-            main_fh,
-            analytics_fh,
-            year_changes_fh,
-            respect_handler_level=True,
-        )
+        listener = QueueListener(log_queue, *file_handlers, respect_handler_level=True)
         listener.start()
-        # Use print for setup logs as loggers might not be fully ready
-        print("QueueListener started.", file=sys.stderr)
+        print("QueueListener started.", file=sys.stderr)  # Use print as loggers aren't ready
 
         # --- Queue Handler (Used by Loggers) ---
-        # This handler puts records into the queue for file handlers
         queue_handler = QueueHandler(log_queue)
 
-        # --- Configure Main/Error Logger ---
-        # Get logger instance
-        main_logger = logging.getLogger("main_logger")
-        # Prevent adding handlers multiple times
-        if not main_logger.handlers:
-            main_logger.addHandler(queue_handler)  # Add queue handler for file logging
-            # No console handler needed here, console_logger handles console output
-            main_logger.setLevel(main_file_level)  # Set logger level from config
-            main_logger.propagate = False
-        error_logger = main_logger  # Alias error logger to main logger
+        # Helper function to configure loggers
+        def setup_logger(name: str, level: int) -> logging.Logger:
+            logger = logging.getLogger(name)
+            if not logger.handlers:
+                logger.addHandler(queue_handler)
+                logger.setLevel(level)
+                logger.propagate = False
+            return logger
 
-        # --- Configure Analytics Logger ---
-        # Get logger instance
-        analytics_logger = logging.getLogger("analytics_logger")
-        # Prevent adding handlers multiple times
-        if not analytics_logger.handlers:
-            analytics_logger.addHandler(
-                queue_handler
-            )  # Add queue handler for file logging
-            # No console handler needed here
-            analytics_logger.setLevel(
-                analytics_file_level
-            )  # Set logger level from config
-            analytics_logger.propagate = False
+        # --- Configure Loggers ---
+        main_logger = setup_logger("main_logger", main_file_level)
+        error_logger = main_logger  # Alias for backward compatibility
+        analytics_logger = setup_logger("analytics_logger", analytics_file_level)
+        setup_logger("year_updates", year_updates_file_level)
+        setup_logger("db_verify", year_updates_file_level)
 
-        # --- Configure Year Updates Logger ---
-        # Get logger instance
-        year_updates_logger = logging.getLogger("year_updates")
-        # Prevent adding handlers multiple times
-        if not year_updates_logger.handlers:
-            year_updates_logger.addHandler(
-                queue_handler
-            )  # Add queue handler for file logging
-            # No console handler needed here
-            year_updates_logger.setLevel(
-                year_updates_file_level
-            )  # Set logger level from config
-            year_updates_logger.propagate = False
-
-        # Note: The root logger (logging.getLogger()) is not explicitly configured here
-        # to avoid duplicate messages if other libraries log to the root logger.
-        # Messages sent to console_logger, main_logger, analytics_logger, year_updates_logger
-        # will be handled by their respective handlers.
-
-        console_logger.debug(
-            "Logging setup with QueueListener and RichHandler complete."
-        )
-        # Return the configured loggers and the listener
+        console_logger.debug("Logging setup with QueueListener and RichHandler complete.")
         return console_logger, error_logger, analytics_logger, listener
 
     except Exception as e:
-        # Fallback to basic config if custom setup fails
-        # Use print for initial error logging if logger setup fails
         print(
             f"FATAL ERROR: Failed to configure custom logging with QueueListener and RichHandler: {e}",
             file=sys.stderr,

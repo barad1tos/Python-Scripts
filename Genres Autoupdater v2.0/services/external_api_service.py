@@ -421,15 +421,21 @@ class ExternalApiService:
 
         cached_response = await self.cache_service.get_async(cache_key)
         if cached_response is not None:
-            if cached_response != {}:
+            if isinstance(cached_response, dict):  # Ensure it's a dictionary
+                if cached_response != {}:
+                    self.console_logger.debug(
+                        f"Using cached response for {api_name} request to {url}"
+                    )
+                    return cached_response
                 self.console_logger.debug(
-                    f"Using cached response for {api_name} request to {url}"
+                    f"Cached empty response for {api_name} request to {url}"
                 )
-                return cached_response
-            self.console_logger.debug(
-                f"Cached empty response for {api_name} request to {url}"
+                return None
+            self.console_logger.warning(
+                f"Unexpected cached response type for {api_name} request to {url}: {type(cached_response).__name__}"
             )
-            return None
+            # Clear invalid cache entry
+            self.cache_service.invalidate(cache_key)
         if not self.session or self.session.closed:
             self.error_logger.error(
                 f"[{api_name}] Session not available for request to {url}. Initialize method was not called or failed."
@@ -2083,13 +2089,10 @@ class ExternalApiService:
 
             # Extract year information from the album data
             album_data = data["album"]
-            year_info = self._extract_year_from_lastfm_data(
-                album_data
-            )  # Use helper function
+            year = self._extract_year_from_lastfm_data(album_data)
 
-            if year_info and year_info.get("year"):
-                year = year_info["year"]
-                source_detail = year_info.get("source_detail", "unknown")
+            if year:
+                source_detail = "lastfm"
 
                 # Basic assumptions for Last.fm data (less detailed than MB/Discogs)
                 release_type = "Album"  # Assume Album unless tags suggest otherwise (complex to implement reliably)
@@ -2139,14 +2142,12 @@ class ExternalApiService:
 
     def _extract_year_from_lastfm_data(
         self, album_data: dict[str, Any]
-    ) -> dict[str, str | None] | None:
+    ) -> str | None:
         """Extract the most likely year from the Last.fm album data structure.
 
         Prioritizes explicit release date, then wiki content patterns, then tags.
+        Returns the year as a string if found, otherwise None.
         """
-        year: str | None = None
-        source_detail: str = "unknown"
-
         # --- Priority 1: Explicit 'releasedate' field ---
         release_date_str = album_data.get("releasedate", "").strip()
         if release_date_str:
@@ -2156,12 +2157,10 @@ class ExternalApiService:
                 potential_year = year_match.group(1)
                 # Validate the extracted year
                 if self._is_valid_year(potential_year):
-                    year = potential_year
-                    source_detail = "releasedate"
                     self.console_logger.debug(
-                        f"LastFM Year: {year} from 'releasedate' field"
+                        f"LastFM Year: {potential_year} from 'releasedate' field"
                     )
-                    return {"year": year, "source_detail": source_detail}
+                    return potential_year
 
         # --- Priority 2: Wiki Content ---
         wiki = album_data.get("wiki")
@@ -2185,9 +2184,7 @@ class ExternalApiService:
                 r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
                 r"Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},\s+(\d{4})\b",
                 r"\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
-                r"Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b",
-                # Year in parentheses (less reliable, lower priority)
-                # r'\((\d{4})\)' # Commented out - too prone to errors (e.g., (C) 2005)
+                r"Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b"
             ]
             for pattern in patterns:
                 match = re.search(pattern, wiki_content, re.IGNORECASE)
@@ -2197,19 +2194,14 @@ class ExternalApiService:
                         (g for g in match.groups() if g is not None), None
                     )
                     if self._is_valid_year(potential_year):
-                        year = potential_year
-                        source_detail = "wiki_content"
                         self.console_logger.debug(
-                            f"LastFM Year: {year} from wiki content (pattern: '{pattern}')"
+                            f"LastFM Year: {potential_year} from wiki content (pattern: '{pattern}')"
                         )
-                        return {"year": year, "source_detail": source_detail}
+                        return potential_year
 
         # --- Priority 3: Tags ---
         tags_container = album_data.get("tags")
         tags_data: list[dict[str, Any]] = []
-
-        # Initialize tags_data as an empty list
-        tags_data = []
 
         # Handle different tag container formats
         if isinstance(tags_container, dict):
@@ -2220,9 +2212,6 @@ class ExternalApiService:
         elif isinstance(tags_container, list):
             tags_data = tags_container
 
-        # Ensure tags_data is a list
-        if not isinstance(tags_data, list):
-            tags_data = []
 
         # Process tags to find year information
         year_tags: dict[str, int] = defaultdict(int)  # Count frequency of year tags
@@ -2246,12 +2235,10 @@ class ExternalApiService:
                 year_tags.items(), key=lambda x: x[1], default=(None, 0)
             )[0]
             if best_year_tag:
-                year = best_year_tag
-                source_detail = "tags"
                 self.console_logger.debug(
-                    f"LastFM Year: {year} from tags (most frequent)"
+                    f"LastFM Year: {best_year_tag} from tags (most frequent)"
                 )
-                return {"year": year, "source_detail": source_detail}
+                return best_year_tag
 
         # --- No valid year found ---
         self.console_logger.debug(

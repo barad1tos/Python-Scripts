@@ -233,7 +233,7 @@ class DependencyContainer:
 
     # Use a forward reference 'MusicUpdater' for the type hint
     def get_music_updater(self) -> "MusicUpdater":
-        "Provide access to the configured MusicUpdater instance."""
+        """Provide access to the configured MusicUpdater instance."""
         return self._music_updater_instance
 
     def get_analytics(self) -> Analytics:
