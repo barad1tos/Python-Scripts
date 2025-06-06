@@ -32,6 +32,8 @@ from utils.metadata import (
     clean_names,
     determine_dominant_genre_for_artist,
     group_tracks_by_artist,
+    has_genre,
+    merge_genres,
     is_music_app_running,
     parse_tracks,
 )
@@ -252,7 +254,7 @@ class DryRunProcessor:
                     "ineligible", "no longer available", "not eligible for upload"
                 )
 
-                if current_genre == dominant_genre or track_status in non_modifiable_statuses:
+                if has_genre(current_genre, dominant_genre) or track_status in non_modifiable_statuses:
                     self.console_logger.debug(
                         f"Skipping genre update for track {track_name} by {artist}: "
                         f"Already has genre '{current_genre}' or status '{track_status}' does not allow modification"
@@ -266,13 +268,14 @@ class DryRunProcessor:
                         f"Status '{track_status}' does not allow modification"
                     )
                 elif track_status in ("subscription", "downloaded"):
+                    new_genre = merge_genres(current_genre, dominant_genre)
                     change: dict[str, str] = {
                         "change_type": "genre_update",
                         "track_id": track_id,
                         "artist": artist,
                         "track_name": track_name,
                         "original_genre": current_genre,
-                        "new_genre": dominant_genre,
+                        "new_genre": new_genre,
                         "dateAdded": date_added,
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }

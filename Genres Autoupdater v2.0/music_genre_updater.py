@@ -68,6 +68,8 @@ from utils.metadata import (
     clean_names,
     determine_dominant_genre_for_artist,
     group_tracks_by_artist,
+    has_genre,
+    merge_genres,
     is_music_app_running,
     parse_tracks,
 )
@@ -1105,6 +1107,43 @@ class MusicUpdater:
         # Note: updated_tracks list is populated inside the inner process_album function
         return updated_tracks, changes_log
 
+    @Analytics.track_instance_method("Update Missing Years via Discogs")
+    async def update_years_from_discogs(
+        self, tracks: list[dict[str, str]]
+    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        """Fill missing years by querying Discogs."""
+        updated_tracks: list[dict[str, str]] = []
+        changes: list[dict[str, str]] = []
+
+        for track in tracks:
+            current_year = track.get("new_year", track.get("year", "")).strip()
+            track_id = track.get("id")
+            if not track_id or self._is_valid_year(current_year):
+                continue
+
+            artist = track.get("artist", "")
+            album = track.get("album", "")
+            year = await self.external_api_service.get_year_from_discogs(
+                artist, album
+            )
+            if year and self._is_valid_year(year):
+                if await self.update_track_async(track_id, new_year=year):
+                    track["new_year"] = year
+                    updated_tracks.append(track)
+                    changes.append(
+                        {
+                            "change_type": "year",
+                            "artist": artist,
+                            "album": album,
+                            "track_name": track.get("name", "Unknown"),
+                            "old_year": current_year,
+                            "new_year": year,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
+
+        return updated_tracks, changes
+
     # Constants for log filenames
     INCREMENTAL_RUN_LOG = "last_incremental_run.log"
 
@@ -1600,24 +1639,32 @@ class MusicUpdater:
                 ).lower()  # Ensure status is lowercase for comparison
 
                 # Check if update is needed and status allows modification
-                # Only update if current genre is different from dominant genre AND status allows modification
-                if (
-                    track_id
-                    and old_genre != dom_genre
-                    and status in ("subscription", "downloaded")
-                ):
+                if track_id and status in ("subscription", "downloaded"):
+                    if has_genre(old_genre, dom_genre):
+                        self.console_logger.debug(
+                            "Skipping track %s ('%s' - '%s'): genre '%s' already present",
+                            track_id,
+                            track.get("artist", "Unknown"),
+                            track.get("name", "Unknown"),
+                            dom_genre,
+                        )
+                        return
+
+                    new_genre = merge_genres(old_genre, dom_genre)
+                    if new_genre == old_genre:
+                        return
+
                     self.console_logger.info(
                         "Updating track %s ('%s' - '%s') (Old Genre: %s, New Genre: %s)",
                         track_id,
                         track.get("artist", "Unknown"),
                         track.get("name", "Unknown"),
                         old_genre,
-                        dom_genre,
-                    )  # Log track details
-                    # Use the method of this class
-                    if await self.update_track_async(track_id, new_genre=dom_genre):
-                        # If update successful, modify track dict and log changes
-                        track["genre"] = dom_genre
+                        new_genre,
+                    )
+
+                    if await self.update_track_async(track_id, new_genre=new_genre):
+                        track["genre"] = new_genre
                         # Append the modified track dictionary to the list of updated tracks
                         updated_tracks.append(track)
                         # Log the change
@@ -1628,7 +1675,7 @@ class MusicUpdater:
                                 "album": track.get("album", "Unknown"),
                                 "track_name": track.get("name", "Unknown"),
                                 "old_genre": old_genre,
-                                "new_genre": dom_genre,
+                                "new_genre": new_genre,
                                 "timestamp": datetime.now().strftime(
                                     "%Y-%m-%d %H:%M:%S",
                                 ),
@@ -1931,6 +1978,15 @@ class MusicUpdater:
         # Make copies AFTER filtering to avoid modifying cached data if applicable
         all_tracks = [track.copy() for track in tracks]
 
+        # First, try to fill missing years using a simple Discogs lookup
+        tracks_without_year = [
+            t for t in all_tracks if not self._is_valid_year(t.get("new_year", t.get("year", "")).strip())
+        ]
+        discogs_updates, discogs_changes = await self.update_years_from_discogs(tracks_without_year)
+
+        updated_y: list[dict[str, str]] = discogs_updates
+        changes_y: list[dict[str, str]] = discogs_changes
+
         # Load previous track list data for comparison
         tracklist_csv_path = get_full_log_path(
             self.config,
@@ -2117,11 +2173,13 @@ class MusicUpdater:
         # (This will require modifying their signatures in the next step)
 
         # Use injected process_album_years method
-        updated_y, changes_y = await self.process_album_years(
+        more_updated, more_changes = await self.process_album_years(
             all_tracks,
             albums_for_full_processing,
             force=force_year_update,
         )  # Pass all_tracks
+        updated_y.extend(more_updated)
+        changes_y.extend(more_changes)
 
         # Save results if updates occurred
         if updated_y:
