@@ -55,6 +55,7 @@ CONFIG_SCHEMA = {
         "schema": {"prevent_bytecode": {"type": "boolean", "required": True}},
     },
     "dry_run": {"type": "boolean", "required": False, "default": False},
+    "api_cache_file": {"type": "string", "required": True, "default": "cache.json"},
     # 2. EXECUTION AND PERFORMANCE
     "apple_script_concurrency": {"type": "integer", "required": True, "min": 1},
     "applescript_timeout_seconds": {"type": "integer", "required": True, "min": 1},

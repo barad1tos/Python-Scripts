@@ -33,7 +33,7 @@ from datetime import datetime
 from typing import Any
 
 # Assuming get_full_log_path is a utility function that handles path joining and dir creation
-from utils.logger import get_full_log_path
+from utils.logger import ensure_directory, get_full_log_path
 
 class CacheService:
     """Cache Service Class.
@@ -76,9 +76,10 @@ class CacheService:
         )  # Use utility function
 
         # Persistent cache file for general API responses
-        self.cache_file = get_full_log_path(
-            config, "api_cache_file", "cache.json", error_logger
-        )
+        logs_base_dir = config.get("logs_base_dir", ".") # Default to current dir if not specified
+        api_cache_filename = config.get("api_cache_file", "cache.json") # Get from top level
+        self.cache_file = os.path.join(logs_base_dir, api_cache_filename)
+        ensure_directory(os.path.dirname(self.cache_file), self.error_logger) # Ensure directory exists
 
         # In-memory album years cache
         # key: hash of "artist|album", value: (year, artist, album)

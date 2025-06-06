@@ -1,9 +1,9 @@
 # Music Genre Updater
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)
+![Python](https://img.shields.io/badge/python-3.12%2B-blue.svg)
 
-Music Genre Updater is an advanced Python-based tool that automatically manages your Apple Music library. It ensures consistency of genres across artists, cleans metadata (removing remaster tags and promotional text), retrieves album years from external APIs, and provides detailed analytics on all operations.
+Music Genre Updater is a Python-based tool that automatically manages your Apple Music library. It ensures consistency of genres across artists, cleans metadata (removing remaster tags and promotional text), retrieves album years from external APIs, and provides detailed analytics on all operations.
 
 ## Table of Contents
 
@@ -98,20 +98,15 @@ Music Genre Updater is an advanced Python-based tool that automatically manages 
 
 ## Description
 
-Music Genre Updater intelligently manages your Apple Music library through advanced automation. It ensures that each artist has a consistent genre across all tracks (based on their earliest releases), removes clutter from track and album names (like "2023 Remaster" or "Deluxe Edition"), and retrieves accurate album years from reputable music databases (MusicBrainz and Discogs).
-
-The tool is designed to work asynchronously with large music libraries, using sophisticated caching mechanisms to minimize API calls and AppleScript interactions. It features a complete analytics framework that tracks performance and provides detailed reports.
+Music Genre Updater intelligently manages your Apple Music library. It ensures consistent genres across artist tracks, removes clutter from track and album names, and retrieves accurate album years from MusicBrainz and Discogs. The tool works asynchronously with large libraries, using caching to minimize API calls and AppleScript interactions. It features a complete analytics framework with detailed reports.
 
 ## Key April 2025 Updates
 
-- **Track Database CSV** now includes `old_year` and `new_year` columns for every track, enabling robust year synchronization and change tracking.
-- **Album Year Update Logic**: The script now skips albums that already have a definitive year in the database, minimizing redundant API calls and updates. Only albums with missing or outdated years are processed.
-- **Year Caching**: Album years are cached both in-memory and in a persistent CSV (`cache_albums.csv`). This ensures that once a year is determined, it is reused for all relevant tracks and future runs.
-- **Change Reporting**: All changes (genre, year, name, etc.) are logged in a unified changes report CSV, with clear `change_type`, `old_*`, and `new_*` fields, and timestamped for auditability.
-- **Analytics & HTML Reports**: The analytics system tracks all major operations and generates a detailed HTML report after each run, including grouped statistics, per-function timing, and error/success rates.
-- **AppleScript Integration**: Improved error handling, argument passing, and diagnostics for all AppleScript operations. Bulk updates and property changes are now more robust.
-- **Dry Run & Full Sync**: Both dry run and full sync scripts use the new CSV structure and reporting, allowing safe preview and one-time full database refreshes.
-- **Async Architecture**: All major operations (track fetching, AppleScript, API calls, cache) are fully asynchronous for maximum performance and reliability.
+- **Comprehensive Genre Management**: Determines and applies the dominant genre for each artist based on their earliest releases
+- **Metadata Cleaning**: Removes marketing text, remaster tags, and other clutter from track and album names
+- **Album Year Retrieval**: Fetches accurate original release years from MusicBrainz and Discogs with intelligent scoring
+- **Incremental Processing**: Updates only tracks added since the last run to minimize resources
+- **Database Verification**: Checks the internal track database against Music.app and removes entries for non-existent tracks
 
 ## Features
 
@@ -122,22 +117,11 @@ The tool is designed to work asynchronously with large music libraries, using so
 - **Database Verification**: Checks for and removes tracks that no longer exist in your Music library
 - **Asynchronous Architecture**: Handles large music libraries efficiently through concurrent operations
 - **Advanced Caching**: Multi-tiered caching system for minimizing redundant operations
-- **Analytics Framework**: Tracks execution time, overhead, and call counts with HTML report generation
-- **Dry Run Simulation**: Tests changes without applying them to your music library
-- **Detailed Logging**: Comprehensive logs for monitoring and debugging
-- **Configurable Exception Handling**: Allows specific artists or albums to be excluded from processing
-- **Year Synchronization**: Tracks and albums are now synchronized with `old_year` and `new_year` fields, ensuring accurate year updates and preventing redundant processing.
-- **Unified Change Reporting**: All changes (genre, year, name, etc.) are consolidated in a single CSV report, with clear change types and before/after values.
-- **Album Year Caching**: Album years are cached in both memory and a persistent CSV, minimizing API calls and ensuring consistency across runs.
-- **Skip Processed Albums**: The script automatically skips albums that already have a definitive year, reducing unnecessary updates and API usage.
-- **Robust Analytics**: HTML analytics reports now include grouped statistics, per-function timing, and error/success rates for all major operations.
-- **Improved AppleScript Handling**: Enhanced error handling, diagnostics, and argument passing for all AppleScript operations, including bulk property updates.
-- **Dry Run & Full Sync Support**: Both dry run and full sync scripts are updated to use the new CSV structure and reporting system.
 
 ## Prerequisites
 
 - **Operating System**: macOS (tested on Sonoma)
-- **Python**: Version 3.9 or higher
+- **Python**: Version 3.12 or higher
 - **Apple Music**: Installed and configured
 - **Brew**: Recommended for managing packages
 
@@ -146,8 +130,8 @@ The tool is designed to work asynchronously with large music libraries, using so
 ### Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/music-genre-updater.git
-cd music-genre-updater
+git clone https://github.com/barad1tos/Python-Scripts.git
+cd Python-Scripts/Genres\ Autoupder\ v2.0
 ```
 
 ### Set Up a Virtual Environment
@@ -160,7 +144,8 @@ source venv/bin/activate
 ### Install Dependencies
 
 ```bash
-pip install PyYAML aiohttp
+# Install production dependencies
+pip install -r requirements.txt
 ```
 
 ### Configuration
@@ -171,10 +156,10 @@ Copy the example configuration file and customize it:
 cp my-config.yaml.example my-config.yaml
 ```
 
-Edit `my-config.yaml` to match your environment:
+Edit the configuration file to match your environment:
 
 ```bash
-nano my-config.yaml
+nano config.yaml
 ```
 
 Ensure all paths (music_library_path, apple_scripts_dir, logs_base_dir) are correctly set for your system.

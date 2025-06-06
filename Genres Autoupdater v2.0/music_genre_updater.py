@@ -44,7 +44,7 @@ import time
 
 from collections import defaultdict
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
 
 # trunk-ignore(mypy/import-untyped)
 # trunk-ignore(mypy/note)
@@ -68,8 +68,8 @@ from utils.metadata import (
     determine_dominant_genre_for_artist,
     group_tracks_by_artist,
     has_genre,
-    merge_genres,
     is_music_app_running,
+    merge_genres,
     parse_tracks,
 )
 
@@ -82,12 +82,34 @@ from utils.reports import (
     sync_track_list_with_current,
 )
 
+# Type definitions for AppleScript actions in dry-run
+class ScriptAction(TypedDict):
+    """Represents an AppleScript script call action."""
+
+    script: str
+    args: list[Any] | None
+
+class CodeAction(TypedDict):
+    """Represents an inline AppleScript code execution action."""
+
+    code: str
+
+ActionType = ScriptAction | CodeAction
+
+def is_script_action(action: ActionType) -> TypeGuard[ScriptAction]:
+    """Check if the action is a ScriptAction."""
+    return "script" in action
+
+def is_code_action(action: ActionType) -> TypeGuard[CodeAction]:
+    """Check if the action is a CodeAction."""
+    return "code" in action
+
 # Use TYPE_CHECKING for services imported for type hints in method signatures/class definition
 if TYPE_CHECKING:
-    from services.applescript_client import AppleScriptClient
     from services.cache_service import CacheService
     from services.external_api_service import ExternalApiService
     from services.pending_verification import PendingVerificationService
+    from utils.dry_run import AppleScriptClientProtocol
 
 
 # Define SCRIPT_DIR and CONFIG_PATH
@@ -122,6 +144,10 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
 load_dotenv()
 
 # Load and process CONFIG
+UPDATE_PROPERTY_SCRIPT_NAME = "update_property.applescript"
+DEFAULT_TRACK_LIST_CSV_PATH = "csv/track_list.csv"
+DEFAULT_CHANGES_REPORT_CSV_PATH = "csv/changes_report.csv"
+
 try:
     # Load and validate the config (environment variables are resolved inside load_config)
     CONFIG = load_config(CONFIG_PATH)
@@ -176,7 +202,7 @@ class MusicUpdater:
         console_logger: logging.Logger,
         error_logger: logging.Logger,
         analytics: Analytics,
-        ap_client: "AppleScriptClient",
+        ap_client: "AppleScriptClientProtocol",  # Changed to protocol
         cache_service: "CacheService",
         external_api_service: "ExternalApiService",
         pending_verification_service: "PendingVerificationService",
@@ -367,7 +393,7 @@ class MusicUpdater:
             # Use injected ap_client
             if new_track_name:
                 res = await self.ap_client.run_script(
-                    "update_property.applescript",
+                    UPDATE_PROPERTY_SCRIPT_NAME,
                     [track_id, "name", new_track_name],
                 )
                 if not res or "Success" not in res:
@@ -380,7 +406,7 @@ class MusicUpdater:
             # Use injected ap_client
             if new_album_name:
                 res = await self.ap_client.run_script(
-                    "update_property.applescript",
+                    UPDATE_PROPERTY_SCRIPT_NAME,
                     [track_id, "album", new_album_name],
                 )
                 if not res or "Success" not in res:
@@ -397,7 +423,7 @@ class MusicUpdater:
                 genre_updated = False
                 for attempt in range(1, max_retries + 1):
                     res = await self.ap_client.run_script(
-                        "update_property.applescript",
+                        UPDATE_PROPERTY_SCRIPT_NAME,
                         [track_id, "genre", new_genre],
                     )
                     if res and "Success" in res:
@@ -422,23 +448,23 @@ class MusicUpdater:
                         "Failed to update genre for track %s",
                         track_id,
                     )
-                    success = False
+                    success = False # Ensure success is set to False if genre update fails
 
-            # Use injected ap_client
-            if new_year:
-                res = await self.ap_client.run_script(
-                    "update_property.applescript",
-                    [track_id, "year", new_year],
-                )
-                if not res or "Success" not in res:
-                    self.error_logger.error("Failed to update year for %s", track_id)
-                    success = False
-                else:
-                    self.console_logger.info(
-                        "Updated year for %s to %s",
-                        track_id,
-                        new_year,
+                # Use injected ap_client
+                if new_year:
+                    res = await self.ap_client.run_script(
+                        UPDATE_PROPERTY_SCRIPT_NAME,
+                        [track_id, "year", new_year],
                     )
+                    if not res or "Success" not in res:
+                        self.error_logger.error("Failed to update year for %s", track_id)
+                        success = False
+                    else:
+                        self.console_logger.info(
+                            "Updated year for %s to %s",
+                            track_id,
+                            new_year,
+                        )
 
             return success
         except Exception as e:  # Catch potential exceptions during the process
@@ -661,12 +687,12 @@ class MusicUpdater:
             csv_output_file_path = get_full_log_path(
                 self.config,
                 "csv_output_file",
-                "csv/track_list.csv",
+                DEFAULT_TRACK_LIST_CSV_PATH,
             )
             changes_report_file_path = get_full_log_path(
                 self.config,
                 "changes_report_file",
-                "csv/changes_report.csv",
+                DEFAULT_CHANGES_REPORT_CSV_PATH,
             )
 
             if updated_tracks:
@@ -1258,7 +1284,7 @@ class MusicUpdater:
             csv_path = get_full_log_path(
                 self.config,
                 "csv_output_file",
-                "csv/track_list.csv",
+                DEFAULT_TRACK_LIST_CSV_PATH,
                 self.error_logger,
             )  # Pass error_logger
 
@@ -1537,7 +1563,7 @@ class MusicUpdater:
             csv_path = get_full_log_path(
                 self.config,
                 "csv_output_file",
-                "csv/track_list.csv",
+                DEFAULT_TRACK_LIST_CSV_PATH,
                 self.error_logger,
             )  # Pass error_logger
             # load_track_list is a utility function, doesn't need self.
@@ -1870,7 +1896,7 @@ class MusicUpdater:
                 get_full_log_path(
                     self.config,
                     "csv_output_file",
-                    "csv/track_list.csv",
+                    DEFAULT_TRACK_LIST_CSV_PATH,
                     self.error_logger,
                 ),  # Pass error_logger
                 self.cache_service,
@@ -1885,7 +1911,7 @@ class MusicUpdater:
                 get_full_log_path(
                     self.config,
                     "changes_report_file",
-                    "csv/changes_report.csv",
+                    DEFAULT_CHANGES_REPORT_CSV_PATH,
                     self.error_logger,
                 ),  # Pass error_logger
                 self.console_logger,
@@ -1944,7 +1970,7 @@ class MusicUpdater:
         tracklist_csv_path = get_full_log_path(
             self.config,
             "csv_output_file",
-            "csv/track_list.csv",
+            DEFAULT_TRACK_LIST_CSV_PATH,
             self.error_logger,
         )
         previous_track_data = load_track_list(
@@ -2122,7 +2148,7 @@ class MusicUpdater:
                 get_full_log_path(
                     self.config,
                     "csv_output_file",
-                    "csv/track_list.csv",
+                    DEFAULT_TRACK_LIST_CSV_PATH,
                     self.error_logger,
                 ),  # Pass error_logger
                 self.cache_service,
@@ -2137,7 +2163,7 @@ class MusicUpdater:
                 get_full_log_path(
                     self.config,
                     "changes_report_file",
-                    "csv/changes_report.csv",
+                    DEFAULT_CHANGES_REPORT_CSV_PATH,
                     self.error_logger,
                 ),  # Pass error_logger
                 self.console_logger,
@@ -2355,13 +2381,13 @@ class MusicUpdater:
             csv_output_file_path = get_full_log_path(
                 self.config,
                 "csv_output_file",
-                "csv/track_list.csv",
+                DEFAULT_TRACK_LIST_CSV_PATH,
                 self.error_logger,
             )  # Pass error_logger
             changes_report_file_path = get_full_log_path(
                 self.config,
                 "changes_report_file",
-                "csv/changes_report.csv",
+                DEFAULT_CHANGES_REPORT_CSV_PATH,
                 self.error_logger,
             )  # Pass error_logger
 
@@ -2613,7 +2639,7 @@ class MusicUpdater:
                 get_full_log_path(
                     self.config,
                     "csv_output_file",
-                    "csv/track_list.csv",
+                    DEFAULT_TRACK_LIST_CSV_PATH,
                     self.error_logger,
                 ),  # Pass error_logger
                 self.cache_service,
@@ -2626,7 +2652,7 @@ class MusicUpdater:
             report_csv = get_full_log_path(
                 self.config,
                 "changes_report_file",
-                "csv/changes_report.csv",
+                DEFAULT_CHANGES_REPORT_CSV_PATH,
                 self.error_logger,
             )
             save_changes_csv(
@@ -2878,17 +2904,17 @@ def main() -> None:
             # This asyncio.run starts the main event loop for the command execution
             asyncio.run(run_main_commands(deps, args))
             if CONFIG.get("dry_run", False):
-                actions = getattr(deps.ap_client, "get_actions", lambda: [])()
+                actions: list[ActionType] = getattr(deps.ap_client, "get_actions", lambda: [])()
                 if actions:
                     local_console_logger.info("\nDRY-RUN summary of AppleScript calls:")
                     for action in actions:
-                        if "script" in action:
+                        if is_script_action(action):
                             local_console_logger.info(
                                 "Would run %s with args %s",
                                 action["script"],
                                 action.get("args", []),
                             )
-                        elif "code" in action:
+                        elif is_code_action(action):
                             local_console_logger.info("Would execute inline AppleScript code")
 
         except KeyboardInterrupt:

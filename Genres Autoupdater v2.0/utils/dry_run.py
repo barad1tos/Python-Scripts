@@ -21,17 +21,16 @@ import sys
 import time
 
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 # Third-party imports
 # trunk-ignore(mypy/import-untyped)
 # trunk-ignore(mypy/note)
 import yaml
 
-
 # Local application imports
-from services.applescript_client import AppleScriptClient
-from services.dependencies_service import DependencyContainer
+if TYPE_CHECKING:
+    from services.applescript_client import AppleScriptClient
 from utils.config import load_config
 from utils.logger import get_full_log_path, get_loggers
 from utils.metadata import (
@@ -63,93 +62,7 @@ except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
 
 console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG)
 
-
-class DryRunAppleScriptClient:
-    """AppleScript client that logs actions instead of modifying the library."""
-
-    def __init__(
-        self,
-        config: dict[str, Any],
-        console_logger: logging.Logger,
-        error_logger: logging.Logger,
-    ) -> None:
-        """Initialize the DryRunAppleScriptClient with necessary services."""
-        self._real_client: AppleScriptClient = AppleScriptClient(config, console_logger, error_logger)
-        self.console_logger = console_logger
-        self.error_logger = error_logger
-        self.config = config
-        self.actions: list[dict[str, Any]] = []
-
-    async def initialize(self) -> None:
-        """Initialize the client."""
-        await self._real_client.initialize()
-
-    async def run_script(
-        self,
-        script_name: str,
-        arguments: list[str] | None = None,
-        timeout: float | None = None,
-    ) -> str | None:
-        """Execute an AppleScript script in dry run mode."""
-        if script_name.startswith("fetch"):
-            result = await self._real_client.run_script(script_name, arguments, timeout)
-            if not isinstance(result, str | None):
-                self.error_logger.warning(
-                    "Unexpected return type from _real_client.run_script: %s",
-                    type(result).__name__,
-                )
-                return None
-            return result
-
-        self.console_logger.info(
-            "DRY-RUN: Would run %s with args: %s",
-            script_name,
-            arguments or [],
-        )
-        self.actions.append({"script": script_name, "args": arguments or []})
-        return "Success (dry run)"
-
-    async def run_script_code(
-        self,
-        script_code: str,
-        arguments: list[str] | None = None,
-        timeout: float | None = None,
-    ) -> str | None:
-        """Execute inline AppleScript in dry run mode with optional timeout.
-
-        Args:
-            script_code: The AppleScript code to execute
-            arguments: Optional list of arguments to pass to the script
-            timeout: Maximum time in seconds to wait for execution, or None for no timeout
-
-        Returns:
-            str: Success message if successful, None otherwise
-
-        """
-        async def _execute() -> str:
-            """Execute the dry-run operation."""
-            self.console_logger.info("DRY-RUN: Would execute inline AppleScript")
-            self.actions.append({"code": script_code, "args": arguments or []})
-            return "Success (dry run)"
-
-        try:
-            if timeout is not None:
-                return await asyncio.wait_for(_execute(), timeout=timeout)
-            return await _execute()
-        except TimeoutError:
-            self.error_logger.error(
-                "Timeout after %s seconds while executing AppleScript", timeout
-            )
-            return None
-        except Exception as e:
-            self.error_logger.error(
-                "Error executing AppleScript: %s", str(e), exc_info=True
-            )
-            return None
-
-    def get_actions(self) -> list[dict[str, Any]]:
-        """Get the list of actions performed during the dry run."""
-        return self.actions
+DRY_RUN_SUCCESS_MESSAGE = "Success (dry run)"
 
 
 @runtime_checkable
@@ -205,6 +118,93 @@ class AppleScriptClientProtocol(Protocol):
         """
         ...
 
+
+class DryRunAppleScriptClient(AppleScriptClientProtocol):
+    """AppleScript client that logs actions instead of modifying the library."""
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        console_logger: logging.Logger,
+        error_logger: logging.Logger,
+    ) -> None:
+        """Initialize the DryRunAppleScriptClient with necessary services."""
+        self._real_client: AppleScriptClient = AppleScriptClient(config, console_logger, error_logger)
+        self.console_logger = console_logger
+        self.error_logger = error_logger
+        self.config = config
+        self.actions: list[dict[str, Any]] = []
+
+    async def initialize(self) -> None:
+        """Initialize the client."""
+        await self._real_client.initialize()
+
+    async def run_script(
+        self,
+        script_name: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Execute an AppleScript script in dry run mode."""
+        if script_name.startswith("fetch"):
+            result = await self._real_client.run_script(script_name, arguments, timeout)
+            if not isinstance(result, str | None):
+                self.error_logger.warning(
+                    "Unexpected return type from _real_client.run_script: %s",
+                    type(result).__name__,
+                )
+                return None
+            return result
+
+        self.console_logger.info(
+            "DRY-RUN: Would run %s with args: %s",
+            script_name,
+            arguments or [],
+        )
+        self.actions.append({"script": script_name, "args": arguments or []})
+        return DRY_RUN_SUCCESS_MESSAGE
+
+    async def run_script_code(
+        self,
+        script_code: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Execute inline AppleScript in dry run mode with optional timeout.
+
+        Args:
+            script_code: The AppleScript code to execute
+            arguments: Optional list of arguments to pass to the script
+            timeout: Maximum time in seconds to wait for execution, or None for no timeout
+
+        Returns:
+            str: Success message if successful, None otherwise
+
+        """
+        async def _execute() -> str:
+            """Execute the dry-run operation."""
+            self.console_logger.info("DRY-RUN: Would execute inline AppleScript")
+            self.actions.append({"code": script_code, "args": arguments or []})
+            return DRY_RUN_SUCCESS_MESSAGE
+
+        try:
+            if timeout is not None:
+                return await asyncio.wait_for(_execute(), timeout=timeout)
+            return await _execute()
+        except TimeoutError:
+            self.error_logger.error(
+                "Timeout after %s seconds while executing AppleScript", timeout
+            )
+            return None
+        except Exception as e:
+            self.error_logger.error(
+                "Error executing AppleScript: %s", str(e), exc_info=True
+            )
+            return None
+
+    def get_actions(self) -> list[dict[str, Any]]:
+        """Get the list of actions performed during the dry run."""
+        return self.actions
 
 class DryRunProcessor:
     """Processes the dry run simulation steps using injected dependencies."""
@@ -422,6 +422,7 @@ def main() -> None:
 
     Initializes dependencies and orchestrates the simulation process.
     """
+    from services.dependencies_service import DependencyContainer  # Moved import here
     start_all = time.time()
     # Argument parsing is not handled within the dry_run script itself in the original structure,
     # it's handled by music_genre_updater.py which then *calls* dry_run.main().

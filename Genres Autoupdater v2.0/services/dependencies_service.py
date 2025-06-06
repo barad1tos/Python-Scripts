@@ -30,7 +30,6 @@ import yaml
 # Import concrete service implementations
 # Note: Services needing async init are now instantiated but not fully initialized in __init__
 from services.applescript_client import AppleScriptClient
-from utils.dry_run import DryRunAppleScriptClient
 from services.cache_service import CacheService
 from services.external_api_service import ExternalApiService
 from services.pending_verification import PendingVerificationService
@@ -40,6 +39,7 @@ from utils.analytics import Analytics
 
 # Assuming these service and utility classes exist and are needed as dependencies
 from utils.config import load_config
+from utils.dry_run import DryRunAppleScriptClient
 
 # Removed unused import: from utils.logger import get_loggers
 

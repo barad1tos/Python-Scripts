@@ -77,6 +77,9 @@ database_verification:
 development:
   test_artists: [In Flames] # List of artists to test with (e.g., ["Artist1", "Artist2"])
 
+# API Cache file
+api_cache_file: cache.json
+
 # -----------------------------------------------------------------------
 # 4. LOGGING AND ANALYTICS CONFIGURATION
 # -----------------------------------------------------------------------
@@ -86,7 +89,6 @@ logging:
   analytics_log_file: analytics/analytics.log
   csv_output_file: csv/track_list.csv
   album_cache_csv: csv/cache_albums.csv
-  api_cache_file: cache.json
   changes_report_file: csv/changes_report.csv
   dry_run_report_file: csv/dry_run_combined.csv
   last_incremental_run_file: last_incremental_run.log
