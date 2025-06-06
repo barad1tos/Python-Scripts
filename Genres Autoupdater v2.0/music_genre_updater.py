@@ -76,6 +76,7 @@ from utils.metadata import (
 from utils.reports import (
     load_track_list,
     save_changes_report,
+    save_changes_report_yaml,
     save_to_csv,
     sync_track_list_with_current,
 )
@@ -2667,17 +2668,24 @@ class MusicUpdater:
             )
             # Use utility function save_unified_changes_report
             # Use config from self.config, injected loggers
+            report_csv = get_full_log_path(
+                self.config,
+                "changes_report_file",
+                "csv/changes_report.csv",
+                self.error_logger,
+            )
             save_changes_report(
                 all_changes,
-                get_full_log_path(
-                    self.config,
-                    "changes_report_file",
-                    "csv/changes_report.csv",
-                    self.error_logger,
-                ),  # Pass error_logger
+                report_csv,
                 self.console_logger,
                 self.error_logger,
-                force_mode=args.force,  # Use force flag for console output if needed
+                force_mode=args.force,
+            )
+            save_changes_report_yaml(
+                all_changes,
+                os.path.splitext(report_csv)[0] + ".yaml",
+                self.console_logger,
+                self.error_logger,
             )
             self.console_logger.info(
                 "Processing complete. Logged %d changes.",
