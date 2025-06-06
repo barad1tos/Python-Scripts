@@ -75,7 +75,7 @@ database_verification:
 
 # Development and testing settings
 development:
-  test_artists: [In Flames] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+  test_artists: []
 
 # API Cache file
 api_cache_file: cache.json
