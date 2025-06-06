@@ -403,6 +403,34 @@ def clean_names(
     return cleaned_track, cleaned_album
 
 
+def _split_genres(genres: str) -> list[str]:
+    """Split a genre string using common separators."""
+    if not genres:
+        return []
+    return [p.strip() for p in re.split(r"[;,/]", genres) if p.strip()]
+
+
+def has_genre(current_genres: str, genre: str) -> bool:
+    """Return ``True`` if ``genre`` already exists in ``current_genres``."""
+    if not current_genres or not genre:
+        return False
+    normalized = {g.lower() for g in _split_genres(current_genres)}
+    return genre.strip().lower() in normalized
+
+
+def merge_genres(current_genres: str, genre: str) -> str:
+    """Append ``genre`` to ``current_genres`` if it's not already present."""
+    if not genre:
+        return current_genres or ""
+
+    parts = _split_genres(current_genres)
+    normalized = [p.lower() for p in parts]
+    new_part = genre.strip()
+    if new_part.lower() not in normalized:
+        parts.append(new_part)
+    return "; ".join(parts)
+
+
 def is_music_app_running(error_logger: logging.Logger) -> bool:
     """Check if the Music.app is currently running using subprocess. Logs errors.
 

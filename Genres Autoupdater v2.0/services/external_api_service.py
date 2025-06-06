@@ -2315,6 +2315,24 @@ class ExternalApiService:
                 f"Cleaned {len(keys_to_delete)} expired entries from {cache_name} cache."
             )
 
+    async def get_year_from_discogs(self, artist: str, album: str) -> str | None:
+        """Fetch the earliest release year for an album from Discogs."""
+        artist_norm = self._normalize_name(artist)
+        album_norm = self._normalize_name(album)
+        results = await self._get_scored_releases_from_discogs(
+            artist_norm,
+            album_norm,
+            None,
+        )
+        years = [
+            r.get("year")
+            for r in results
+            if r.get("year") and self._is_valid_year(str(r.get("year")))
+        ]
+        if years:
+            return str(min(int(y) for y in years))
+        return None
+
     def _is_valid_year(self, year_str: str | None) -> bool:
         """Check if a string represents a valid release year."""
         if (
