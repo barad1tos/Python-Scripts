@@ -22,8 +22,8 @@ called by DependencyContainer after service instantiation.
 
 import asyncio
 import csv
-import json
 import hashlib
+import json
 import os
 import sys
 import time
@@ -42,6 +42,8 @@ class CacheService:
     for album release years. Uses hash-based keys for album data.
     Initializes asynchronously.
     """
+
+    CACHE_ENTRY_LENGTH = 2
 
     def __init__(
         self,
@@ -253,13 +255,13 @@ class CacheService:
                 for k, v in data.items():
                     if (
                         isinstance(v, list)
-                        and len(v) == 2
-                        and isinstance(v[1], (int, float))
+                        and len(v) == self.CACHE_ENTRY_LENGTH
+                        and isinstance(v[1], int | float)
+                        and not self._is_expired(float(v[1]))
                     ):
-                        if not self._is_expired(float(v[1])):
-                            result[k] = (v[0], float(v[1]))
+                        result[k] = (v[0], float(v[1]))
                 return result
-            except Exception as e:  # pragma: no cover - best effort logging
+            except Exception as e:
                 self.error_logger.error(
                     f"Error loading cache from {self.cache_file}: {e}"
                 )
@@ -269,6 +271,7 @@ class CacheService:
         self.console_logger.info(
             f"Loaded {len(self.cache)} cached entries from {self.cache_file}"
         )
+
 
     async def save_cache(self) -> None:
         """Persist the generic cache to disk asynchronously."""
