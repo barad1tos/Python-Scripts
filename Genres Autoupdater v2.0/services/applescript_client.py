@@ -50,6 +50,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from utils.dry_run import AppleScriptClientProtocol
+
 RESULT_PREVIEW_LEN = 50
 DANGEROUS_ARG_CHARS = [";", "&", "|", "`", "$", ">", "<", "!"]
 
@@ -194,7 +196,7 @@ class EnhancedRateLimiter:
         }
 
 
-class AppleScriptClient:
+class AppleScriptClient(AppleScriptClientProtocol):
     """A client to run AppleScript commands asynchronously using the osascript command.
 
     Semaphore initialization is done in the async initialize method.
