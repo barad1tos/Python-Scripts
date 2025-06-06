@@ -429,10 +429,11 @@ def save_changes_report(
             else:
                 change["change_type"] = "other"
 
-    # Determine the final file path. If add_timestamp is True or the file already
-    # exists, append a timestamp to preserve previous reports.
+    # Determine the final file path. If add_timestamp is True, append a timestamp
+    # to preserve previous reports. Otherwise use the provided path even if it
+    # already exists.
     final_path = file_path
-    if add_timestamp or os.path.exists(file_path):
+    if add_timestamp:
         base, ext = os.path.splitext(file_path)
         timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         final_path = f"{base}_{timestamp_suffix}{ext}"

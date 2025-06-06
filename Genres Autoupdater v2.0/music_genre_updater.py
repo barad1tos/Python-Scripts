@@ -712,6 +712,7 @@ class MusicUpdater:
                     self.console_logger,
                     self.error_logger,
                     force_mode=force,
+                    add_timestamp=False,
                 )
                 self.console_logger.info(
                     "Updated %d tracks with album years.",
@@ -1917,6 +1918,7 @@ class MusicUpdater:
                 self.console_logger,
                 self.error_logger,
                 force_mode=force,  # Use force flag from arguments for console output
+                add_timestamp=False,
             )
             self.console_logger.info(
                 "Processed and logged %d cleaning changes for artist: %s",
@@ -2169,6 +2171,7 @@ class MusicUpdater:
                 self.console_logger,
                 self.error_logger,
                 force_mode=force_year_update,  # Use force flag for console output
+                add_timestamp=False,
             )
             self.console_logger.info(
                 "Processed and logged %d year changes.",
@@ -2413,6 +2416,7 @@ class MusicUpdater:
                 self.console_logger,
                 self.error_logger,
                 force_mode=force,  # Use force flag for console output
+                add_timestamp=False,
             )
 
         else:
@@ -2740,6 +2744,14 @@ def main() -> None:
 
     start_all = time.time()
     args = parse_arguments()
+
+    # If running in dry-run mode, delegate control to the dedicated simulator
+    # and exit before initializing the regular pipeline.
+    if args.dry_run:
+        from utils import dry_run
+
+        dry_run.main()
+        sys.exit(0)
 
     # Initialize loggers and the QueueListener *before* creating DependencyContainer
     # These are needed by the DependencyContainer constructor and for early logging
