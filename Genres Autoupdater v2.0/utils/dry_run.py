@@ -215,12 +215,14 @@ class DryRunProcessor:
         console_logger: logging.Logger,
         error_logger: logging.Logger,
         ap_client: AppleScriptClientProtocol,
+        test_artists: list[str] | None = None,
     ):
         """Initialize the DryRunProcessor with necessary services."""
         self.config = config
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.ap_client = ap_client
+        self.test_artists = test_artists or []
 
     async def fetch_tracks(self, artist: str | None = None) -> list[dict[str, str]]:
         """Fetch tracks asynchronously from Music.app via AppleScript using the injected client.
@@ -228,6 +230,18 @@ class DryRunProcessor:
         This replaces the old fetch_tracks_direct function.
         Uses the parse_tracks utility from metadata_helpers.py.
         """
+        if artist is None and self.test_artists:
+            self.console_logger.info(
+                "Dry-run mode: fetching tracks only for test artists: %s",
+                self.test_artists,
+            )
+            collected: dict[str, dict[str, str]] = {}
+            for art in self.test_artists:
+                for track in await self.fetch_tracks(art):
+                    if track.get("id"):
+                        collected[track["id"]] = track
+            return list(collected.values())
+
         self.console_logger.info(
             "Fetching tracks using AppleScript client for dry run %s",
             f"for artist: {artist}" if artist else "",
@@ -442,6 +456,11 @@ def main() -> None:
         console_logger.error("Music app is not running! Please start Music.app before running the dry run script.")
         sys.exit(1)  # Exit if Music app is not running
 
+    # Log configured test artists if any
+    test_artists = CONFIG.get("development", {}).get("test_artists", [])
+    if test_artists:
+        console_logger.info("Dry-run will process only test artists: %s", test_artists)
+
     # --- Initialize Dependency Container ---
     # The DependencyContainer needs the CONFIG and loggers
     deps = None
@@ -464,6 +483,7 @@ def main() -> None:
             console_logger=console_logger,
             error_logger=error_logger,
             ap_client=ap_client,
+            test_artists=test_artists,
             # Optional: pass external_api_service here
         )
 
@@ -547,12 +567,18 @@ def main() -> None:
 
         # Stop the QueueListener when the script finishes or encounters a critical error
         # Check if the listener was successfully initialized before trying to stop it
-        if listener:
-            if console_logger:
-                console_logger.info("Stopping QueueListener (dry run)...")
-            else:
-                print("INFO: Stopping QueueListener (dry run)...", file=sys.stderr)
-            listener.stop()
+        if listener is not None and hasattr(listener, "stop"):
+            try:
+                if console_logger:
+                    console_logger.info("Stopping QueueListener (dry run)...")
+                else:
+                    print("INFO: Stopping QueueListener (dry run)...", file=sys.stderr)
+                listener.stop()
+            except Exception as e:
+                if console_logger:
+                    console_logger.warning(f"Error stopping QueueListener: {e}")
+                else:
+                    print(f"WARNING: Error stopping QueueListener: {e}", file=sys.stderr)
 
         # Explicitly close handlers for robustness, especially in case of errors before listener stops cleanly
         # This part is likely redundant if listener.stop() and handler.close() are properly implemented,
