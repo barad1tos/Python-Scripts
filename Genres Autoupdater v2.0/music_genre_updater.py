@@ -89,20 +89,25 @@ class ScriptAction(TypedDict):
     script: str
     args: list[Any] | None
 
+
 class CodeAction(TypedDict):
     """Represents an inline AppleScript code execution action."""
 
     code: str
 
+
 ActionType = ScriptAction | CodeAction
+
 
 def is_script_action(action: ActionType) -> TypeGuard[ScriptAction]:
     """Check if the action is a ScriptAction."""
     return "script" in action
 
+
 def is_code_action(action: ActionType) -> TypeGuard[CodeAction]:
     """Check if the action is a CodeAction."""
     return "code" in action
+
 
 # Use TYPE_CHECKING for services imported for type hints in method signatures/class definition
 if TYPE_CHECKING:
@@ -448,7 +453,7 @@ class MusicUpdater:
                         "Failed to update genre for track %s",
                         track_id,
                     )
-                    success = False # Ensure success is set to False if genre update fails
+                    success = False  # Ensure success is set to False if genre update fails
 
                 # Use injected ap_client
                 if new_year:
@@ -1268,12 +1273,12 @@ class MusicUpdater:
     # Logic moved from old verify_and_clean_track_database
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Database Verification")
-    async def verify_and_clean_track_database(self, force: bool = False) -> int:
+    async def verify_and_clean_track_database(self, force: bool = False, apply_test_filter: bool = False) -> int:
         """Verify tracks in the CSV database against Music.app.
 
         Also remove entries for tracks that no longer exist.
-        Respect the 'development.test_artists' config setting.
-        Use injected AppleScriptClient and config from self.config.
+        Optionally limit verification to ``development.test_artists`` when
+        ``apply_test_filter`` is ``True``.
         """
         removed_count = 0
         try:
@@ -1339,20 +1344,15 @@ class MusicUpdater:
                     )
                     # Proceed if file is missing or corrupt
 
-            # --- Apply test_artists filter if configured ---
-            tracks_to_verify_map = csv_tracks_map  # Start with all tracks by default
-            # Use config from self.config
-            test_artists_config = self.config.get("development", {}).get(
-                "test_artists",
-                [],
-            )
+            # --- Apply test_artists filter only in dry-run development mode ---
+            tracks_to_verify_map = csv_tracks_map
+            test_artists_config = self.config.get("development", {}).get("test_artists", [])
 
-            if test_artists_config:
+            if apply_test_filter and test_artists_config:
                 self.console_logger.info(
-                    "Limiting database verification to specified test_artists: %s",
+                    "Dry-run development mode: Processing tracks only for test artists: %s",
                     test_artists_config,
                 )
-                # Filter the map to include only tracks from test artists
                 tracks_to_verify_map = {track_id: track for track_id, track in csv_tracks_map.items() if track.get("artist") in test_artists_config}
                 self.console_logger.info(
                     "After filtering by test_artists, %d tracks will be verified.",
@@ -2193,16 +2193,19 @@ class MusicUpdater:
     # Logic moved from old run_verify_database
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Verify Database")
-    async def run_verify_database(self, force: bool) -> None:
+    async def run_verify_database(self, force: bool, dry_run: bool) -> None:
         """Execute the database verification process.
 
-        Uses injected verify_and_clean_track_database method.
+        Args:
+            force: Run verification regardless of the configured interval.
+            dry_run: If ``True``, limit verification to ``development.test_artists``.
+
         """
         self.console_logger.info(
             f"Executing verify_database command with force={force}",
         )
         # Use the method of this class
-        removed_count = await self.verify_and_clean_track_database(force=force)
+        removed_count = await self.verify_and_clean_track_database(force=force, apply_test_filter=dry_run)
         if removed_count > 0:
             self.console_logger.info(
                 "Database cleanup removed %d non-existent tracks",
@@ -2467,19 +2470,17 @@ class MusicUpdater:
                 )
                 effective_last_run = datetime.min  # Fallback to full run if timestamp retrieval fails
 
-        # --- Fetch Tracks (respecting test_artists if set globally) ---
+        # --- Fetch Tracks (respecting test_artists only in dry-run) ---
         all_tracks: list[dict[str, str]] = []
-        # Use config from self.config
         test_artists_config = self.config.get("development", {}).get("test_artists", [])
 
-        if test_artists_config:
-            # Fetch tracks only for test artists if the list is populated
+        if args.dry_run and test_artists_config:
             self.console_logger.info(
-                f"Development mode: Fetching tracks only for test_artists: {test_artists_config}",
+                "Dry-run development mode: Processing tracks only for test artists: %s",
+                test_artists_config,
             )
-            fetched_track_map = {}  # Use map to avoid duplicates if artist listed multiple times
+            fetched_track_map = {}
             for art in test_artists_config:
-                # Use injected fetch_tracks_async method
                 art_tracks = await self.fetch_tracks_async(
                     artist=art,
                     force_refresh=args.force,
@@ -2493,8 +2494,6 @@ class MusicUpdater:
                 len(all_tracks),
             )
         else:
-            # Fetch all tracks if test_artists list is empty
-            # Use injected fetch_tracks_async method
             all_tracks = await self.fetch_tracks_async(force_refresh=args.force)
             self.console_logger.info(
                 "Loaded %d tracks from Music.app.",
@@ -2888,7 +2887,10 @@ def main() -> None:
             # Call the corresponding methods on the music_updater instance
             # These methods are async and need to be awaited
             if hasattr(args, "command") and args.command == "verify_database":
-                await music_updater.run_verify_database(force=args.force)
+                await music_updater.run_verify_database(
+                    force=args.force,
+                    dry_run=args.dry_run,
+                )
 
             elif args.command == "clean_artist":
                 await music_updater.run_clean_artist(

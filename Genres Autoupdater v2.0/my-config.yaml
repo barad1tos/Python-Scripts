@@ -75,8 +75,8 @@ database_verification:
 
 # Development and testing settings
 development:
-  test_artists: []
-  test_artists: [] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+  # List of artists used only when running with the --dry-run flag
+  test_artists: [] # Example: ["Artist1", "Artist2"]
 
 # API Cache file
 api_cache_file: cache.json
