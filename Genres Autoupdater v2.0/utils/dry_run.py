@@ -54,7 +54,56 @@ try:
 except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
     print(f"ERROR: Failed to load or validate configuration: {e}", file=sys.stderr)
     sys.exit(1)  # Exit if config loading fails
+
 console_logger, error_logger, analytics_logger, listener = get_loggers(CONFIG)
+
+
+class DryRunAppleScriptClient:
+    """AppleScript client that logs actions instead of modifying the library."""
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        console_logger: logging.Logger,
+        error_logger: logging.Logger,
+    ) -> None:
+        self._real_client = AppleScriptClient(config, console_logger, error_logger)
+        self.console_logger = console_logger
+        self.error_logger = error_logger
+        self.config = config
+        self.actions: list[dict[str, Any]] = []
+
+    async def initialize(self) -> None:
+        await self._real_client.initialize()
+
+    async def run_script(
+        self,
+        script_name: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        if script_name.startswith("fetch"):
+            return await self._real_client.run_script(script_name, arguments, timeout)
+        self.console_logger.info(
+            "DRY-RUN: Would run %s with args: %s",
+            script_name,
+            arguments or [],
+        )
+        self.actions.append({"script": script_name, "args": arguments or []})
+        return "Success (dry run)"
+
+    async def run_script_code(
+        self,
+        script_code: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        self.console_logger.info("DRY-RUN: Would execute inline AppleScript")
+        self.actions.append({"code": script_code, "args": arguments or []})
+        return "Success (dry run)"
+
+    def get_actions(self) -> list[dict[str, Any]]:
+        return self.actions
 
 
 class DryRunProcessor:
@@ -92,9 +141,7 @@ class DryRunProcessor:
         timeout = self.config.get("applescript_timeout_seconds", 900)
 
         # Use the injected ap_client
-        raw_data = await self.ap_client.run_script(
-            script_name, script_args, timeout=timeout
-        )
+        raw_data = await self.ap_client.run_script(script_name, script_args, timeout=timeout)
 
         if raw_data:
             lines_count = raw_data.count("\n") + 1
@@ -120,9 +167,7 @@ class DryRunProcessor:
             self.error_logger.error("Unexpected return type from parse_tracks")
             return []
 
-        self.console_logger.info(
-            "Successfully parsed %s tracks from Music.app output", len(parsed)
-        )
+        self.console_logger.info("Successfully parsed %s tracks from Music.app output", len(parsed))
         return parsed
 
     async def simulate_cleaning(self) -> list[dict[str, str]]:
@@ -139,9 +184,7 @@ class DryRunProcessor:
         tracks = await self.fetch_tracks()
 
         if not tracks:
-            self.error_logger.error(
-                "No tracks found for cleaning simulation. Cannot proceed."
-            )
+            self.error_logger.error("No tracks found for cleaning simulation. Cannot proceed.")
             return []
 
         self.console_logger.info("Starting cleaning simulation for %s tracks...", len(tracks))
@@ -150,9 +193,7 @@ class DryRunProcessor:
             # Skip tracks with certain statuses
             track_status = track.get("trackStatus", "").lower()
             if track_status in ("prerelease", "no longer available"):
-                self.console_logger.debug(
-                    f"Skipping track with status '{track_status}': {track.get('name', 'Unnamed track')}"
-                )
+                self.console_logger.debug(f"Skipping track with status '{track_status}': {track.get('name', 'Unnamed track')}")
                 continue
 
             original_name = str(track.get("name", ""))
@@ -185,13 +226,9 @@ class DryRunProcessor:
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 }
                 simulated_changes.append(change)
-                self.console_logger.debug(
-                    f"Simulated cleaning change for '{artist_name}' - '{original_name}'"
-                )
+                self.console_logger.debug(f"Simulated cleaning change for '{artist_name}' - '{original_name}'")
 
-        self.console_logger.info(
-            "Cleaning simulation found %s changes.", len(simulated_changes)
-        )
+        self.console_logger.info("Cleaning simulation found %s changes.", len(simulated_changes))
         return simulated_changes
 
     async def simulate_genre_update(self) -> list[dict[str, str]]:
@@ -208,20 +245,14 @@ class DryRunProcessor:
         tracks = await self.fetch_tracks()
 
         if not tracks:
-            self.error_logger.error(
-                "No tracks found for genre update simulation. Cannot proceed."
-            )
+            self.error_logger.error("No tracks found for genre update simulation. Cannot proceed.")
             return []
 
-        self.console_logger.info(
-            "Starting genre update simulation for %s tracks...", len(tracks)
-        )
+        self.console_logger.info("Starting genre update simulation for %s tracks...", len(tracks))
 
         # Group tracks by artist for genre analysis
         artist_tracks = group_tracks_by_artist(tracks)
-        self.console_logger.info(
-            "Grouped tracks into %s artists for genre analysis", len(artist_tracks)
-        )
+        self.console_logger.info("Grouped tracks into %s artists for genre analysis", len(artist_tracks))
 
         # Process each artist's tracks
         for artist, artist_tracks_list in artist_tracks.items():
@@ -235,9 +266,7 @@ class DryRunProcessor:
             )
 
             if not dominant_genre:
-                self.console_logger.debug(
-                    f"Could not determine dominant genre for artist: {artist}"
-                )
+                self.console_logger.debug(f"Could not determine dominant genre for artist: {artist}")
                 continue
 
             # Check each track for this artist
@@ -249,10 +278,7 @@ class DryRunProcessor:
                 date_added = str(track.get("dateAdded", ""))
 
                 # Skip if genre is already correct or track status doesn't allow modification
-                non_modifiable_statuses = (
-                    "purchased", "matched", "uploaded",
-                    "ineligible", "no longer available", "not eligible for upload"
-                )
+                non_modifiable_statuses = ("purchased", "matched", "uploaded", "ineligible", "no longer available", "not eligible for upload")
 
                 if has_genre(current_genre, dominant_genre) or track_status in non_modifiable_statuses:
                     self.console_logger.debug(
@@ -264,8 +290,7 @@ class DryRunProcessor:
                 # Check track status to determine if it's eligible for genre updates
                 if track_status in ("matched", "uploaded"):
                     self.console_logger.debug(
-                        f"Skipping genre simulation for track ID {track_id}: "
-                        f"Status '{track_status}' does not allow modification"
+                        f"Skipping genre simulation for track ID {track_id}: Status '{track_status}' does not allow modification"
                     )
                 elif track_status in ("subscription", "downloaded"):
                     new_genre = merge_genres(current_genre, dominant_genre)
@@ -280,17 +305,11 @@ class DryRunProcessor:
                         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                     simulated_changes.append(change)
-                    self.console_logger.debug(
-                        f"Simulated genre change for '{artist}' - '{track_name}': {current_genre} -> {dominant_genre}"
-                    )
+                    self.console_logger.debug(f"Simulated genre change for '{artist}' - '{track_name}': {current_genre} -> {dominant_genre}")
                 else:
-                    self.console_logger.debug(
-                        f"Skipping track with unknown status '{track_status}': {track_name}"
-                    )
+                    self.console_logger.debug(f"Skipping track with unknown status '{track_status}': {track_name}")
 
-        self.console_logger.info(
-            "Genre update simulation found %s changes.", len(simulated_changes)
-        )
+        self.console_logger.info("Genre update simulation found %s changes.", len(simulated_changes))
         return simulated_changes
 
     # Optional: Add simulate_year_updates method here following plan step 3.2 (later)
@@ -319,9 +338,7 @@ def main() -> None:
     # Ensure Music.app is running using the utility function
     # Pass error_logger from the dry run script's scope
     if not is_music_app_running(error_logger):
-        console_logger.error(
-            "Music app is not running! Please start Music.app before running the dry run script."
-        )
+        console_logger.error("Music app is not running! Please start Music.app before running the dry run script.")
         sys.exit(1)  # Exit if Music app is not running
 
     # --- Initialize Dependency Container ---
@@ -331,9 +348,7 @@ def main() -> None:
     try:
         # Create the DependencyContainer instance, passing config and loggers
         # DependencyContainer expects loggers to be available when initialized
-        deps = DependencyContainer(
-            CONFIG_PATH, console_logger, error_logger, analytics_logger, listener
-        )  # Pass all logger instances
+        deps = DependencyContainer(CONFIG_PATH, console_logger, error_logger, analytics_logger, listener)  # Pass all logger instances
         # Passing CONFIG_PATH makes deps load it again. This is acceptable for now.
         # A future refactor might pass the loaded CONFIG dict directly to DependencyContainer.
 
@@ -360,9 +375,7 @@ def main() -> None:
             # year_changes = await dry_run_processor.simulate_year_updates() # needs implementation
 
             # We get the path for the combined report from the configuration
-            dry_run_report_file = get_full_log_path(
-                CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv", error_logger
-            )
+            dry_run_report_file = get_full_log_path(CONFIG, "dry_run_report_file", "csv/dry_run_combined.csv", error_logger)
 
             # We save the combined report using the utility function
             # Pass loggers from the dry run script's scope
@@ -396,9 +409,7 @@ def main() -> None:
     except Exception as e:
         # Use error logger from the main scope
         if error_logger:
-            error_logger.critical(
-                "Critical error during dry run execution: %s", e, exc_info=True
-            )
+            error_logger.critical("Critical error during dry run execution: %s", e, exc_info=True)
         else:
             print(
                 f"CRITICAL ERROR: Critical error during dry run execution: {e}",
@@ -418,9 +429,7 @@ def main() -> None:
                     console_logger.info("Shutting down DependencyContainer...")
                     deps.shutdown()  # Call the shutdown method
                 else:
-                    console_logger.warning(
-                        "DependencyContainer instance has no shutdown method."
-                    )
+                    console_logger.warning("DependencyContainer instance has no shutdown method.")
 
             except Exception as shutdown_e:
                 # Use error logger from the main scope
@@ -450,9 +459,7 @@ def main() -> None:
         if console_logger:
             console_logger.info("Explicitly closing logger handlers (dry run)...")
         else:
-            print(
-                "INFO: Explicitly closing logger handlers (dry run)...", file=sys.stderr
-            )
+            print("INFO: Explicitly closing logger handlers (dry run)...", file=sys.stderr)
 
         # Use module-level loggers or root logger to get handlers
         all_handlers = []
