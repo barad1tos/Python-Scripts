@@ -53,7 +53,6 @@ import yaml
 from dotenv import load_dotenv
 
 # Import necessary services and utilities
-from utils import dry_run  # dry_run will be refactored later
 from utils.analytics import Analytics  # Analytics is used in method decorators
 from utils.config import load_config
 
@@ -276,9 +275,7 @@ class MusicUpdater:
                     should_fetch_from_app = False
                 elif cached_tracks:
                     self.console_logger.warning(
-                        "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.",
-                        cache_key,
-                        type(cached_tracks).__name__
+                        "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.", cache_key, type(cached_tracks).__name__
                     )
                 else:
                     self.console_logger.info(
@@ -300,11 +297,14 @@ class MusicUpdater:
                 timeout = self.config.get("applescript_timeout_seconds", 900)
 
                 # Use injected ap_client
-                raw_data = await self.ap_client.run_script(
-                    script_name,
-                    script_args,
-                    timeout=timeout,
-                ) or ""  # Provide default empty string if None is returned
+                raw_data = (
+                    await self.ap_client.run_script(
+                        script_name,
+                        script_args,
+                        timeout=timeout,
+                    )
+                    or ""
+                )  # Provide default empty string if None is returned
 
             if raw_data:
                 self.console_logger.debug(
@@ -532,9 +532,7 @@ class MusicUpdater:
                             result,
                         )
                         failed_updates += 1
-                    elif (
-                        result is None or result == ""
-                    ):  # Handles None or empty string explicitly
+                    elif result is None or result == "":  # Handles None or empty string explicitly
                         self.error_logger.error(
                             "Empty or None result updating year for track %s",
                             track_id,
@@ -729,11 +727,7 @@ class MusicUpdater:
         os.makedirs(os.path.dirname(year_changes_log_file), exist_ok=True)
         year_logger = logging.getLogger("year_updates")
         # Check if handler is already added to year_logger to prevent duplicates
-        if not any(
-            isinstance(handler, logging.FileHandler)
-            and handler.baseFilename == year_changes_log_file
-            for handler in year_logger.handlers
-        ):
+        if not any(isinstance(handler, logging.FileHandler) and handler.baseFilename == year_changes_log_file for handler in year_logger.handlers):
             fh = logging.FileHandler(year_changes_log_file)
             # Use the same formatter as other file logs for consistency if possible,
             # but the RunTrackingHandler/Queue setup complicates direct FileHandler formatting here.
@@ -746,10 +740,7 @@ class MusicUpdater:
             year_logger.addHandler(fh)
         # Ensure logger level is set from config if it's not already set by QueueListener setup
         year_updates_file_level = logging.getLevelName(
-            self.config.get("logging", {})
-            .get("levels", {})
-            .get("year_updates_file", "INFO")
-            .upper(),
+            self.config.get("logging", {}).get("levels", {}).get("year_updates_file", "INFO").upper(),
         )
         year_logger.setLevel(year_updates_file_level)
 
@@ -760,14 +751,14 @@ class MusicUpdater:
         # Group tracks by album to reduce API calls (logic remains the same)
         albums: dict[str, dict[str, Any]] = {}
         for track in tracks:
-                    artist = track.get("artist", "Unknown")
-                    album = track.get("album", "Unknown")
-                    key = f"{artist}|{album}"
-                    if key not in albums:
-                        albums[key] = {"artist": artist, "album": album, "tracks": []}
-                    # No conditional check needed - tracks is already initialized as a list above
-                    # Just directly append the track to the tracks list
-                    albums[key]["tracks"].append(track)
+            artist = track.get("artist", "Unknown")
+            album = track.get("album", "Unknown")
+            key = f"{artist}|{album}"
+            if key not in albums:
+                albums[key] = {"artist": artist, "album": album, "tracks": []}
+            # No conditional check needed - tracks is already initialized as a list above
+            # Just directly append the track to the tracks list
+            albums[key]["tracks"].append(track)
 
         self.console_logger.info("Processing %d unique albums", len(albums))
         year_logger.info("Starting year update for %d albums", len(albums))
@@ -784,9 +775,7 @@ class MusicUpdater:
             album_tracks = album_data["tracks"]
 
             # Extract the current library year from the first track
-            current_library_year = (
-                album_tracks[0].get("new_year", "").strip() if album_tracks else ""
-            )  # Use new_year as current state
+            current_library_year = album_tracks[0].get("new_year", "").strip() if album_tracks else ""  # Use new_year as current state
 
             # New logic to determine if API fetch is needed based on cache and pending status
             needs_api_fetch = False
@@ -1012,26 +1001,14 @@ class MusicUpdater:
                 return needs_api_fetch  # Indicate if API call was made for this album
 
         # Fetch optimal batch parameters from config using self.config
-        batch_size = (
-            self.config.get("year_retrieval", {})
-            .get("processing", {})
-            .get("batch_size", 20)
-        )  # Get from processing subsection
+        batch_size = self.config.get("year_retrieval", {}).get("processing", {}).get("batch_size", 20)  # Get from processing subsection
         delay_between_batches = (
-            self.config.get("year_retrieval", {})
-            .get("processing", {})
-            .get("delay_between_batches", 30)
+            self.config.get("year_retrieval", {}).get("processing", {}).get("delay_between_batches", 30)
         )  # Get from processing subsection
         concurrent_limit = (
-            self.config.get("year_retrieval", {})
-            .get("rate_limits", {})
-            .get("concurrent_api_calls", 5)
+            self.config.get("year_retrieval", {}).get("rate_limits", {}).get("concurrent_api_calls", 5)
         )  # Get from rate_limits subsection
-        adaptive_delay = (
-            self.config.get("year_retrieval", {})
-            .get("processing", {})
-            .get("adaptive_delay", False)
-        )  # Get from processing subsection
+        adaptive_delay = self.config.get("year_retrieval", {}).get("processing", {}).get("adaptive_delay", False)  # Get from processing subsection
 
         album_items = list(albums.items())
 
@@ -1081,9 +1058,7 @@ class MusicUpdater:
                         len(batch),
                     )
                     await asyncio.sleep(adjusted_delay)
-                elif (
-                    api_calls_count > 0
-                ):  # If adaptive delay is off but API calls were made
+                elif api_calls_count > 0:  # If adaptive delay is off but API calls were made
                     self.console_logger.info(
                         "API calls were made. Waiting %ds before next batch",
                         delay_between_batches,
@@ -1108,9 +1083,7 @@ class MusicUpdater:
         return updated_tracks, changes_log
 
     @Analytics.track_instance_method("Update Missing Years via Discogs")
-    async def update_years_from_discogs(
-        self, tracks: list[dict[str, str]]
-    ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    async def update_years_from_discogs(self, tracks: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
         """Fill missing years by querying Discogs."""
         updated_tracks: list[dict[str, str]] = []
         changes: list[dict[str, str]] = []
@@ -1123,9 +1096,7 @@ class MusicUpdater:
 
             artist = track.get("artist", "")
             album = track.get("album", "")
-            year = await self.external_api_service.get_year_from_discogs(
-                artist, album
-            )
+            year = await self.external_api_service.get_year_from_discogs(artist, album)
             if year and self._is_valid_year(year):
                 if await self.update_track_async(track_id, new_year=year):
                     track["new_year"] = year
@@ -1158,12 +1129,14 @@ class MusicUpdater:
                 "Force run requested. Bypassing incremental interval check.",
             )
             result = True
-        elif not os.path.exists(get_full_log_path(
-            self.config,
-            "last_incremental_run_file",
-            self.INCREMENTAL_RUN_LOG,
-            self.error_logger,
-        )):
+        elif not os.path.exists(
+            get_full_log_path(
+                self.config,
+                "last_incremental_run_file",
+                self.INCREMENTAL_RUN_LOG,
+                self.error_logger,
+            )
+        ):
             last_file_path = get_full_log_path(
                 self.config,
                 "last_incremental_run_file",
@@ -1353,11 +1326,7 @@ class MusicUpdater:
                     test_artists_config,
                 )
                 # Filter the map to include only tracks from test artists
-                tracks_to_verify_map = {
-                    track_id: track
-                    for track_id, track in csv_tracks_map.items()
-                    if track.get("artist") in test_artists_config
-                }
+                tracks_to_verify_map = {track_id: track for track_id, track in csv_tracks_map.items() if track.get("artist") in test_artists_config}
                 self.console_logger.info(
                     "After filtering by test_artists, %d tracks will be verified.",
                     len(tracks_to_verify_map),
@@ -1436,9 +1405,7 @@ class MusicUpdater:
                         f"AppleScript verification for track ID {track_id} returned unexpected result: '{result}'. Assuming exists.",
                     )  # Log unexpected result
                     return True  # Assume exists on unknown result or error
-                except (
-                    Exception
-                ) as e:  # Catch potential exceptions during script execution
+                except Exception as e:  # Catch potential exceptions during script execution
                     self.error_logger.error(
                         f"Exception during AppleScript execution for track {track_id}: {e}",
                     )
@@ -1464,9 +1431,7 @@ class MusicUpdater:
                 for idx, result in enumerate(results):
                     track_id = batch_ids[idx]
                     # If an exception occurred or verify_track_exists returned False (doesn't exist)
-                    if (
-                        isinstance(result, Exception) or result is False
-                    ):  # Result is False means verify_track_exists returned False
+                    if isinstance(result, Exception) or result is False:  # Result is False means verify_track_exists returned False
                         if isinstance(result, Exception):
                             self.error_logger.warning(
                                 f"Exception during verification task for track ID {track_id}: {result}. Treating as non-existent for cleanup.",
@@ -1622,9 +1587,7 @@ class MusicUpdater:
             grouped = group_tracks_by_artist(
                 tracks_to_process,
             )  # Group the tracks selected for processing
-            updated_tracks = (
-                []
-            )  # This list will contain tracks that were successfully updated
+            updated_tracks = []  # This list will contain tracks that were successfully updated
             changes_log = []
 
             # Inner async function to process a single track for genre update
@@ -1689,9 +1652,7 @@ class MusicUpdater:
                             track.get("name", "Unknown"),
                         )  # Log track details
                 # else: # Optional: Log why a track was skipped
-                elif (
-                    track_id
-                ):  # If track_id exists but update wasn't needed or possible
+                elif track_id:  # If track_id exists but update wasn't needed or possible
                     if old_genre == dom_genre:
                         self.console_logger.debug(
                             f"Skipping track {track_id} "
@@ -1736,9 +1697,7 @@ class MusicUpdater:
                         artist_tracks,
                         self.error_logger,
                     )
-                except (
-                    Exception
-                ) as e:  # Catch potential exceptions from utility function
+                except Exception as e:  # Catch potential exceptions from utility function
                     self.error_logger.error(
                         "Error determining dominant genre for artist '%s': %s",
                         artist,
@@ -1754,9 +1713,7 @@ class MusicUpdater:
                     len(artist_tracks),
                 )
 
-                if (
-                    dom_genre != "Unknown"
-                ):  # Only process if a dominant genre was determined
+                if dom_genre != "Unknown":  # Only process if a dominant genre was determined
                     for track in artist_tracks:
                         # Create a task for each track that might need a genre update
                         if track.get("genre", "Unknown") != dom_genre:
@@ -1969,9 +1926,7 @@ class MusicUpdater:
         if not tracks:
             self.console_logger.warning(f"No tracks found{artist_msg}.")
             # Update last run timestamp even if no tracks processed, to respect interval
-            if (
-                not force_year_update and artist is None
-            ):  # Only update if it was a full incremental scan attempt
+            if not force_year_update and artist is None:  # Only update if it was a full incremental scan attempt
                 await self.update_last_incremental_run()  # Use method of this class
             return
 
@@ -1979,9 +1934,7 @@ class MusicUpdater:
         all_tracks = [track.copy() for track in tracks]
 
         # First, try to fill missing years using a simple Discogs lookup
-        tracks_without_year = [
-            t for t in all_tracks if not self._is_valid_year(t.get("new_year", t.get("year", "")).strip())
-        ]
+        tracks_without_year = [t for t in all_tracks if not self._is_valid_year(t.get("new_year", t.get("year", "")).strip())]
         discogs_updates, discogs_changes = await self.update_years_from_discogs(tracks_without_year)
 
         updated_y: list[dict[str, str]] = discogs_updates
@@ -2006,22 +1959,14 @@ class MusicUpdater:
                 last_run_time = await self.cache_service.get_last_run_timestamp()
                 self.console_logger.info(
                     "Last incremental run timestamp: %s",
-                    (
-                        last_run_time.strftime("%Y-%m-%d %H:%M:%S")
-                        if last_run_time != datetime.min
-                        else "Never or Failed"
-                    ),
+                    (last_run_time.strftime("%Y-%m-%d %H:%M:%S") if last_run_time != datetime.min else "Never or Failed"),
                 )  # Log full timestamp
-                effective_last_run = (
-                    last_run_time  # Use actual last run time for incremental
-                )
+                effective_last_run = last_run_time  # Use actual last run time for incremental
             except Exception as e:
                 self.error_logger.warning(
                     f"Could not get last run timestamp from cache service: {e}. Assuming full run.",
                 )
-                effective_last_run = (
-                    datetime.min
-                )  # Fallback to full run if timestamp retrieval fails
+                effective_last_run = datetime.min  # Fallback to full run if timestamp retrieval fails
 
         # --- Determine which albums require full processing ---
         # Collect albums that need full processing due to various criteria
@@ -2060,9 +2005,7 @@ class MusicUpdater:
                     date_added = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
                     if date_added > effective_last_run:
                         if album_key not in albums_for_full_processing:
-                            albums_for_full_processing[album_key] = (
-                                "Added since last run"
-                            )
+                            albums_for_full_processing[album_key] = "Added since last run"
                             self.console_logger.debug(
                                 f"Album '{artist} - {album}' marked for full processing: Added since last run.",
                             )
@@ -2077,18 +2020,11 @@ class MusicUpdater:
                 # 2. Check for status change (e.g., prerelease -> subscription)
                 previous_track = previous_track_data.get(track_id)
                 if previous_track:
-                    previous_status = (
-                        previous_track.get("trackStatus", "").strip().lower()
-                    )
+                    previous_status = previous_track.get("trackStatus", "").strip().lower()
                     # Condition: current is 'subscription' AND previous was not 'subscription'
-                    if (
-                        current_status == "subscription"
-                        and previous_status != "subscription"
-                    ):
+                    if current_status == "subscription" and previous_status != "subscription":
                         if album_key not in albums_for_full_processing:
-                            albums_for_full_processing[album_key] = (
-                                "Status changed to subscription"
-                            )
+                            albums_for_full_processing[album_key] = "Status changed to subscription"
                             self.console_logger.debug(
                                 f"Album '{artist} - {album}' marked for full processing:"
                                 f"Track status changed from '{previous_status}' to '{current_status}'",
@@ -2100,17 +2036,13 @@ class MusicUpdater:
                 # Use injected pending_verification_service if available
                 if self.pending_verification_service:
                     # Check if the *album* (artist, album) is in the pending list
-                    is_pending = (
-                        await self.pending_verification_service.is_verification_needed(
-                            artist,
-                            album,
-                        )
+                    is_pending = await self.pending_verification_service.is_verification_needed(
+                        artist,
+                        album,
                     )  # Check if album needs verification
                     if is_pending:
                         if album_key not in albums_for_full_processing:
-                            albums_for_full_processing[album_key] = (
-                                "Pending verification"
-                            )
+                            albums_for_full_processing[album_key] = "Pending verification"
                             self.console_logger.debug(
                                 f"Album '{artist} - {album}' marked for full processing: Pending verification.",
                             )
@@ -2121,9 +2053,7 @@ class MusicUpdater:
             self.error_logger.error(
                 f"Error processing tracks for full processing check: {e}",
             )
-            albums_for_full_processing = (
-                {}
-            )  # Ensure we pass an empty dict if there's an error
+            albums_for_full_processing = {}  # Ensure we pass an empty dict if there's an error
 
         # Log the identified albums for debugging
         self.console_logger.info(
@@ -2139,18 +2069,12 @@ class MusicUpdater:
             self.console_logger.info(
                 "Force mode is ON. All %d unique albums will be fully processed.",
                 len(
-                    {
-                        (t.get("artist"), t.get("album"))
-                        for t in all_tracks
-                        if t.get("artist") and t.get("album")
-                    },
+                    {(t.get("artist"), t.get("album")) for t in all_tracks if t.get("artist") and t.get("album")},
                 ),
             )
             # In force mode, override the identified albums to include all unique albums in all_tracks
             albums_for_full_processing = {
-                (t.get("artist", "Unknown"), t.get("album", "Unknown")): "Force mode"
-                for t in all_tracks
-                if t.get("artist") and t.get("album")
+                (t.get("artist", "Unknown"), t.get("album", "Unknown")): "Force mode" for t in all_tracks if t.get("artist") and t.get("album")
             }
 
         self.console_logger.info(
@@ -2281,29 +2205,20 @@ class MusicUpdater:
             )
             return
 
-        albums_to_verify: list[tuple[str, str, datetime]] = (
-            []
-        )  # List to store (artist, album, timestamp) tuples
+        albums_to_verify: list[tuple[str, str, datetime]] = []  # List to store (artist, album, timestamp) tuples
 
         if force:
             # Get all pending albums if force is true
             # get_all_pending_albums is async
-            all_pending_raw = (
-                await self.pending_verification_service.get_all_pending_albums()
-            )
-            albums_to_verify = [
-                (artist, album, timestamp)
-                for timestamp, artist, album in all_pending_raw
-            ]
+            all_pending_raw = await self.pending_verification_service.get_all_pending_albums()
+            albums_to_verify = [(artist, album, timestamp) for timestamp, artist, album in all_pending_raw]
             self.console_logger.info(
                 f"Force verification for all {len(albums_to_verify)} pending albums.",
             )
         else:
             # Get album keys needing verification based on interval
             # get_verified_album_keys is async
-            verified_keys = (
-                await self.pending_verification_service.get_verified_album_keys()
-            )
+            verified_keys = await self.pending_verification_service.get_verified_album_keys()
             self.console_logger.info(
                 f"Found {len(verified_keys)} album keys needing verification based on interval.",
             )
@@ -2313,17 +2228,13 @@ class MusicUpdater:
             # to get details by key would be better, or iterate the result of get_all_pending_albums
             # and filter by keys. Let's iterate get_all_pending_albums and filter.
             if verified_keys:
-                all_pending_raw = (
-                    await self.pending_verification_service.get_all_pending_albums()
-                )
+                all_pending_raw = await self.pending_verification_service.get_all_pending_albums()
                 # Use the same key generation as PendingVerificationService to filter
                 for (
                     timestamp,
                     artist,
                     album,
-                ) in (
-                    all_pending_raw
-                ):  # Note: tuple is (timestamp, artist, album) in service
+                ) in all_pending_raw:  # Note: tuple is (timestamp, artist, album) in service
                     album_key = self.pending_verification_service._generate_album_key(
                         artist,
                         album,
@@ -2351,9 +2262,7 @@ class MusicUpdater:
             return
 
         # Group tracks by album (artist, album) for easy lookup
-        all_tracks_grouped_by_album: dict[tuple[str, str], list[dict[str, str]]] = (
-            defaultdict(list)
-        )
+        all_tracks_grouped_by_album: dict[tuple[str, str], list[dict[str, str]]] = defaultdict(list)
         for track in all_tracks_fetched:
             artist = track.get("artist", "").strip()
             album = track.get("album", "").strip()
@@ -2519,22 +2428,14 @@ class MusicUpdater:
                 last_run_time = await self.cache_service.get_last_run_timestamp()
                 self.console_logger.info(
                     "Last incremental run timestamp: %s",
-                    (
-                        last_run_time.strftime("%Y-%m-%d %H:%M:%S")
-                        if last_run_time != datetime.min
-                        else "Never or Failed"
-                    ),
+                    (last_run_time.strftime("%Y-%m-%d %H:%M:%S") if last_run_time != datetime.min else "Never or Failed"),
                 )  # Log full timestamp
-                effective_last_run = (
-                    last_run_time  # Use actual last run time for incremental
-                )
+                effective_last_run = last_run_time  # Use actual last run time for incremental
             except Exception as e:
                 self.error_logger.warning(
                     f"Could not get last run timestamp from cache service: {e}. Assuming full run.",
                 )
-                effective_last_run = (
-                    datetime.min
-                )  # Fallback to full run if timestamp retrieval fails
+                effective_last_run = datetime.min  # Fallback to full run if timestamp retrieval fails
 
         # --- Fetch Tracks (respecting test_artists if set globally) ---
         all_tracks: list[dict[str, str]] = []
@@ -2546,9 +2447,7 @@ class MusicUpdater:
             self.console_logger.info(
                 f"Development mode: Fetching tracks only for test_artists: {test_artists_config}",
             )
-            fetched_track_map = (
-                {}
-            )  # Use map to avoid duplicates if artist listed multiple times
+            fetched_track_map = {}  # Use map to avoid duplicates if artist listed multiple times
             for art in test_artists_config:
                 # Use injected fetch_tracks_async method
                 art_tracks = await self.fetch_tracks_async(
@@ -2659,9 +2558,7 @@ class MusicUpdater:
                     )
 
         # Run cleaning tasks concurrently
-        clean_tasks_default = [
-            asyncio.create_task(clean_track_default(t)) for t in all_tracks
-        ]
+        clean_tasks_default = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
         await asyncio.gather(*clean_tasks_default)
         if updated_tracks_cleaning:
             self.console_logger.info(
@@ -2871,27 +2768,13 @@ def main() -> None:
         )
 
         # --- Handle Dry Run mode ---
-        # Dry run logic is now handled by calling dry_run.main() which has its own DI setup
         if args.dry_run:
             local_console_logger.info(
                 "Running in dry-run mode. No changes will be applied.",
             )
-            try:
-                # dry_run.main() is an async function, need asyncio.run here
-                # dry_run.main() now gets its own loggers and config internally.
-                # Ideally, dry_run.main should receive loggers/listener from here to share
-                # the same logging setup, but for now, we keep it separate as refactored earlier.
-                # This part needs careful consideration for shared logging/DI in dry run.
-                # For now, stick to the current call, acknowledging dry_run might have its own logger setup.
-                dry_run.main()
-            except Exception as dry_run_err:
-                local_error_logger.error(
-                    f"Error during dry run: {dry_run_err}",
-                    exc_info=True,
-                )
-                sys.exit(1)  # Exit with error code
-            # After dry run completes, exit the script. Cleanup is in finally.
-            sys.exit(0)
+            CONFIG["dry_run"] = True
+        else:
+            CONFIG["dry_run"] = False
 
         # --- Dependency Injection Container Setup ---
         deps = None  # Initialize to None to prevent 'possibly unbound' warning
@@ -2994,6 +2877,20 @@ def main() -> None:
         try:
             # This asyncio.run starts the main event loop for the command execution
             asyncio.run(run_main_commands(deps, args))
+            if CONFIG.get("dry_run", False):
+                actions = getattr(deps.ap_client, "get_actions", lambda: [])()
+                if actions:
+                    local_console_logger.info("\nDRY-RUN summary of AppleScript calls:")
+                    for action in actions:
+                        if "script" in action:
+                            local_console_logger.info(
+                                "Would run %s with args %s",
+                                action["script"],
+                                action.get("args", []),
+                            )
+                        elif "code" in action:
+                            local_console_logger.info("Would execute inline AppleScript code")
+
         except KeyboardInterrupt:
             # Log interruption using loggers from deps
             deps.get_console_logger().info(
@@ -3065,8 +2962,7 @@ def main() -> None:
                 error_logger_for_shutdown = (
                     deps.get_error_logger()
                     if deps and hasattr(deps, "get_error_logger")
-                    else ("local_error_logger" in locals() and local_error_logger)
-                    or None
+                    else ("local_error_logger" in locals() and local_error_logger) or None
                 )
                 if error_logger_for_shutdown:
                     error_logger_for_shutdown.error(
@@ -3103,9 +2999,7 @@ def main() -> None:
         elif "local_listener" in locals() and local_listener:
             try:
                 # Use the console logger if available, otherwise print
-                logger_for_listener_stop = (
-                    "local_console_logger" in locals() and local_console_logger
-                ) or None
+                logger_for_listener_stop = ("local_console_logger" in locals() and local_console_logger) or None
                 if logger_for_listener_stop:
                     logger_for_listener_stop.info(
                         "Stopping QueueListener (deps not created)...",

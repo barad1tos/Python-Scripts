@@ -32,9 +32,7 @@ except ImportError as e:
     raise ImportError("Cerberus library is required") from e
 
 # Define constants
-LOG_LEVELS = [
-    "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET"
-]
+LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET"]
 REQUIRED_ENV_VARS = ["DISCOGS_TOKEN", "CONTACT_EMAIL"]
 
 # Set up logger
@@ -56,6 +54,7 @@ CONFIG_SCHEMA = {
         "required": True,
         "schema": {"prevent_bytecode": {"type": "boolean", "required": True}},
     },
+    "dry_run": {"type": "boolean", "required": False, "default": False},
     # 2. EXECUTION AND PERFORMANCE
     "apple_script_concurrency": {"type": "integer", "required": True, "min": 1},
     "applescript_timeout_seconds": {"type": "integer", "required": True, "min": 1},
@@ -429,7 +428,7 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
 def _format_cerberus_errors(errors: dict, indent: int = 2) -> str:
     lines = []
     for field, errs in errors.items():
-        prefix = ' ' * indent
+        prefix = " " * indent
         if isinstance(errs, list):
             lines.append(f"{prefix}Field '{field}': {', '.join(str(e) for e in errs)}")
         elif isinstance(errs, dict):
@@ -449,9 +448,7 @@ def validate_required_env_vars():
         else:
             logger.debug(f"Environment variable '{var}' is set.")
     if missing:
-        raise OSError(
-            f"Required environment variables missing or invalid: {', '.join(missing)}"
-        )
+        raise OSError(f"Required environment variables missing or invalid: {', '.join(missing)}")
 
 
 def load_config(config_path: str) -> dict[str, Any]:
@@ -472,9 +469,7 @@ def load_config(config_path: str) -> dict[str, Any]:
     """
     # Load environment variables from .env file if it exists
     env_loaded = load_dotenv()
-    logger.info(
-        f".env file {'found and loaded' if env_loaded else 'not found, using system environment variables'}"
-    )
+    logger.info(f".env file {'found and loaded' if env_loaded else 'not found, using system environment variables'}")
 
     # Validate required environment variables
     validate_required_env_vars()
@@ -501,7 +496,7 @@ def load_config(config_path: str) -> dict[str, Any]:
         logger.critical(f"Failed to parse YAML config: {e}")
         raise
 
-    #1: Initialization and basic validation according to the scheme
+    # 1: Initialization and basic validation according to the scheme
     validator = Validator(schema=CONFIG_SCHEMA, allow_unknown=False)
 
     if not validator.validate(config_data):
