@@ -11,6 +11,9 @@ Refactored to use Dependency Injection for accessing services like
 AppleScriptClient and loggers.
 """
 
+from __future__ import annotations
+
+# Standard library imports
 import asyncio
 import logging
 import os
@@ -18,12 +21,15 @@ import sys
 import time
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
+# Third-party imports
 # trunk-ignore(mypy/import-untyped)
 # trunk-ignore(mypy/note)
 import yaml
 
+
+# Local application imports
 from services.applescript_client import AppleScriptClient
 from services.dependencies_service import DependencyContainer
 from utils.config import load_config
@@ -33,8 +39,8 @@ from utils.metadata import (
     determine_dominant_genre_for_artist,
     group_tracks_by_artist,
     has_genre,
-    merge_genres,
     is_music_app_running,
+    merge_genres,
     parse_tracks,
 )
 from utils.reports import save_unified_dry_run
@@ -67,13 +73,15 @@ class DryRunAppleScriptClient:
         console_logger: logging.Logger,
         error_logger: logging.Logger,
     ) -> None:
-        self._real_client = AppleScriptClient(config, console_logger, error_logger)
+        """Initialize the DryRunAppleScriptClient with necessary services."""
+        self._real_client: AppleScriptClient = AppleScriptClient(config, console_logger, error_logger)
         self.console_logger = console_logger
         self.error_logger = error_logger
         self.config = config
         self.actions: list[dict[str, Any]] = []
 
     async def initialize(self) -> None:
+        """Initialize the client."""
         await self._real_client.initialize()
 
     async def run_script(
@@ -82,8 +90,17 @@ class DryRunAppleScriptClient:
         arguments: list[str] | None = None,
         timeout: float | None = None,
     ) -> str | None:
+        """Execute an AppleScript script in dry run mode."""
         if script_name.startswith("fetch"):
-            return await self._real_client.run_script(script_name, arguments, timeout)
+            result = await self._real_client.run_script(script_name, arguments, timeout)
+            if not isinstance(result, str | None):
+                self.error_logger.warning(
+                    "Unexpected return type from _real_client.run_script: %s",
+                    type(result).__name__,
+                )
+                return None
+            return result
+
         self.console_logger.info(
             "DRY-RUN: Would run %s with args: %s",
             script_name,
@@ -98,12 +115,95 @@ class DryRunAppleScriptClient:
         arguments: list[str] | None = None,
         timeout: float | None = None,
     ) -> str | None:
-        self.console_logger.info("DRY-RUN: Would execute inline AppleScript")
-        self.actions.append({"code": script_code, "args": arguments or []})
-        return "Success (dry run)"
+        """Execute inline AppleScript in dry run mode with optional timeout.
+
+        Args:
+            script_code: The AppleScript code to execute
+            arguments: Optional list of arguments to pass to the script
+            timeout: Maximum time in seconds to wait for execution, or None for no timeout
+
+        Returns:
+            str: Success message if successful, None otherwise
+
+        """
+        async def _execute() -> str:
+            """Execute the dry-run operation."""
+            self.console_logger.info("DRY-RUN: Would execute inline AppleScript")
+            self.actions.append({"code": script_code, "args": arguments or []})
+            return "Success (dry run)"
+
+        try:
+            if timeout is not None:
+                return await asyncio.wait_for(_execute(), timeout=timeout)
+            return await _execute()
+        except TimeoutError:
+            self.error_logger.error(
+                "Timeout after %s seconds while executing AppleScript", timeout
+            )
+            return None
+        except Exception as e:
+            self.error_logger.error(
+                "Error executing AppleScript: %s", str(e), exc_info=True
+            )
+            return None
 
     def get_actions(self) -> list[dict[str, Any]]:
+        """Get the list of actions performed during the dry run."""
         return self.actions
+
+
+@runtime_checkable
+class AppleScriptClientProtocol(Protocol):
+    """Protocol defining the interface for AppleScript clients.
+
+    This allows both AppleScriptClient and DryRunAppleScriptClient to be used
+    interchangeably as long as they implement these methods.
+    """
+
+    async def run_script(
+        self,
+        script_name: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Run an AppleScript by name.
+
+        Args:
+            script_name: Name of the script to run
+            arguments: Optional list of arguments to pass to the script
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Script output as string, or None if failed
+
+        """
+        ...
+
+    async def run_script_code(
+        self,
+        script_code: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Run raw AppleScript code.
+
+        Args:
+            script_code: The AppleScript code to execute
+            arguments: Optional list of arguments to pass to the script
+            timeout: Optional timeout in seconds
+
+        Returns:
+            Script output as string, or None if failed
+
+        """
+        ...
+
+    async def initialize(self) -> None:
+        """Initialize the AppleScript client.
+
+        This method should be called before any other methods.
+        """
+        ...
 
 
 class DryRunProcessor:
@@ -114,7 +214,7 @@ class DryRunProcessor:
         config: dict[str, Any],
         console_logger: logging.Logger,
         error_logger: logging.Logger,
-        ap_client: AppleScriptClient,
+        ap_client: AppleScriptClientProtocol,
     ):
         """Initialize the DryRunProcessor with necessary services."""
         self.config = config
