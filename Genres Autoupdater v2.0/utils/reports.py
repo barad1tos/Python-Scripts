@@ -32,8 +32,6 @@ import os
 from datetime import datetime
 from typing import Any
 
-import yaml
-
 from services.cache_service import CacheService
 from utils.logger import (
     ensure_directory,
@@ -446,25 +444,23 @@ def save_changes_report(
     )
 
 
-def save_changes_report_yaml(
+def save_changes_csv(
     changes: list[dict[str, str]],
     file_path: str,
     console_logger: logging.Logger | None = None,
     error_logger: logging.Logger | None = None,
+    force_mode: bool = False,
+    add_timestamp: bool = True,
 ) -> None:
-    """Save the list of change dictionaries to a YAML file."""
-    if console_logger is None:
-        console_logger = logging.getLogger("console_logger")
-    if error_logger is None:
-        error_logger = logging.getLogger("error_logger")
-
-    try:
-        ensure_directory(os.path.dirname(file_path), error_logger)
-        with open(file_path, "w", encoding="utf-8") as f:
-            yaml.dump(changes, f, allow_unicode=True)
-        console_logger.info("Changes report saved to %s", file_path)
-    except Exception as e:  # pragma: no cover - simple file write
-        error_logger.error("Failed to save YAML changes report: %s", e)
+    """Compatibility wrapper for saving change reports in CSV format."""
+    save_changes_report(
+        changes,
+        file_path,
+        console_logger,
+        error_logger,
+        force_mode,
+        add_timestamp,
+    )
 
 
 def save_unified_dry_run(

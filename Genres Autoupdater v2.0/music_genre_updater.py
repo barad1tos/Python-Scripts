@@ -75,8 +75,8 @@ from utils.metadata import (
 # Import the DependencyContainer for service management
 from utils.reports import (
     load_track_list,
+    save_changes_csv,
     save_changes_report,
-    save_changes_report_yaml,
     save_to_csv,
     sync_track_list_with_current,
 )
@@ -2674,18 +2674,12 @@ class MusicUpdater:
                 "csv/changes_report.csv",
                 self.error_logger,
             )
-            save_changes_report(
+            save_changes_csv(
                 all_changes,
                 report_csv,
                 self.console_logger,
                 self.error_logger,
                 force_mode=args.force,
-            )
-            save_changes_report_yaml(
-                all_changes,
-                os.path.splitext(report_csv)[0] + ".yaml",
-                self.console_logger,
-                self.error_logger,
             )
             self.console_logger.info(
                 "Processing complete. Logged %d changes.",
