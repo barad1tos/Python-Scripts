@@ -444,6 +444,25 @@ def save_changes_report(
     )
 
 
+def save_changes_csv(
+    changes: list[dict[str, str]],
+    file_path: str,
+    console_logger: logging.Logger | None = None,
+    error_logger: logging.Logger | None = None,
+    force_mode: bool = False,
+    add_timestamp: bool = True,
+) -> None:
+    """Compatibility wrapper for saving change reports in CSV format."""
+    save_changes_report(
+        changes,
+        file_path,
+        console_logger,
+        error_logger,
+        force_mode,
+        add_timestamp,
+    )
+
+
 def save_unified_dry_run(
     cleaning_changes: list[dict[str, str]],
     genre_changes: list[dict[str, str]],

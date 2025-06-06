@@ -75,6 +75,7 @@ from utils.metadata import (
 # Import the DependencyContainer for service management
 from utils.reports import (
     load_track_list,
+    save_changes_csv,
     save_changes_report,
     save_to_csv,
     sync_track_list_with_current,
@@ -2667,17 +2668,18 @@ class MusicUpdater:
             )
             # Use utility function save_unified_changes_report
             # Use config from self.config, injected loggers
-            save_changes_report(
+            report_csv = get_full_log_path(
+                self.config,
+                "changes_report_file",
+                "csv/changes_report.csv",
+                self.error_logger,
+            )
+            save_changes_csv(
                 all_changes,
-                get_full_log_path(
-                    self.config,
-                    "changes_report_file",
-                    "csv/changes_report.csv",
-                    self.error_logger,
-                ),  # Pass error_logger
+                report_csv,
                 self.console_logger,
                 self.error_logger,
-                force_mode=args.force,  # Use force flag for console output if needed
+                force_mode=args.force,
             )
             self.console_logger.info(
                 "Processing complete. Logged %d changes.",
