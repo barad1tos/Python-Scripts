@@ -41,7 +41,7 @@ import time
 import urllib.parse
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime as dt
 from typing import Any
 
 import aiohttp
@@ -297,7 +297,7 @@ class ExternalApiService:
             "definitive_score_threshold", 85
         )
         self.definitive_score_diff = logic_config.get("definitive_score_diff", 15)
-        self.current_year = datetime.now().year
+        self.current_year = dt.now().year
         # ----------------------------------
 
         # --- Caching ---
@@ -2324,31 +2324,92 @@ class ExternalApiService:
             album_norm,
             None,
         )
-        years = [
-            r.get("year")
-            for r in results
-            if r.get("year") and self._is_valid_year(str(r.get("year")))
-        ]
-        if years:
-            return str(min(int(y) for y in years))
+        valid_years = []
+        for r in results:
+            year = r.get("year")
+            if year is None:
+                continue
+
+            # Ensure year is a string for validation
+            year_str = str(year).strip()
+            if not year_str:
+                continue
+
+            if not self._is_valid_year(year_str):
+                continue
+
+            try:
+                # Explicitly handle different numeric types
+                if isinstance(year, int | float):
+                    year_int = int(year)
+                else:
+                    year_int = int(year_str)
+                valid_years.append(year_int)
+            except (TypeError, ValueError) as e:
+                self.error_logger.debug(
+                    f"Invalid year value {year!r} (type: {type(year).__name__}): {e!s}"
+                )
+                continue
+
+        if valid_years:
+            try:
+                return str(min(valid_years))
+            except (ValueError, TypeError) as e:
+                self.error_logger.debug(f"Error finding minimum year: {e!s}")
+                return None
         return None
 
     def _is_valid_year(self, year_str: str | None) -> bool:
-        """Check if a string represents a valid release year."""
-        if (
-            not year_str
-            or not isinstance(year_str, str)
-            or not year_str.isdigit()
-            or len(year_str) != YEAR_LENGTH
-        ):
-            return False
+        """Check if a string represents a valid release year.
+
+        Args:
+            year_str: The year string to validate
+
+        Returns:
+            bool: True if the year is valid, False otherwise
+
+        """
         try:
+            # Basic validation
+            if not year_str or not isinstance(year_str, str):
+                return False
+
+            # Check if it's a 4-digit number
+            if not (year_str.isdigit() and len(year_str) == YEAR_LENGTH):
+                return False
+
+            # Convert to integer once
             year = int(year_str)
-            # Check against configured min year and allow a few years into the future
-            # Cast to int to ensure type checker knows we're returning a bool
-            min_year = int(self.min_valid_year)
-            max_year = int(self.current_year) + 5
+
+            # Get min and max year bounds
+            min_year = 1900  # Default minimum year
+            if hasattr(self, 'min_valid_year') and self.min_valid_year is not None:
+                try:
+                    min_year = int(self.min_valid_year)
+                except (TypeError, ValueError) as e:
+                    self.error_logger.debug(
+                        f"Invalid min_valid_year: {self.min_valid_year!r}, "
+                        f"using default {min_year}. Error: {e!s}"
+                    )
+
+            current_year = dt.now().year  # Default to current year
+            if hasattr(self, 'current_year') and self.current_year is not None:
+                try:
+                    current_year = int(self.current_year)
+                except (TypeError, ValueError) as e:
+                    self.error_logger.debug(
+                        f"Invalid current_year: {self.current_year!r}, "
+                        f"using default {current_year}. Error: {e!s}"
+                    )
+
+            # Allow up to 5 years in the future
+            max_year = current_year + 5
+
             return min_year <= year <= max_year
-        except ValueError:
-            # Should not happen due to isdigit, but included for safety
+
+        except Exception as e:
+            self.error_logger.debug(
+                f"Error validating year {year_str!r}: {e!s}",
+                exc_info=True
+            )
             return False
