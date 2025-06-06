@@ -856,7 +856,7 @@ When running in `verify_database` mode:
 
 2. **Track Filtering**:
 
-   - Apply test_artists filter if configured
+   - If running with `--dry-run` and `test_artists` is configured, limit verification to those artists
    - Log number of tracks to verify
 
 3. **Verification Process**:
@@ -949,11 +949,11 @@ retry_delay_seconds: 1 # Delay between retries
 #### Testing and Development
 
 ```yaml
-# Optional: limit to specific artists for testing
+# Optional: limit to specific artists for dry-run testing
 test_artists: [] # Example: ["Metallica", "Spiritbox"]
 ```
 
-- **test_artists**: When populated, limits operations to specified artists (for testing)
+- **test_artists**: When populated **and** running with `--dry-run`, limits operations to the specified artists
 
 #### Logging Configuration
 
