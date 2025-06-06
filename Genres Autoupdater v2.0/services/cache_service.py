@@ -22,6 +22,7 @@ called by DependencyContainer after service instantiation.
 
 import asyncio
 import csv
+import json
 import hashlib
 import os
 import sys
@@ -72,6 +73,11 @@ class CacheService:
             config, "album_cache_csv", "csv/cache_albums.csv", error_logger
         )  # Use utility function
 
+        # Persistent cache file for general API responses
+        self.cache_file = get_full_log_path(
+            config, "api_cache_file", "cache.json", error_logger
+        )
+
         # In-memory album years cache
         # key: hash of "artist|album", value: (year, artist, album)
         self.album_years_cache: dict[str, tuple[str, str, str]] = {}
@@ -90,8 +96,11 @@ class CacheService:
         This method must be called after instantiation.
         """
         self.console_logger.info("Initializing CacheService asynchronously...")
+        await self.load_cache()
         await self._load_album_years_cache()
-        self.console_logger.info("CacheService asynchronous initialization complete.")
+        self.console_logger.info(
+            "CacheService asynchronous initialization complete."
+        )
 
     def _generate_album_key(self, artist: str, album: str) -> str:
         """Generate a unique hash key for an album based on artist and album names.
@@ -229,6 +238,59 @@ class CacheService:
         """
         self.cache.clear()
         self.console_logger.info("All in-memory generic cache entries cleared.")
+
+    async def load_cache(self) -> None:
+        """Load the persistent generic cache from disk asynchronously."""
+        loop = asyncio.get_event_loop()
+
+        def blocking_load() -> dict[str, tuple[Any, float]]:
+            if not os.path.exists(self.cache_file):
+                return {}
+            try:
+                with open(self.cache_file, encoding="utf-8") as f:
+                    data = json.load(f)
+                result: dict[str, tuple[Any, float]] = {}
+                for k, v in data.items():
+                    if (
+                        isinstance(v, list)
+                        and len(v) == 2
+                        and isinstance(v[1], (int, float))
+                    ):
+                        if not self._is_expired(float(v[1])):
+                            result[k] = (v[0], float(v[1]))
+                return result
+            except Exception as e:  # pragma: no cover - best effort logging
+                self.error_logger.error(
+                    f"Error loading cache from {self.cache_file}: {e}"
+                )
+                return {}
+
+        self.cache = await loop.run_in_executor(None, blocking_load)
+        self.console_logger.info(
+            f"Loaded {len(self.cache)} cached entries from {self.cache_file}"
+        )
+
+    async def save_cache(self) -> None:
+        """Persist the generic cache to disk asynchronously."""
+        loop = asyncio.get_event_loop()
+
+        def blocking_save() -> None:
+            try:
+                os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+                data = {
+                    k: [v, exp]
+                    for k, (v, exp) in self.cache.items()
+                    if not self._is_expired(exp)
+                }
+                with open(self.cache_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f)
+            except Exception as e:  # pragma: no cover - best effort logging
+                print(
+                    f"ERROR saving cache to {self.cache_file}: {e}",
+                    file=sys.stderr,
+                )
+
+        await loop.run_in_executor(None, blocking_save)
 
     async def _load_album_years_cache(self) -> None:
         """Load album years cache from CSV file into memory asynchronously.
@@ -576,3 +638,4 @@ class CacheService:
         Useful before application shutdown to ensure data persistence.
         """
         await self._sync_cache_if_needed(force=True)
+        await self.save_cache()

@@ -519,9 +519,11 @@ The `CacheService` class (services/cache_service.py) provides multi-tiered cachi
 - **Caching Levels**:
   - **In-Memory Cache**: Fast key-value store with TTL support
   - **Album Year CSV Cache**: Persistent storage for album years
+  - **API Cache JSON**: Persists generic API responses between runs
 - **Key Methods**:
   - **`get_async(key_data, compute_func)`**: Fetch from cache or compute if missing
   - **`set_async(key_data, value, ttl)`**: Store value in cache with optional TTL
+  - **`load_cache()` / `save_cache()`**: Persist generic API cache to JSON file
   - **`get_album_year_from_cache(artist, album)`**: Get album year from CSV
   - **`store_album_year_in_cache(artist, album, year)`**: Save album year to CSV
 - **Important Features**:
