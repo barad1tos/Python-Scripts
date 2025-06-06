@@ -359,7 +359,9 @@ def clean_names(
     remaster_keywords = cleaning_config.get(
         "remaster_keywords", ["remaster", "remastered"]
     )
-    album_suffixes = set(cleaning_config.get("album_suffixes_to_remove", []))
+    album_suffixes = cleaning_config.get("album_suffixes_to_remove", [])
+    # Sort suffixes by length in descending order to remove longer patterns first
+    album_suffixes = sorted(album_suffixes, key=len, reverse=True)
 
     # Helper function for cleaning strings using remove_parentheses_with_keywords
     def clean_string(val: str, keywords: list[str]) -> str:
@@ -380,17 +382,25 @@ def clean_names(
     cleaned_track = clean_string(track_name, remaster_keywords)
     cleaned_album = clean_string(album_name, remaster_keywords)
 
-    # Remove specified album suffixes
-    for suffix in album_suffixes:
-        if cleaned_album.endswith(suffix):
-            # Perform removal only if the suffix is at the very end
-            cleaned_album = cleaned_album[: -len(suffix)].strip()
-            # Log the removal
-            console_logger.info(
-                "Removed suffix '%s' from album. New album name: '%s'",
-                suffix,
-                cleaned_album,
-            )
+    # Remove specified album suffixes in a case-insensitive manner
+    # and ensure leftover punctuation/whitespace is stripped
+    removed = True
+    while removed:
+        removed = False
+        for suffix in album_suffixes:
+            if cleaned_album.lower().endswith(suffix.lower()):
+                before = cleaned_album
+                cleaned_album = cleaned_album[: -len(suffix)]
+                # Strip trailing spaces, tabs, dashes and parentheses
+                cleaned_album = re.sub(r"[ \t\-\u2013\u2014()]+$", "", cleaned_album)
+                console_logger.debug(
+                    "Removed suffix '%s' from album '%s'; result '%s'",
+                    suffix,
+                    before,
+                    cleaned_album,
+                )
+                removed = True
+                break
 
     # Log the cleaning results
     console_logger.info(
