@@ -392,7 +392,7 @@ def clean_names(
                 before = cleaned_album
                 cleaned_album = cleaned_album[: -len(suffix)]
                 # Strip trailing spaces, tabs, dashes and parentheses
-                cleaned_album = re.sub(r"[ \t\-\u2013\u2014()]+$", "", cleaned_album)
+                cleaned_album = re.sub(r'[\s\-\u2013\u2014()]+$', '', cleaned_album)
                 console_logger.debug(
                     "Removed suffix '%s' from album '%s'; result '%s'",
                     suffix,
