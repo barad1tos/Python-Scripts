@@ -672,6 +672,7 @@ def get_loggers(
         analytics_logger = setup_logger("analytics_logger", analytics_file_level)
         setup_logger("year_updates", year_updates_file_level)
         setup_logger("db_verify", year_updates_file_level)
+        setup_logger("config", main_file_level)
 
         console_logger.debug("Logging setup with QueueListener and RichHandler complete.")
         return console_logger, error_logger, analytics_logger, listener
