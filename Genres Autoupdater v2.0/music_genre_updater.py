@@ -51,7 +51,6 @@ from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
 # trunk-ignore(mypy/note)
 import yaml
 
-from dotenv import load_dotenv
 
 # Import necessary services and utilities
 from utils.analytics import Analytics  # Analytics is used in method decorators
@@ -124,16 +123,8 @@ if TYPE_CHECKING:
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "my-config.yaml")
 
-# Load environment variables from .env file
-print("\n[ENV] Loading environment variables...")
-load_dotenv()
-
-# Debug: Print important environment variables
-print(f"[ENV] Current working directory: {os.getcwd()}")
-print(f"[ENV] .env file path: {os.path.join(os.getcwd(), '.env')}")
-print(f"[ENV] DISCOGS_TOKEN: {'***set***' if os.getenv('DISCOGS_TOKEN') else 'MISSING'}")
-print(f"[ENV] CONTACT_EMAIL: {os.getenv('CONTACT_EMAIL', 'MISSING')}")
-print(f"[ENV] LASTFM_API_KEY: {'***set***' if os.getenv('LASTFM_API_KEY') else 'MISSING'}")
+# Environment variables are loaded inside ``load_config`` and logged after the
+# main logger is initialized.  Avoid loading or printing them at import time.
 
 
 def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
@@ -148,41 +139,16 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
     return config
 
 
-# Load environment variables from .env file if it exists
-load_dotenv()
 
-# Load and process CONFIG
+
+# Configuration constants
 UPDATE_PROPERTY_SCRIPT_NAME = "update_property.applescript"
 DEFAULT_TRACK_LIST_CSV_PATH = "csv/track_list.csv"
 DEFAULT_CHANGES_REPORT_CSV_PATH = "csv/changes_report.csv"
 
-try:
-    # Load and validate the config (environment variables are resolved inside load_config)
-    CONFIG = load_config(CONFIG_PATH)
-
-    # Log important config values for debugging
-    print("\n[CONFIG] Important configuration values:")
-    print(f"- Music library path: {CONFIG.get('music_library_path')}")
-
-    # Log API configuration
-    if "year_retrieval" in CONFIG and CONFIG["year_retrieval"].get("enabled", False):
-        api_auth = CONFIG["year_retrieval"].get("api_auth", {})
-        print("\n[CONFIG] API Configuration:")
-        print(
-            f"- Discogs token: {'***set***' if api_auth.get('discogs_token') else 'MISSING'}",
-        )
-        print(f"- Contact email: {api_auth.get('contact_email') or 'MISSING'}")
-        print(
-            f"- Last.fm API key: {'***set***' if api_auth.get('lastfm_api_key') else 'MISSING'}",
-        )
-        print(f"- Use Last.fm: {api_auth.get('use_lastfm', False)}")
-
-except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-    print(
-        f"\nFATAL ERROR: Failed to load or validate configuration: {e}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+# Configuration dictionary is loaded inside ``main`` after loggers are
+# initialized.  It is declared here for type checkers.
+CONFIG: dict[str, Any] | None = None
 
 
 # --- Utility functions (check_paths definition remains) ---
@@ -2670,13 +2636,19 @@ def main() -> None:
 
     # Initialize loggers and the QueueListener *before* creating DependencyContainer
     # These are needed by the DependencyContainer constructor and for early logging
-    # Ensure CONFIG is loaded at the module level or before this point
-    # CONFIG is loaded at the module level in this file, needed by get_loggers.
-    # If CONFIG loading fails at module level, script exits early.
-    # Assuming this is handled correctly.
+    # Load the raw configuration first to set up logging
+    try:
+        with open(CONFIG_PATH, encoding="utf-8") as f:
+            raw_config = yaml.safe_load(f) or {}
+    except Exception as e:  # pragma: no cover - fatal setup
+        print(
+            f"FATAL ERROR: Failed to read configuration for logging: {e}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Initialize loggers and the QueueListener using the module-level CONFIG
-    # This is the ONLY place get_loggers should be called
+    # Initialize loggers and the QueueListener using the raw config
+    # This is the ONLY place ``get_loggers`` should be called
     local_console_logger = None  # Initialize to None for error handling in finally
     local_error_logger = None
     local_analytics_logger = None
@@ -2684,19 +2656,12 @@ def main() -> None:
     deps = None  # Initialize deps to None for finally block
 
     try:
-        # Check if CONFIG exists (it should if module level load passed)
-        if "CONFIG" not in globals() or not isinstance(CONFIG, dict):
-            # This case should ideally not be reached if module level load works
-            raise ValueError("CONFIG not loaded or invalid at module level.")
-
-        # Initialize loggers and the QueueListener using the module-level CONFIG
-        # Store results in local variables
         (
             local_console_logger,
             local_error_logger,
             local_analytics_logger,
             local_listener,
-        ) = get_loggers(CONFIG)
+        ) = get_loggers(raw_config)
 
         # Log that loggers are initialized (should see this only ONCE)
         local_console_logger.info(
@@ -2707,6 +2672,35 @@ def main() -> None:
             local_console_logger.error(
                 "Main function: QueueListener failed to initialize. File logs might be missing.",
             )
+
+        # --- Load and Validate Configuration ---
+        global CONFIG  # noqa: PLW0603 - configuration is initialized here
+        try:
+            CONFIG = load_config(CONFIG_PATH)
+        except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
+            local_error_logger.critical(
+                "Failed to load or validate configuration: %s",
+                e,
+            )
+            sys.exit(1)
+
+        # Log important configuration values
+        local_console_logger.info("\n[CONFIG] Important configuration values:")
+        local_console_logger.info("- Music library path: %s", CONFIG.get("music_library_path"))
+
+        if "year_retrieval" in CONFIG and CONFIG["year_retrieval"].get("enabled", False):
+            api_auth = CONFIG["year_retrieval"].get("api_auth", {})
+            local_console_logger.info("\n[CONFIG] API Configuration:")
+            local_console_logger.info(
+                "- Discogs token: %s",
+                "***set***" if api_auth.get("discogs_token") else "MISSING",
+            )
+            local_console_logger.info("- Contact email: %s", api_auth.get("contact_email") or "MISSING")
+            local_console_logger.info(
+                "- Last.fm API key: %s",
+                "***set***" if api_auth.get("lastfm_api_key") else "MISSING",
+            )
+            local_console_logger.info("- Use Last.fm: %s", api_auth.get("use_lastfm", False))
 
         # --- Add safety check for listener (redundant if checked above, but harmless) ---
         # if local_listener is None:

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 
 from typing import Any
 
@@ -22,25 +21,25 @@ import yaml
 
 from dotenv import load_dotenv
 
+# Set up logger early so it's available for import errors
+logger = logging.getLogger("config")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
+)
+
 try:
     from cerberus import Validator
 except ImportError as e:
-    print(
-        f"Critical Error: Cerberus library not found. Please install it with: pip install cerberus\nDetails: {e}",
-        file=sys.stderr,
+    logger.critical(
+        "Cerberus library not found. Please install it with: pip install cerberus\nDetails: %s",
+        e,
     )
     raise ImportError("Cerberus library is required") from e
 
 # Define constants
 LOG_LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "NOTSET"]
 REQUIRED_ENV_VARS = ["DISCOGS_TOKEN", "CONTACT_EMAIL"]
-
-# Set up logger
-logger = logging.getLogger("config")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s]: %(message)s",
-)
 
 # Define the schema for the configuration file
 # This schema describes the expected structure, data types, and constraints

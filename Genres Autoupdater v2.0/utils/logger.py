@@ -16,6 +16,15 @@ Provides a comprehensive logging system with detailed tracking and visual format
 10. **Configuration Driven:** Relies on a configuration dictionary for paths, log levels, and other settings.
 """
 
+# ---------------------------------------------------------------------------
+# Golden Rule of Logging
+# ---------------------------------------------------------------------------
+# All runtime and debugging information **must** go through a configured
+# ``logging.Logger`` instance.  Using ``print()`` for operational output leads
+# to inconsistent formatting and missing log levels.  ``print()`` should only be
+# used for the final end-user result that is not considered part of the logs.
+# ---------------------------------------------------------------------------
+
 import logging
 import os
 import queue
@@ -485,6 +494,18 @@ class RunTrackingHandler(logging.FileHandler):
                     )
 
 
+# ---------------------------------------------------------------------------
+# Convenience base class for access to configured loggers
+# ---------------------------------------------------------------------------
+class Loggable:
+    """Mixin providing ``console_logger`` and ``error_logger`` attributes."""
+
+    def __init__(self, console_logger: logging.Logger, error_logger: logging.Logger) -> None:
+        """Store the provided loggers."""
+        self.console_logger = console_logger
+        self.error_logger = error_logger
+
+
 # Added loggers as return values and ensure_directory calls
 def get_loggers(
     config: dict[str, Any],
@@ -656,6 +677,7 @@ def get_loggers(
         analytics_logger = setup_logger("analytics_logger", analytics_file_level)
         setup_logger("year_updates", year_updates_file_level)
         setup_logger("db_verify", year_updates_file_level)
+        setup_logger("config", main_file_level)
 
         console_logger.debug("Logging setup with QueueListener and RichHandler complete.")
         return console_logger, error_logger, analytics_logger, listener
