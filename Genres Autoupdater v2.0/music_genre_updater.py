@@ -39,6 +39,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 import time
 
@@ -71,6 +72,7 @@ from utils.metadata import (
     is_music_app_running,
     merge_genres,
     parse_tracks,
+    remove_parentheses_with_keywords,
 )
 
 # Import the DependencyContainer for service management
@@ -2473,15 +2475,45 @@ class MusicUpdater:
         all_tracks = [track.copy() for track in all_tracks]
         changes_log_cleaning: list[dict[str, str]] = []
 
+        cleaning_cache: dict[tuple[str, str], str] = {}
+
+        def _clean_track_only(tn: str, artist: str, album: str) -> str:
+            exceptions = self.config.get("exceptions", {}).get("track_cleaning", [])
+            is_exception = any(
+                exc.get("artist", "").lower() == artist.lower()
+                and exc.get("album", "").lower() == album.lower()
+                for exc in exceptions
+            )
+            if is_exception:
+                return tn.strip()
+
+            cleaning_config = self.config.get("cleaning", {})
+            keywords = cleaning_config.get("remaster_keywords", ["remaster", "remastered"])
+            cleaned = remove_parentheses_with_keywords(tn, keywords, self.console_logger, self.error_logger)
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            return cleaned if cleaned else ""
+
         async def clean_track_default(track: dict[str, str]) -> None:
-            # This inner function remains unchanged
-            nonlocal changes_log_cleaning
+            nonlocal changes_log_cleaning, cleaning_cache
             orig_name, orig_album = track.get("name", ""), track.get("album", "")
             track_id, artist_name = track.get("id", ""), track.get("artist", "Unknown")
             if not track_id:
                 return
 
-            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
+            cache_key = (artist_name, orig_album)
+            if cache_key in cleaning_cache:
+                cleaned_al = cleaning_cache[cache_key]
+                cleaned_nm = _clean_track_only(orig_name, artist_name, orig_album)
+            else:
+                cleaned_nm, cleaned_al = clean_names(
+                    artist_name,
+                    orig_name,
+                    orig_album,
+                    self.config,
+                    self.console_logger,
+                    self.error_logger,
+                )
+                cleaning_cache[cache_key] = cleaned_al
             new_tn = cleaned_nm if cleaned_nm != orig_name else None
             new_an = cleaned_al if cleaned_al != orig_album else None
             if new_tn or new_an:
