@@ -418,19 +418,21 @@ class RunTrackingHandler(logging.FileHandler):
         """Emit a record. Writes the run header before the first record of a new run."""
         if self.run_handler and not self._header_written:
             try:
-                # Write header if it hasn't been written for this instance/run
-                header = self.run_handler.format_run_header(self.logger_name)
-                # Use self.stream.write for direct writing to the file
-                self.stream.write(header)
-                # Ensure the header is immediately written to the file
-                self.flush()
-                self._header_written = True
+                # FIX: Add a check to ensure the stream is open before writing
+                if self.stream and hasattr(self.stream, "write"):
+                    header = self.run_handler.format_run_header(self.logger_name)
+                    # Use self.stream.write for direct writing to the file
+                    self.stream.write(header)
+                    # Ensure the header is immediately written to the file
+                    self.flush()
+                    self._header_written = True
             except Exception:
                 # Use standard error handling provided by logging
                 self.handleError(record)
 
-        # Emit the actual record using the parent class method
-        super().emit(record)
+        # Emit the actual record using the parent class method, also with a check
+        if self.stream:
+            super().emit(record)
 
     def close(self) -> None:
         """Close the stream, writes run footer, and trims the log file."""

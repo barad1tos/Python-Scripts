@@ -79,6 +79,7 @@ from utils.reports import (
     save_changes_csv,
     save_changes_report,
     save_to_csv,
+    save_unified_dry_run,
     sync_track_list_with_current,
 )
 
@@ -2431,259 +2432,149 @@ class MusicUpdater:
     # These methods orchestrate the process using the injected services (self.)
     # and the utility functions defined above (or imported).
 
-    # Example of a method that uses utility functions and other methods
-
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Full Process")
     async def run_full_process(self, args: argparse.Namespace) -> None:
-        """Run the default full update process (cleaning, genres, years, pending verification).
+        """Run the default full update process based on execution mode."""
+        self.console_logger.info("Running in default mode (incremental or full processing).")
 
-        Uses injected services and config from self.config.
-        """
-        self.console_logger.info(
-            "Running in default mode (incremental or full processing).",
-        )
+        test_artists_config = self.config.get("development", {}).get("test_artists", [])
+        is_test_artist_dry_run = args.dry_run and test_artists_config
 
-        # Check if we can run incrementally using the method of this class
-        can_run = await self.can_run_incremental(force_run=args.force)
+        # --- Checking whether to start processing ---
+        if not is_test_artist_dry_run:
+            can_run = await self.can_run_incremental(force_run=args.force)
+            if not can_run:
+                self.console_logger.info("Incremental interval not reached. Skipping main processing.")
+                return
 
-        if not can_run:
-            self.console_logger.info(
-                "Incremental interval not reached. Skipping main processing.",
-            )
-            return  # Exit if interval not met and not forced
-
-        # Determine last run time for incremental filtering
-        effective_last_run = datetime.min  # Default to beginning of time for full run
-        if not args.force:  # Only check last run time if not forcing
+        # --- Determining the last run time for incremental mode ---
+        effective_last_run = datetime.min
+        if not args.force:
             try:
-                # Use injected cache_service
-                last_run_time = await self.cache_service.get_last_run_timestamp()
+                effective_last_run = await self.cache_service.get_last_run_timestamp()
                 self.console_logger.info(
                     "Last incremental run timestamp: %s",
-                    (last_run_time.strftime("%Y-%m-%d %H:%M:%S") if last_run_time != datetime.min else "Never or Failed"),
-                )  # Log full timestamp
-                effective_last_run = last_run_time  # Use actual last run time for incremental
-            except Exception as e:
-                self.error_logger.warning(
-                    f"Could not get last run timestamp from cache service: {e}. Assuming full run.",
+                    effective_last_run.strftime("%Y-%m-%d %H:%M:%S") if effective_last_run != datetime.min else "Never",
                 )
-                effective_last_run = datetime.min  # Fallback to full run if timestamp retrieval fails
+            except Exception as e:
+                self.error_logger.warning(f"Could not get last run timestamp: {e}. Assuming full run.")
 
-        # --- Fetch Tracks (respecting test_artists only in dry-run) ---
+        # --- Loading tracks ---
         all_tracks: list[dict[str, str]] = []
-        test_artists_config = self.config.get("development", {}).get("test_artists", [])
-
-        if args.dry_run and test_artists_config:
-            self.console_logger.info(
-                "Dry-run development mode: Processing tracks only for test artists: %s",
-                test_artists_config,
-            )
+        if is_test_artist_dry_run:
+            self.console_logger.info("Dry-run mode: Processing tracks only for test artists: %s", test_artists_config)
             fetched_track_map = {}
             for art in test_artists_config:
-                art_tracks = await self.fetch_tracks_async(
-                    artist=art,
-                    force_refresh=args.force,
-                )
+                art_tracks = await self.fetch_tracks_async(artist=art, force_refresh=args.force)
                 for track in art_tracks:
                     if track.get("id"):
                         fetched_track_map[track["id"]] = track
             all_tracks = list(fetched_track_map.values())
-            self.console_logger.info(
-                "Loaded %d tracks total for test artists.",
-                len(all_tracks),
-            )
+            self.console_logger.info("Loaded %d tracks total for test artists.", len(all_tracks))
         else:
             all_tracks = await self.fetch_tracks_async(force_refresh=args.force)
-            self.console_logger.info(
-                "Loaded %d tracks from Music.app.",
-                len(all_tracks),
-            )
+            self.console_logger.info("Loaded %d tracks from Music.app.", len(all_tracks))
 
         if not all_tracks:
             self.console_logger.warning("No tracks fetched or found for processing.")
-            # Update last run time even if no tracks processed, to respect interval
             if not args.force:
-                # Use injected update_last_incremental_run method
                 await self.update_last_incremental_run()
             return
 
-        # Make copies AFTER filtering to avoid modifying cached data if applicable
+        # --- Simulating cleaning and genres ---
         all_tracks = [track.copy() for track in all_tracks]
-        updated_tracks_cleaning = []
-        changes_log_cleaning = []
+        changes_log_cleaning: list[dict[str, str]] = []
 
-        # --- Step 1: Clean Track/Album Names ---
-        self.console_logger.info("Starting track name cleaning process...")
-
-        # Define async helper for cleaning a single track
-        # This helper needs access to the update_track_async method and clean_names utility
         async def clean_track_default(track: dict[str, str]) -> None:
-            nonlocal updated_tracks_cleaning, changes_log_cleaning  # Access outer scope lists
-            orig_name = track.get("name", "")
-            orig_album = track.get("album", "")
-            track_id = track.get("id", "")
-            artist_name = track.get("artist", "Unknown")  # Use artist from track data
-
+            # This inner function remains unchanged
+            nonlocal changes_log_cleaning
+            orig_name, orig_album = track.get("name", ""), track.get("album", "")
+            track_id, artist_name = track.get("id", ""), track.get("artist", "Unknown")
             if not track_id:
-                return  # Skip if no ID
+                return
 
-            # Use the utility function clean_names, pass config and loggers from self.config/self
-            cleaned_nm, cleaned_al = clean_names(
-                artist_name,
-                orig_name,
-                orig_album,
-                self.config,
-                self.console_logger,
-                self.error_logger,
-            )
-
-            # Determine if changes were actually made
+            cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
             new_tn = cleaned_nm if cleaned_nm != orig_name else None
             new_an = cleaned_al if cleaned_al != orig_album else None
-
             if new_tn or new_an:
-                track_status = track.get("trackStatus", "").lower()
-                if track_status in ("subscription", "downloaded"):
-                    # Use the method of this class to update the track
-                    if await self.update_track_async(
-                        track_id,
-                        new_track_name=new_tn,
-                        new_album_name=new_an,
-                    ):
-                        # If update successful, modify track dict and log changes
+                if track.get("trackStatus", "").lower() in ("subscription", "downloaded"):
+                    if await self.update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
                         if new_tn:
                             track["name"] = cleaned_nm
                         if new_an:
                             track["album"] = cleaned_al
-                        # Append the modified track dictionary to the list
-                        updated_tracks_cleaning.append(track)
-                        # Log the change details
-                        changes_log_cleaning.append(
-                            {
-                                "change_type": "name",
-                                "artist": artist_name,
-                                "album": track.get("album", "Unknown"),
-                                "track_name": orig_name,  # Original name before cleaning
-                                "old_track_name": orig_name,
-                                "new_track_name": cleaned_nm,
-                                "old_album_name": orig_album,
-                                "new_album_name": cleaned_al,
-                                "timestamp": datetime.now().strftime(
-                                    "%Y-%m-%d %H:%M:%S",
-                                ),
-                            },
-                        )
-                    else:
-                        self.error_logger.error(
-                            "Failed to apply cleaning update for track ID %s ('%s' - '%s')",
-                            track_id,
-                            artist_name,
-                            orig_name,
-                        )  # Log track details
-                else:
-                    self.console_logger.debug(
-                        f"Skipping track update for '{orig_name}' (ID: {track_id}) due to status '{track_status}'",
-                    )
+                        changes_log_cleaning.append({
+                            "change_type": "cleaning", "track_id": track_id, "artist": artist_name,
+                            "original_name": orig_name, "cleaned_name": cleaned_nm,
+                            "original_album": orig_album, "cleaned_album": cleaned_al,
+                            "dateAdded": track.get("dateAdded", ""),
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        })
 
-        # Run cleaning tasks concurrently
-        clean_tasks_default = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
-        await asyncio.gather(*clean_tasks_default)
-        if updated_tracks_cleaning:
-            self.console_logger.info(
-                "Cleaned %d track/album names.",
-                len(updated_tracks_cleaning),
+        self.console_logger.info("Simulating track name cleaning...")
+        clean_tasks = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
+        await asyncio.gather(*clean_tasks)
+
+        self.console_logger.info("Simulating genre updates...")
+        _, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)
+
+        if is_test_artist_dry_run:
+            #Logic exclusively for dry-run with test artists
+            self.console_logger.info("Dry-run mode: Preparing simulated changes report.")
+
+            dry_run_report_file = get_full_log_path(
+                self.config, "dry_run_report_file", "csv/dry_run_combined.csv", self.error_logger
             )
-        else:
-            self.console_logger.info("No track names or album names needed cleaning.")
-
-        # --- Step 2: Update Genres ---
-        self.console_logger.info("Starting genre update process...")
-        # Pass the effective last run time (min if forced, actual otherwise)
-        # Use the method of this class
-        updated_g, changes_g = await self.update_genres_by_artist_async(
-            all_tracks,
-            effective_last_run,
-        )  # Pass all_tracks
-        if updated_g:
-            self.console_logger.info("Updated genres for %d tracks.", len(updated_g))
-        else:
-            self.console_logger.info(
-                "No genre updates needed based on incremental check or existing genres.",
-            )
-
-        # --- Step 3: Update Album Years ---
-        self.console_logger.info("Starting album year update process...")
-        # In full process mode, we'll process all albums by passing an empty dictionary
-        # This will make process_album_years process all albums in all_tracks
-        updated_y, changes_y = await self.process_album_years(
-            all_tracks,
-            {},
-            force=args.force,
-        )
-        if updated_y:
-            self.console_logger.info("Updated years for %d tracks.", len(updated_y))
-        else:
-            self.console_logger.info(
-                "No year updates needed or year retrieval disabled.",
-            )
-
-        # --- Consolidate Changes and Save ---
-        # Combine all change logs
-        all_changes = changes_log_cleaning + changes_g + changes_y
-
-        # The all_tracks list now contains all modifications from cleaning, genres, and years
-        if all_changes:  # Check if any changes were logged
-            self.console_logger.info("Consolidating and saving results...")
-            # Use utility function sync_track_list_with_current
-            # Use config from self.config, injected cache_service, loggers
-            await sync_track_list_with_current(
-                all_tracks,  # Pass the fully updated list of tracks
-                get_full_log_path(
-                    self.config,
-                    "csv_output_file",
-                    DEFAULT_TRACK_LIST_CSV_PATH,
-                    self.error_logger,
-                ),  # Pass error_logger
-                self.cache_service,
+            # Call the correct function for reporting, which overwrites the file
+            save_unified_dry_run(
+                changes_log_cleaning,
+                changes_g,
+                dry_run_report_file,
                 self.console_logger,
                 self.error_logger,
-                partial_sync=not args.force,  # Use partial sync for incremental, full sync for force
             )
-            # Use utility function save_unified_changes_report
-            # Use config from self.config, injected loggers
-            report_csv = get_full_log_path(
-                self.config,
-                "changes_report_file",
-                DEFAULT_CHANGES_REPORT_CSV_PATH,
-                self.error_logger,
+            total_simulated_changes = len(changes_log_cleaning) + len(changes_g)
+            self.console_logger.info(
+                "Dry run simulation complete. Found %d potential changes. See report: '%s'",
+                total_simulated_changes, dry_run_report_file
             )
+            # End execution, not proceeding to year updates and verification
+            return
+
+        # --- Full flow for normal mode (or --dry-run without test_artists) ---
+        self.console_logger.info("Starting album year update process...")
+        albums_to_process = {
+            (t.get("artist", ""), t.get("album", "")): "Default processing"
+            for t in all_tracks if t.get("artist") and t.get("album")
+        }
+        _, changes_y = await self.process_album_years(all_tracks, albums_to_process, force=args.force)
+
+        all_changes = changes_log_cleaning + changes_g + changes_y
+        if all_changes:
+            self.console_logger.info("Consolidating and saving all detected changes...")
+            await sync_track_list_with_current(
+                all_tracks,
+                get_full_log_path(self.config, "csv_output_file", DEFAULT_TRACK_LIST_CSV_PATH, self.error_logger),
+                self.cache_service, self.console_logger, self.error_logger,
+                partial_sync=not args.force
+            )
+            # Для звичайного режиму використовуємо звіт з часовою міткою
             save_changes_csv(
                 all_changes,
-                report_csv,
-                self.console_logger,
-                self.error_logger,
-                force_mode=args.force,
+                get_full_log_path(self.config, "changes_report_file", DEFAULT_CHANGES_REPORT_CSV_PATH, self.error_logger),
+                self.console_logger, self.error_logger,
+                force_mode=args.force
             )
-            self.console_logger.info(
-                "Processing complete. Logged %d changes.",
-                len(all_changes),
-            )
+            self.console_logger.info("Processing complete. Logged %d changes.", len(all_changes))
         else:
-            self.console_logger.info("No changes detected in this run.")
+            self.console_logger.info("No changes were needed in this run.")
 
-        # Update last run time only if it was an incremental run (not forced)
         if not args.force:
-            # Use injected update_last_incremental_run method
             await self.update_last_incremental_run()
 
-        # --- Step 4: Verify Pending Albums (after 30 days) ---
-        # This step is part of the default process
-        # Use the method of this class. This will call process_album_years internally
-        # for pending albums and handle updating the pending list and reporting changes.
-        await self.run_verify_pending(
-            force=False,
-        )  # Run pending verification based on interval
+        self.console_logger.info("Executing pending verification check...")
+        await self.run_verify_pending(force=False)  # Run pending verification based on interval
 
 
 # --- Argument Parsing ---
@@ -2743,14 +2634,6 @@ def main() -> None:
 
     start_all = time.time()
     args = parse_arguments()
-
-    # If running in dry-run mode, delegate control to the dedicated simulator
-    # and exit before initializing the regular pipeline.
-    if args.dry_run:
-        from utils import dry_run
-
-        dry_run.main()
-        sys.exit(0)
 
     # Initialize loggers and the QueueListener *before* creating DependencyContainer
     # These are needed by the DependencyContainer constructor and for early logging

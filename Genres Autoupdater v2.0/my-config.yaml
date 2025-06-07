@@ -13,7 +13,7 @@ logs_base_dir: "/Users/romanborodavkin/Library/Mobile Documents/com~apple~CloudD
 # Python-specific settings
 python_settings:
   prevent_bytecode: true # Set to true to prevent __pycache__ generation
-dry_run: false
+dry_run: true
 
 # -----------------------------------------------------------------------
 # 2. EXECUTION AND PERFORMANCE
