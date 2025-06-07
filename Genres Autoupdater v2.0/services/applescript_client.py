@@ -7,35 +7,6 @@ It centralizes the logic for interacting with AppleScript via the `osascript` co
 handles errors, applies concurrency limits via a semaphore, and ensures non-blocking execution.
 
 The module supports both executing AppleScript files and inline AppleScript code.
-
-Refactored: Semaphore initialization moved to an async initialize method,
-as it requires an active asyncio event loop.
-
-Example:
-    >>> import asyncio
-    >>> from services.applescript_client import AppleScriptClient
-    >>> config = {
-    ...     "apple_scripts_dir": "path/to/apple_scripts",
-    ...     "applescript_timeout_seconds": 600,
-    ...     "apple_script_concurrency": 5
-    ... }
-    >>> # Assume loggers are initialized elsewhere
-    >>> import logging
-    >>> console_logger = logging.getLogger("console_logger")
-    >>> error_logger = logging.getLogger("error_logger")
-    >>>
-    >>> async def test():
-    ...     client = AppleScriptClient(config, console_logger, error_logger)
-    ...     await client.initialize() # IMPORTANT: Call initialize
-    ...     # Execute a script file
-    ...     result1 = await client.run_script("fetch_tracks.applescript", arguments=["Some Artist"])
-    ...     # Execute inline AppleScript code
-    ...     result2 = await client.run_script_code('tell application "Music" to get name of current track')
-    ...     print(result1, result2)
-    ...
-    >>> # Run the test in an event loop
-    >>> # asyncio.run(test())
-
 """
 
 import asyncio
@@ -48,18 +19,44 @@ import subprocess
 import time
 
 from pathlib import Path
-from typing import Any
-
-from utils.dry_run import AppleScriptClientProtocol
+from typing import Any, Protocol, runtime_checkable
 
 RESULT_PREVIEW_LEN = 50
 DANGEROUS_ARG_CHARS = [";", "&", "|", "`", "$", ">", "<", "!"]
 
-class EnhancedRateLimiter:
-    """Advanced rate limiter using a moving window approach.
+@runtime_checkable
+class AppleScriptClientProtocol(Protocol):
+    """Protocol defining the interface for AppleScript clients.
 
-    This ensures maximum throughput while strictly adhering to API rate limits.
+    This allows both AppleScriptClient and DryRunAppleScriptClient to be used
+    interchangeably as long as they implement these methods.
     """
+
+    async def run_script(
+        self,
+        script_name: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Run an AppleScript by name."""
+        ...
+
+    async def run_script_code(
+        self,
+        script_code: str,
+        arguments: list[str] | None = None,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Run raw AppleScript code."""
+        ...
+
+    async def initialize(self) -> None:
+        """Initialize the AppleScript client."""
+        ...
+
+
+class EnhancedRateLimiter:
+    """Advanced rate limiter using a moving window approach."""
 
     def __init__(
         self,
@@ -78,24 +75,17 @@ class EnhancedRateLimiter:
 
         self.requests_per_window = requests_per_window
         self.window_size = float(window_size)
-        # Using list as deque for simplicity, but collections.deque might be more performant for large windows
         self.request_timestamps: list[float] = []
-        # Semaphore is initialized separately in the async initialize method
-        self.semaphore: asyncio.Semaphore | None = None  # Initialized as None
-        self.max_concurrent = max_concurrent  # Store max_concurrent
-
+        self.semaphore: asyncio.Semaphore | None = None
+        self.max_concurrent = max_concurrent
         self.logger = logger or logging.getLogger(__name__)
         self.total_requests: int = 0
         self.total_wait_time: float = 0.0
 
     async def initialize(self) -> None:
-        """Asynchronously initialize the rate limiter semaphore.
-
-        Must be called within an active event loop.
-        """
+        """Initialize the rate limiter."""
         if self.semaphore is None:
             try:
-                # Create semaphore when the event loop is available
                 self.semaphore = asyncio.Semaphore(self.max_concurrent)
                 self.logger.debug(
                     f"RateLimiter initialized with max_concurrent: {self.max_concurrent}"
@@ -104,93 +94,53 @@ class EnhancedRateLimiter:
                 self.logger.error(
                     f"Error initializing RateLimiter semaphore: {e}", exc_info=True
                 )
-                # Depending on error handling strategy, might re-raise or handle failure
 
     async def acquire(self) -> float:
-        """Acquire permission to make a request, waiting if necessary due to rate limits or concurrency limits.
-
-        Requires initialize() to have been called.
-        """
+        """Acquire permission to make a request, waiting if necessary due to rate limits or concurrency limits."""
         if self.semaphore is None:
-            self.logger.error(
-                "RateLimiter semaphore not initialized. Call initialize() first."
-            )
-            # Depending on error handling, might raise an exception or return immediately
             raise RuntimeError("RateLimiter not initialized")
-
-        # Wait for rate limit first
         rate_limit_wait_time = await self._wait_if_needed()
         self.total_requests += 1
         self.total_wait_time += rate_limit_wait_time
-
-        # Then wait for concurrency semaphore
         await self.semaphore.acquire()
-
         return rate_limit_wait_time
 
     def release(self) -> None:
-        """Release the concurrency semaphore after the request is completed or failed.
-
-        Requires initialize() to have been called.
-        """
+        """Release the semaphore, allowing another request to proceed."""
         if self.semaphore is None:
-            self.logger.error("RateLimiter semaphore not initialized. Cannot release.")
-            # Depending on error handling, might raise an exception or pass
-            return  # Safely exit if not initialized
-
+            return
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
-        """Check rate limits and wait if necessary."""
-        now = time.monotonic()  # Use monotonic clock for interval timing
-
-        # Clean up old timestamps outside the window
-        # This check ensures we don't keep growing the list indefinitely
-        # It iterates from the left (oldest) and stops when a timestamp is within the window
+        now = time.monotonic()
         while (
             self.request_timestamps
             and now - self.request_timestamps[0] > self.window_size
         ):
             self.request_timestamps.pop(0)
-
-        # If we've reached the limit, calculate wait time until the oldest request expires
         if len(self.request_timestamps) >= self.requests_per_window:
             oldest_timestamp = self.request_timestamps[0]
             wait_duration = (oldest_timestamp + self.window_size) - now
-
-            # Only wait if the calculated duration is positive
             if wait_duration > 0:
-                # Use 3 decimal places for milliseconds precision in logs
                 self.logger.debug(
-                    f"Rate limit reached ({len(self.request_timestamps)}/{self.requests_per_window} "
-                    f"in {self.window_size}s). Waiting {wait_duration:.3f}s"
+                    f"Rate limit reached. Waiting {wait_duration:.3f}s"
                 )
                 await asyncio.sleep(wait_duration)
-                # After waiting, check again recursively in case multiple requests waited simultaneously
-                # The recursive call handles scenarios where the wait wasn't quite enough
-                # and adds the new wait time to the original
                 return wait_duration + await self._wait_if_needed()
-            # If wait_duration is <= 0, it means the slot freed up while we were checking.
-            # No need to wait, but we should remove the expired timestamp before proceeding.
-            # This case is implicitly handled by the while loop above if run again, or the check below.
-
-        # Record this request's timestamp *after* potential waiting and cleanup
         self.request_timestamps.append(time.monotonic())
-        return 0.0  # No waiting was required in this pass
+        return 0.0
 
     def get_stats(self) -> dict[str, Any]:
         """Get statistics about rate limiter usage."""
-        # Ensure current window usage is up-to-date by cleaning expired timestamps
         now = time.monotonic()
         self.request_timestamps = [
             ts for ts in self.request_timestamps if now - ts <= self.window_size
         ]
-
         return {
             "total_requests": self.total_requests,
             "total_wait_time": self.total_wait_time,
             "avg_wait_time": self.total_wait_time
-            / max(1, self.total_requests),  # Avoid division by zero
+            / max(1, self.total_requests),
             "current_window_usage": len(self.request_timestamps),
             "max_requests_per_window": self.requests_per_window,
         }
