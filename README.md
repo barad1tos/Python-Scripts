@@ -1,6 +1,9 @@
+Ось повний вміст вашого актуального файлу README.md (збережено форматування, стилі та структуру):
+
+```markdown
 # Python Scripts
 
-Hey! 👋 This repo is a toolbox of Python scripts (plus a dash of AppleScript) for all sorts of automation fun—mostly tuned for macOS (Sonoma and newer), but written with flexibility and maintainability at heart. Whether you’re running stuff locally or plugging into AWS, you’ll find the code clean, modular, and easy to adapt.
+Hey! 👋 This repo is a toolbox of Python scripts (plus a dash of AppleScript) for all sorts of automation fun—mostly tuned for macOS (Sonoma and newer), but written with flexibility and maintainability in mind.
 
 ---
 
@@ -71,96 +74,48 @@ Let’s get nerdy for a sec. Here’s a file-level breakdown of how `Genres Auto
 
 ```mermaid
 flowchart TD
-    %% Main Components
-    subgraph MainScript[music_genre_updater.py]
-        Main[main()] -->|Creates| DepContainer[DependencyContainer]
-        Main -->|Parses Args| Args[parse_arguments()]
-        Main -->|Runs| MusicUpdater[MusicUpdater]
-    end
+    MainScriptMain["main() in music_genre_updater.py"] -->|Creates| DepContainer
+    MainScriptMain -->|Parses Args| Args
+    MainScriptMain -->|Runs| MusicUpdater
 
-    %% MusicUpdater Class
-    subgraph MUClass[MusicUpdater Class]
-        MU_Init[__init__] -->|Initializes| MU_Services[Services]
-        MU_Init -->|Sets up| MU_Config[Configuration]
-        MU_Methods[methods()] -->|Uses| MU_Services
-        MU_Methods -->|Processes| Tracks[Track Data]
-    end
+    MusicUpdater -->|Initializes| Services
+    MusicUpdater -->|Sets up| Configuration
+    MusicUpdater -->|Processes| TrackData
 
-    %% Services
-    subgraph ServicesGroup[Services]
-        subgraph DepContainerGroup[DependencyContainer]
-            DC_Init[__init__] -->|Creates| Services_List[Service Instances]
-            DC_Init -->|Manages| Lifecycle[Service Lifecycle]
-        end
+    DepContainer -->|Creates| ServiceInstances
+    DepContainer -->|Manages| ServiceLifecycle
+    ExternalApiService -->|Queries| APIs
+    ExternalApiService -->|Uses| RateLimiter
+    ExternalApiService -->|Caches| CacheService
+    AppleScriptClient -->|Interacts| MusicApp
+    CacheService -->|Manages| PersistentCache
+    PendingVerification -->|Tracks| PendingAlbums
 
-        subgraph ExternalAPIGroup[external_api_service.py]
-            EAPI[ExternalApiService] -->|Queries| APIs[MusicBrainz/Discogs/Last.fm]
-            EAPI -->|Uses| RateLimiter[EnhancedRateLimiter]
-            EAPI -->|Caches| CacheService[CacheService]
-        end
+    ConfigNode -->|Provides| ConfigLoader
+    AnalyticsNode -->|Tracks| Metrics
+    LoggerNode -->|Handles| LogManagement
+    ReportsNode -->|Generates| CSVs
+    MetadataNode -->|Processes| TrackMetadata
 
-        subgraph AppleScriptGroup[applescript_client.py]
-            APIClient[AppleScriptClient] -->|Interacts| MusicApp[Music.app]
-        end
-
-        subgraph CacheGroup[cache_service.py]
-            CacheService -->|Manages| CacheData[Persistent Cache]
-        end
-
-        subgraph PendingGroup[pending_verification.py]
-            PendingVerification[PendingVerification] -->|Tracks| PendingAlbums[Albums Needing Verification]
-        end
-    end
-
-    %% Utils
-    subgraph UtilsGroup[utils]
-        ConfigNode[config.py] -->|Provides| ConfigLoader[Configuration Loading]
-        AnalyticsNode[analytics.py] -->|Tracks| Metrics[Performance Metrics]
-        LoggerNode[logger.py] -->|Handles| LogManagement[Log Management]
-        ReportsNode[reports.py] -->|Generates| CSVs[CSV Reports]
-        MetadataNode[metadata.py] -->|Processes| TrackMetadata[Track Metadata]
-    end
-
-    %% Data Flow
-    Main -->|Loads| ConfigNode
-    MusicUpdater -->|Uses| EAPI
-    MusicUpdater -->|Uses| APIClient
+    MainScriptMain -->|Loads| ConfigNode
+    MusicUpdater -->|Uses| ExternalApiService
+    MusicUpdater -->|Uses| AppleScriptClient
     MusicUpdater -->|Logs via| LoggerNode
     MusicUpdater -->|Generates| ReportsNode
-    EAPI -->|Caches via| CacheService
-    EAPI -->|Tracks Pending| PendingVerification
+    ExternalApiService -->|Caches via| CacheService
+    ExternalApiService -->|Tracks Pending| PendingVerification
 
-    %% Configuration
-    subgraph ConfigFilesGroup[Configuration]
-        ConfigYAML[my-config.yaml] -->|Loaded by| ConfigNode
-        ConfigNode -->|Configures| AllServices[All Services]
-    end
+    ConfigYAML -->|Loaded by| ConfigNode
+    ConfigNode -->|Configures| AllServices
 
-    %% Dependencies
-    subgraph DependenciesGroup[Dependencies (requirements.txt)]
-        AioHTTP[aiohttp] -->|Used by| EAPI
-        PyYAML[PyYAML] -->|Used by| ConfigNode
-        TenacityPkg[tenacity] -->|Used by| RateLimiter
-    end
+    AioHTTP -->|Used by| ExternalApiService
+    PyYAML -->|Used by| ConfigNode
+    TenacityPkg -->|Used by| RateLimiter
 
-    %% Key Methods
-    subgraph KeyMethodsGroup[Key Methods]
-        UpdateGenres[update_genres_by_artist_async] -->|Updates| TrackGenres[Track Genres]
-        ProcessYears[process_album_years] -->|Updates| AlbumYears[Album Years]
-        CleanTracks[run_clean_artist] -->|Cleans| TrackNames[Track Names]
-        VerifyDB[verify_and_clean_track_database] -->|Validates| TrackDB[Track DB]
-    end
-
-    %% Styling
-    classDef component fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef service   fill:#bbf,stroke:#333,stroke-width:2px;
-    classDef util      fill:#bfb,stroke:#333,stroke-width:2px;
-    classDef data      fill:#fbb,stroke:#333,stroke-width:2px;
-
-    class Main,DepContainer,Args,MusicUpdater component;
-    class EAPI,APIClient,CacheService,PendingVerification service;
-    class ConfigNode,AnalyticsNode,LoggerNode,ReportsNode,MetadataNode util;
-    class TrackGenres,AlbumYears,TrackNames,TrackDB,CacheData,PendingAlbums data;
+    UpdateGenres -->|Updates| TrackGenres
+    ProcessYears -->|Updates| AlbumYears
+    CleanTracks -->|Cleans| TrackNames
+    VerifyDB -->|Validates| TrackDB
 ```
 
 > **TL;DR:**
@@ -208,8 +163,9 @@ MIT License – see [LICENSE](LICENSE) for details.
 
 ---
 
-If you need a drilldown into a specific script or want to see function-level data flows (or want to geek out about something in the code), ping me! Always happy to help make your automation smarter, faster, and more fun.
+If you need a drilldown into a specific script or want to see function-level data flows (or want to geek out about something in the code), ping me! Always happy to help make your automation smarter.
 
 ---
 
 **PS:** Don’t forget to keep your `config.yaml` out of version control if it has sensitive data—add it to `.gitignore`!
+```
