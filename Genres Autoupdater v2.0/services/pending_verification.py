@@ -115,7 +115,6 @@ class PendingVerificationService:
             config,
             "pending_verification_file",
             "csv/pending_year_verification.csv",
-            error_logger,
         )
         # Initialize in-memory cache of pending albums - it will be populated in async initialize
         # key: hash of "artist|album", value: (timestamp, artist, album)

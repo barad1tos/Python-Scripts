@@ -529,16 +529,24 @@ def get_loggers(
         # Get log file paths
         log_files = {
             'main': get_full_log_path(
-                config, "main_log_file", "main/main.log", None
+                config,
+                "main_log_file",
+                "main/main.log",
             ),
             'analytics': get_full_log_path(
-                config, "analytics_log_file", "analytics/analytics.log", None
+                config,
+                "analytics_log_file",
+                "analytics/analytics.log",
             ),
             'year_changes': get_full_log_path(
-                config, "year_changes_log_file", "main/year_changes.log", None
+                config,
+                "year_changes_log_file",
+                "main/year_changes.log",
             ),
             'db_verify': get_full_log_path(
-                config, "last_db_verify_log", "main/last_db_verify.log", None
+                config,
+                "last_db_verify_log",
+                "main/last_db_verify.log",
             )
         }
 

@@ -820,7 +820,6 @@ def save_html_report(
             "analytics",
             "analytics_full.html" if force_mode else "analytics_incremental.html",
         ),
-        error_logger,
     )
 
     console_logger.debug(f"Will save HTML report to: {report_file}")

@@ -72,7 +72,9 @@ class CacheService:
         # CSV cache settings
         # logs_base_dir is retrieved via get_full_log_path
         self.album_cache_csv = get_full_log_path(
-            config, "album_cache_csv", "csv/cache_albums.csv", error_logger
+            config,
+            "album_cache_csv",
+            "csv/cache_albums.csv",
         )  # Use utility function
 
         # Persistent cache file for general API responses
@@ -512,7 +514,6 @@ class CacheService:
                 self.config,
                 "last_incremental_run_file",
                 "last_incremental_run.log",
-                self.error_logger,
             )
 
             if not os.path.exists(last_file):
