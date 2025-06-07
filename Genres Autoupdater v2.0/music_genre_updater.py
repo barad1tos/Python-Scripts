@@ -1167,14 +1167,12 @@ class MusicUpdater:
                 self.config,
                 "last_incremental_run_file",
                 self.INCREMENTAL_RUN_LOG,
-                self.error_logger,
             )
         ):
             last_file_path = get_full_log_path(
                 self.config,
                 "last_incremental_run_file",
                 self.INCREMENTAL_RUN_LOG,
-                self.error_logger,
             )
             self.console_logger.info(
                 "Last incremental run file not found at %s. Proceeding.",
@@ -1186,7 +1184,6 @@ class MusicUpdater:
                 self.config,
                 "last_incremental_run_file",
                 self.INCREMENTAL_RUN_LOG,
-                self.error_logger,
             )
             interval = self.config.get("incremental_interval_minutes", 60)
             max_retries = 3
@@ -1254,8 +1251,7 @@ class MusicUpdater:
             self.config,
             "last_incremental_run_file",
             self.INCREMENTAL_RUN_LOG,
-            self.error_logger,
-        )  # Pass error_logger
+        )
         try:
             # Ensure directory exists before writing
             os.makedirs(os.path.dirname(last_file_path), exist_ok=True)
@@ -1292,8 +1288,7 @@ class MusicUpdater:
                 self.config,
                 "csv_output_file",
                 DEFAULT_TRACK_LIST_CSV_PATH,
-                self.error_logger,
-            )  # Pass error_logger
+            )
 
             if not os.path.exists(csv_path):
                 self.console_logger.info(
@@ -1320,8 +1315,7 @@ class MusicUpdater:
                 self.config,
                 "last_db_verify_log",
                 "main/last_db_verify.log",
-                self.error_logger,
-            )  # Pass error_logger
+            )
             auto_verify_days = self.config.get("database_verification", {}).get(
                 "auto_verify_days",
                 7,
@@ -1566,8 +1560,7 @@ class MusicUpdater:
                 self.config,
                 "csv_output_file",
                 DEFAULT_TRACK_LIST_CSV_PATH,
-                self.error_logger,
-            )  # Pass error_logger
+            )
             # load_track_list is a utility function, doesn't need self.
             load_track_list(
                 csv_path,
@@ -1661,11 +1654,12 @@ class MusicUpdater:
                         # Log the change
                         changes_log.append(
                             {
-                                "change_type": "genre",
+                                "change_type": "genre_update",
+                                "track_id": track_id,
                                 "artist": track.get("artist", "Unknown"),
                                 "album": track.get("album", "Unknown"),
                                 "track_name": track.get("name", "Unknown"),
-                                "old_genre": old_genre,
+                                "original_genre": old_genre,
                                 "new_genre": new_genre,
                                 "timestamp": datetime.now().strftime(
                                     "%Y-%m-%d %H:%M:%S",
@@ -1899,8 +1893,7 @@ class MusicUpdater:
                     self.config,
                     "csv_output_file",
                     DEFAULT_TRACK_LIST_CSV_PATH,
-                    self.error_logger,
-                ),  # Pass error_logger
+                ),
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
@@ -1914,8 +1907,7 @@ class MusicUpdater:
                     self.config,
                     "changes_report_file",
                     DEFAULT_CHANGES_REPORT_CSV_PATH,
-                    self.error_logger,
-                ),  # Pass error_logger
+                ),
                 self.console_logger,
                 self.error_logger,
                 force_mode=force,  # Use force flag from arguments for console output
@@ -1974,7 +1966,6 @@ class MusicUpdater:
             self.config,
             "csv_output_file",
             DEFAULT_TRACK_LIST_CSV_PATH,
-            self.error_logger,
         )
         previous_track_data = load_track_list(
             tracklist_csv_path,
@@ -2152,8 +2143,7 @@ class MusicUpdater:
                     self.config,
                     "csv_output_file",
                     DEFAULT_TRACK_LIST_CSV_PATH,
-                    self.error_logger,
-                ),  # Pass error_logger
+                ),
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
@@ -2167,8 +2157,7 @@ class MusicUpdater:
                     self.config,
                     "changes_report_file",
                     DEFAULT_CHANGES_REPORT_CSV_PATH,
-                    self.error_logger,
-                ),  # Pass error_logger
+                ),
                 self.console_logger,
                 self.error_logger,
                 force_mode=force_year_update,  # Use force flag for console output
@@ -2389,14 +2378,12 @@ class MusicUpdater:
                 self.config,
                 "csv_output_file",
                 DEFAULT_TRACK_LIST_CSV_PATH,
-                self.error_logger,
-            )  # Pass error_logger
+            )
             changes_report_file_path = get_full_log_path(
                 self.config,
                 "changes_report_file",
                 DEFAULT_CHANGES_REPORT_CSV_PATH,
-                self.error_logger,
-            )  # Pass error_logger
+            )
 
             # Need to ensure all_tracks_fetched list is updated with changes before syncing.
             # The tracks updated within process_album_years (called from verify_pending) are
@@ -2517,14 +2504,17 @@ class MusicUpdater:
         await asyncio.gather(*clean_tasks)
 
         self.console_logger.info("Simulating genre updates...")
-        _, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)
+        genre_last_run = datetime.min if is_test_artist_dry_run else effective_last_run
+        _, changes_g = await self.update_genres_by_artist_async(all_tracks, genre_last_run)
 
         if is_test_artist_dry_run:
             #Logic exclusively for dry-run with test artists
             self.console_logger.info("Dry-run mode: Preparing simulated changes report.")
 
             dry_run_report_file = get_full_log_path(
-                self.config, "dry_run_report_file", "csv/dry_run_combined.csv", self.error_logger
+                self.config,
+                "dry_run_report_file",
+                "csv/dry_run_combined.csv",
             )
             # Call the correct function for reporting, which overwrites the file
             save_unified_dry_run(
@@ -2555,16 +2545,27 @@ class MusicUpdater:
             self.console_logger.info("Consolidating and saving all detected changes...")
             await sync_track_list_with_current(
                 all_tracks,
-                get_full_log_path(self.config, "csv_output_file", DEFAULT_TRACK_LIST_CSV_PATH, self.error_logger),
-                self.cache_service, self.console_logger, self.error_logger,
-                partial_sync=not args.force
+                get_full_log_path(
+                    self.config,
+                    "csv_output_file",
+                    DEFAULT_TRACK_LIST_CSV_PATH,
+                ),
+                self.cache_service,
+                self.console_logger,
+                self.error_logger,
+                partial_sync=not args.force,
             )
             # Для звичайного режиму використовуємо звіт з часовою міткою
             save_changes_csv(
                 all_changes,
-                get_full_log_path(self.config, "changes_report_file", DEFAULT_CHANGES_REPORT_CSV_PATH, self.error_logger),
-                self.console_logger, self.error_logger,
-                force_mode=args.force
+                get_full_log_path(
+                    self.config,
+                    "changes_report_file",
+                    DEFAULT_CHANGES_REPORT_CSV_PATH,
+                ),
+                self.console_logger,
+                self.error_logger,
+                force_mode=args.force,
             )
             self.console_logger.info("Processing complete. Logged %d changes.", len(all_changes))
         else:
