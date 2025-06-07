@@ -68,9 +68,6 @@ LEVEL_ABBREV = {
     "CRITICAL": "C",
 }
 
-# Removed LOG_LEVELS_MAP as we will use logging.getLevelName directly
-
-
 class RunHandler:
     """Handles tracking of script runs, adding separators between runs, and limiting logs to max number of runs."""
 
@@ -494,9 +491,7 @@ class RunTrackingHandler(logging.FileHandler):
                     )
 
 
-# ---------------------------------------------------------------------------
 # Convenience base class for access to configured loggers
-# ---------------------------------------------------------------------------
 class Loggable:
     """Mixin providing ``console_logger`` and ``error_logger`` attributes."""
 
