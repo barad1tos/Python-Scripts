@@ -1,6 +1,3 @@
-Ось повний вміст вашого актуального файлу README.md (збережено форматування, стилі та структуру):
-
-```markdown
 # Python Scripts
 
 Hey! 👋 This repo is a toolbox of Python scripts (plus a dash of AppleScript) for all sorts of automation fun—mostly tuned for macOS (Sonoma and newer), but written with flexibility and maintainability in mind.
@@ -168,4 +165,3 @@ If you need a drilldown into a specific script or want to see function-level dat
 ---
 
 **PS:** Don’t forget to keep your `config.yaml` out of version control if it has sensitive data—add it to `.gitignore`!
-```
