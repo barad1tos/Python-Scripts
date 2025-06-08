@@ -176,7 +176,7 @@ class MusicUpdater:
         console_logger: logging.Logger,
         error_logger: logging.Logger,
         analytics: Analytics,
-        ap_client: "AppleScriptClientProtocol",  # Changed to protocol
+        ap_client: "AppleScriptClientProtocol",
         cache_service: "CacheService",
         external_api_service: "ExternalApiService",
         pending_verification_service: "PendingVerificationService",
