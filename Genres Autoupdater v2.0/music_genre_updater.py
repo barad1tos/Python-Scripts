@@ -192,6 +192,23 @@ class MusicUpdater:
         self.external_api_service = external_api_service
         self.pending_verification_service = pending_verification_service
 
+        # Dry-run context
+        self.dry_run_mode: str = "NORMAL"
+        self.test_artists: set[str] = set()
+
+    def set_dry_run_context(self, mode: str, test_artists: set[str]) -> None:
+        """Configure dry-run mode and list of test artists."""
+        self.dry_run_mode = mode
+        self.test_artists = test_artists
+
+    def _should_dry_run(self, artist: str | None) -> bool:
+        """Determine if operations for the artist should be a dry run."""
+        if self.dry_run_mode == "GLOBAL_DRY_RUN":
+            return True
+        if self.dry_run_mode == "PARTIAL_DRY_RUN" and artist and artist in self.test_artists:
+            return True
+        return False
+
         # The utility functions are now imported from metadata_helpers.py
         # They do not need to be stored as instance attributes unless specifically wrapped/modified
 
@@ -355,12 +372,25 @@ class MusicUpdater:
         new_album_name: str | None = None,
         new_genre: str | None = None,
         new_year: str | None = None,
+        *,
+        artist: str | None = None,
+        dry_run: bool | None = None,
     ) -> bool:
         """Update the track properties asynchronously via AppleScript using injected AppleScriptClient."""
         try:
             if not track_id:
                 self.error_logger.error("No track_id provided.")
                 return False
+
+            if dry_run is None:
+                dry_run = self._should_dry_run(artist)
+
+            if dry_run:
+                self.console_logger.debug(
+                    "Skipped DB write for artist='%s' (dry-run)",
+                    artist or "Unknown",
+                )
+                return True
 
             success = True
 
@@ -457,12 +487,25 @@ class MusicUpdater:
         self,
         track_ids: list[str],
         year: str,
+        *,
+        artist: str | None = None,
+        dry_run: bool | None = None,
     ) -> bool:
         """Update the year property for multiple tracks in bulk using a batched approach.
 
         Uses injected AppleScriptClient.
         """
         try:
+            if dry_run is None:
+                dry_run = self._should_dry_run(artist)
+
+            if dry_run:
+                self.console_logger.debug(
+                    "Skipped DB write for artist='%s' (dry-run)",
+                    artist or "Unknown",
+                )
+                return True
+
             if not track_ids or not year:
                 self.console_logger.warning(
                     "No track IDs or year provided for bulk update.",
@@ -925,6 +968,8 @@ class MusicUpdater:
                     success = await self.update_album_tracks_bulk_async(
                         track_ids_to_update,
                         year,
+                        artist=artist,
+                        dry_run=self._should_dry_run(artist),
                     )
                     if success:
                         for track in tracks_to_update:
@@ -1099,7 +1144,12 @@ class MusicUpdater:
             album = track.get("album", "")
             year = await self.external_api_service.get_year_from_discogs(artist, album)
             if year and self._is_valid_year(year):
-                if await self.update_track_async(track_id, new_year=year):
+                if await self.update_track_async(
+                    track_id,
+                    new_year=year,
+                    artist=artist,
+                    dry_run=self._should_dry_run(artist),
+                ):
                     track["new_year"] = year
                     updated_tracks.append(track)
                     changes.append(
@@ -1615,7 +1665,12 @@ class MusicUpdater:
                         new_genre,
                     )
 
-                    if await self.update_track_async(track_id, new_genre=new_genre):
+                    if await self.update_track_async(
+                        track_id,
+                        new_genre=new_genre,
+                        artist=track.get("artist"),
+                        dry_run=self._should_dry_run(track.get("artist")),
+                    ):
                         track["genre"] = new_genre
                         # Append the modified track dictionary to the list of updated tracks
                         updated_tracks.append(track)
@@ -1804,6 +1859,8 @@ class MusicUpdater:
                         track_id,
                         new_track_name=new_tn,
                         new_album_name=new_an,
+                        artist=artist_name,
+                        dry_run=self._should_dry_run(artist_name),
                     ):
                         # If update successful, modify track dict and log changes
                         if new_tn:
@@ -2484,7 +2541,13 @@ class MusicUpdater:
             new_an = cleaned_al if cleaned_al != orig_album else None
             if new_tn or new_an:
                 if track.get("trackStatus", "").lower() in ("subscription", "downloaded"):
-                    if await self.update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an):
+                    if await self.update_track_async(
+                        track_id,
+                        new_track_name=new_tn,
+                        new_album_name=new_an,
+                        artist=artist_name,
+                        dry_run=self._should_dry_run(artist_name),
+                    ):
                         if new_tn:
                             track["name"] = cleaned_nm
                         if new_an:
@@ -2715,13 +2778,18 @@ def main() -> None:
         )
 
         # --- Handle Dry Run mode ---
-        if args.dry_run:
-            local_console_logger.info(
-                "Running in dry-run mode. No changes will be applied.",
-            )
+        test_artists_cfg = set(CONFIG.get("development", {}).get("test_artists", []))
+        if args.dry_run and not test_artists_cfg:
+            selected_mode = "GLOBAL_DRY_RUN"
             CONFIG["dry_run"] = True
-        else:
+        elif args.dry_run and test_artists_cfg:
+            selected_mode = "PARTIAL_DRY_RUN"
             CONFIG["dry_run"] = False
+        else:
+            selected_mode = "NORMAL"
+            CONFIG["dry_run"] = False
+
+        local_console_logger.info("Selected mode: %s", selected_mode)
 
         # --- Dependency Injection Container Setup ---
         deps = None  # Initialize to None to prevent 'possibly unbound' warning
@@ -2782,6 +2850,7 @@ def main() -> None:
         ) -> None:
             # Get the main orchestrator instance from the container
             music_updater = deps.get_music_updater()
+            music_updater.set_dry_run_context(selected_mode, test_artists_cfg)
 
             # Always check if Music.app is running first (utility function)
             # Pass the error logger from deps
