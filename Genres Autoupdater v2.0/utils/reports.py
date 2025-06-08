@@ -390,14 +390,13 @@ def save_changes_report(
     console_logger: logging.Logger | None = None,
     error_logger: logging.Logger | None = None,
     force_mode: bool = False,
-    add_timestamp: bool = True,
+    add_timestamp: bool = False,
 ) -> None:
     """Save the list of change dictionaries to a CSV file.
 
-    This wrapper ensures backward compatibility with the older report format and
-    optionally appends a timestamp to the file name to avoid overwriting reports
-    from previous runs. The actual CSV writing is delegated to
-    :func:`save_unified_changes_report`.
+    This wrapper ensures backward compatibility with the older report format.
+    By default, it overwrites the specified file. If `add_timestamp` is True,
+    it appends a timestamp to the filename to preserve previous reports.
 
     Args:
         changes: List of dictionaries with change data.
@@ -405,19 +404,15 @@ def save_changes_report(
         console_logger: Logger for console output.
         error_logger: Logger for error output.
         force_mode: If ``True``, prints to console instead of saving to file.
-        add_timestamp: If ``True`` or if ``file_path`` already exists, a
-            timestamp will be appended to the file name so that previous reports
-            are preserved.
+        add_timestamp: If ``True``, a timestamp will be appended to the
+            file name. Defaults to ``False``.
 
     """
-    # Ensure loggers are not None (although DependencyContainer should provide them)
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
     if error_logger is None:
         error_logger = logging.getLogger("error_logger")
 
-    # Add change_type if missing (backward compatibility)
-    # This logic ensures older change dictionaries are compatible with save_unified_changes_report
     for change in changes:
         if "change_type" not in change:
             if "new_genre" in change and change.get("new_genre"):
@@ -429,17 +424,12 @@ def save_changes_report(
             else:
                 change["change_type"] = "other"
 
-    # Determine the final file path. If add_timestamp is True, append a timestamp
-    # to preserve previous reports. Otherwise use the provided path even if it
-    # already exists.
     final_path = file_path
     if add_timestamp:
         base, ext = os.path.splitext(file_path)
         timestamp_suffix = datetime.now().strftime("%Y%m%d_%H%M%S")
         final_path = f"{base}_{timestamp_suffix}{ext}"
 
-    # Use the unified changes report function for the core logic
-    # Pass force_mode to save_unified_changes_report to handle console output
     save_unified_changes_report(
         changes, final_path, console_logger, error_logger, force_mode
     )
@@ -451,7 +441,7 @@ def save_changes_csv(
     console_logger: logging.Logger | None = None,
     error_logger: logging.Logger | None = None,
     force_mode: bool = False,
-    add_timestamp: bool = True,
+    add_timestamp: bool = False,
 ) -> None:
     """Compatibility wrapper for saving change reports in CSV format."""
     save_changes_report(

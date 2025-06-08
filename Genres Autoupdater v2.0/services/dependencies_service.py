@@ -13,6 +13,7 @@ and semaphore creation for AppleScriptClient.
 __init__ now receives loggers and listener as arguments.
 """
 
+import argparse
 import asyncio
 import logging
 
@@ -61,6 +62,7 @@ class DependencyContainer:
     def __init__(
         self,
         config_path: str,
+        args: argparse.Namespace,
         console_logger: logging.Logger,
         error_logger: logging.Logger,
         analytics_logger: logging.Logger,
@@ -72,6 +74,7 @@ class DependencyContainer:
 
         Args:
             config_path: The path to the application configuration file.
+            args: The parsed command-line arguments.
             console_logger: The logger for console output.
             error_logger: The logger for error messages.
             analytics_logger: The logger for analytics data.
@@ -90,28 +93,22 @@ class DependencyContainer:
         try:
             self.config: dict[str, Any] = load_config(self._config_path)
             self.console_logger.info("Configuration loaded successfully.")
-        except (
-            FileNotFoundError,
-            ValueError,
-            yaml.YAMLError,
-        ) as e:  # Import yaml not needed here as load_config handles it
+        except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
             self.error_logger.critical(f"Failed to load or validate configuration from {self._config_path}: {e}")
-            # Store empty config on failure, but re-raise the exception
             self.config = {}
-            raise  # Re-raise the exception after logging
+            raise
 
         self.console_logger.info("DependencyContainer initialized (sync part).")
 
-        # 3. Initialize core services that don't have complex async dependencies in their constructor
-        # They receive config and already initialized loggers
         self.analytics = Analytics(self.config, self.console_logger, self.error_logger, self.analytics_logger)
 
-        # Initialize AppleScript client, using dry-run wrapper if configured
-        if self.config.get("dry_run", False):
+        # Ініціалізуємо AppleScript клієнт на основі прапорця --dry-run
+        if args.dry_run:
             self.console_logger.info("Dry run enabled - using DryRunAppleScriptClient")
             self.ap_client = DryRunAppleScriptClient(self.config, self.console_logger, self.error_logger)
         else:
             self.ap_client = AppleScriptClient(self.config, self.console_logger, self.error_logger)
+
 
         # CacheService now requires loggers and config, async init is separate
         self.cache_service = CacheService(self.config, self.console_logger, self.error_logger)

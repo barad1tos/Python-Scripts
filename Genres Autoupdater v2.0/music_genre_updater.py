@@ -39,7 +39,6 @@ import argparse
 import asyncio
 import logging
 import os
-import re
 import sys
 import time
 
@@ -54,7 +53,6 @@ import yaml
 
 # Import necessary services and utilities
 from utils.analytics import Analytics  # Analytics is used in method decorators
-from utils.config import load_config
 
 # Import get_full_log_path from logger for use in main/methods, but NOT get_loggers here
 from utils.logger import (  # get_loggers is only called in main
@@ -71,7 +69,6 @@ from utils.metadata import (
     is_music_app_running,
     merge_genres,
     parse_tracks,
-    remove_parentheses_with_keywords,
 )
 
 # Import the DependencyContainer for service management
@@ -1143,8 +1140,8 @@ class MusicUpdater:
             artist = track.get("artist", "")
             album = track.get("album", "")
             year = await self.external_api_service.get_year_from_discogs(artist, album)
-            if year and self._is_valid_year(year):
-                if await self.update_track_async(
+            if year and self._is_valid_year(year) and \
+                await self.update_track_async(
                     track_id,
                     new_year=year,
                     artist=artist,
@@ -2446,75 +2443,25 @@ class MusicUpdater:
 
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Full Process")
-    async def run_full_process(self, args: argparse.Namespace) -> None:
-        """Run the default full update process based on execution mode."""
-        self.console_logger.info("Running in default mode (incremental or full processing).")
+    async def run_full_process(self, tracks: list[dict[str, str]], args: argparse.Namespace) -> None:
+        """Run the default full update process on a given list of tracks.
 
-        test_artists_config = self.config.get("development", {}).get("test_artists", [])
-        is_test_artist_dry_run = args.dry_run and test_artists_config
+        This includes cleaning, genre updates, and year retrieval.
+        """
+        self.console_logger.info("Starting full process for %d tracks.", len(tracks))
 
-        # --- Checking whether to start processing ---
-        if not is_test_artist_dry_run:
-            can_run = await self.can_run_incremental(force_run=args.force)
-            if not can_run:
-                self.console_logger.info("Incremental interval not reached. Skipping main processing.")
-                return
+        # Create a copy of the tracks to avoid modifying the cached list
+        all_tracks = [track.copy() for track in tracks]
 
-        # --- Determining the last run time for incremental mode ---
+        # Define the last run timestamp for incremental updates
         effective_last_run = datetime.min
-        if not args.force:
-            try:
-                effective_last_run = await self.cache_service.get_last_run_timestamp()
-                self.console_logger.info(
-                    "Last incremental run timestamp: %s",
-                    effective_last_run.strftime("%Y-%m-%d %H:%M:%S") if effective_last_run != datetime.min else "Never",
-                )
-            except Exception as e:
-                self.error_logger.warning(f"Could not get last run timestamp: {e}. Assuming full run.")
+        if not args.force and not args.test_mode:
+            effective_last_run = await self.cache_service.get_last_run_timestamp()
 
-        # --- Loading tracks ---
-        all_tracks: list[dict[str, str]] = []
-        if is_test_artist_dry_run:
-            self.console_logger.info("Dry-run mode: Processing tracks only for test artists: %s", test_artists_config)
-            fetched_track_map = {}
-            for art in test_artists_config:
-                art_tracks = await self.fetch_tracks_async(artist=art, force_refresh=args.force)
-                for track in art_tracks:
-                    if track.get("id"):
-                        fetched_track_map[track["id"]] = track
-            all_tracks = list(fetched_track_map.values())
-            self.console_logger.info("Loaded %d tracks total for test artists.", len(all_tracks))
-        else:
-            all_tracks = await self.fetch_tracks_async(force_refresh=args.force)
-            self.console_logger.info("Loaded %d tracks from Music.app.", len(all_tracks))
-
-        if not all_tracks:
-            self.console_logger.warning("No tracks fetched or found for processing.")
-            if not args.force:
-                await self.update_last_incremental_run()
-            return
-
-        # --- Simulating cleaning and genres ---
-        all_tracks = [track.copy() for track in all_tracks]
-        changes_log_cleaning: list[dict[str, str]] = []
-
+        # --- Step 1: Clean track and album names ---
+        self.console_logger.info("Step 1: Cleaning track and album names...")
+        changes_log_cleaning = []
         cleaning_cache: dict[tuple[str, str], str] = {}
-
-        def _clean_track_only(tn: str, artist: str, album: str) -> str:
-            exceptions = self.config.get("exceptions", {}).get("track_cleaning", [])
-            is_exception = any(
-                exc.get("artist", "").lower() == artist.lower()
-                and exc.get("album", "").lower() == album.lower()
-                for exc in exceptions
-            )
-            if is_exception:
-                return tn.strip()
-
-            cleaning_config = self.config.get("cleaning", {})
-            keywords = cleaning_config.get("remaster_keywords", ["remaster", "remastered"])
-            cleaned = remove_parentheses_with_keywords(tn, keywords, self.console_logger, self.error_logger)
-            cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            return cleaned if cleaned else ""
 
         async def clean_track_default(track: dict[str, str]) -> None:
             nonlocal changes_log_cleaning, cleaning_cache
@@ -2526,117 +2473,88 @@ class MusicUpdater:
             cache_key = (artist_name, orig_album)
             if cache_key in cleaning_cache:
                 cleaned_al = cleaning_cache[cache_key]
-                cleaned_nm = _clean_track_only(orig_name, artist_name, orig_album)
+                cleaned_nm, _ = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
             else:
-                cleaned_nm, cleaned_al = clean_names(
-                    artist_name,
-                    orig_name,
-                    orig_album,
-                    self.config,
-                    self.console_logger,
-                    self.error_logger,
-                )
+                cleaned_nm, cleaned_al = clean_names(artist_name, orig_name, orig_album, self.config, self.console_logger, self.error_logger)
                 cleaning_cache[cache_key] = cleaned_al
+
             new_tn = cleaned_nm if cleaned_nm != orig_name else None
             new_an = cleaned_al if cleaned_al != orig_album else None
+
             if new_tn or new_an:
-                if track.get("trackStatus", "").lower() in ("subscription", "downloaded"):
-                    if await self.update_track_async(
-                        track_id,
-                        new_track_name=new_tn,
-                        new_album_name=new_an,
-                        artist=artist_name,
-                        dry_run=self._should_dry_run(artist_name),
-                    ):
+                changes_log_cleaning.append({
+                    "change_type": "cleaning", "track_id": track_id, "artist": artist_name,
+                    "original_name": orig_name, "cleaned_name": cleaned_nm,
+                    "original_album": orig_album, "cleaned_album": cleaned_al,
+                    "dateAdded": track.get("dateAdded", ""),
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                })
+                if not args.dry_run and track.get("trackStatus", "").lower() in ("subscription", "downloaded"):
+                    if await self.update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an, artist=artist_name):
                         if new_tn:
                             track["name"] = cleaned_nm
                         if new_an:
                             track["album"] = cleaned_al
-                        changes_log_cleaning.append({
-                            "change_type": "cleaning", "track_id": track_id, "artist": artist_name,
-                            "original_name": orig_name, "cleaned_name": cleaned_nm,
-                            "original_album": orig_album, "cleaned_album": cleaned_al,
-                            "dateAdded": track.get("dateAdded", ""),
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        })
 
-        self.console_logger.info("Simulating track name cleaning...")
         clean_tasks = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
         await asyncio.gather(*clean_tasks)
 
-        self.console_logger.info("Simulating genre updates...")
-        genre_last_run = datetime.min if is_test_artist_dry_run else effective_last_run
-        _, changes_g = await self.update_genres_by_artist_async(all_tracks, genre_last_run)
+        # --- Step 2: Updating genres ---
+        self.console_logger.info("Step 2: Updating genres...")
+        _, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)
 
-        if is_test_artist_dry_run:
-            #Logic exclusively for dry-run with test artists
-            self.console_logger.info("Dry-run mode: Preparing simulated changes report.")
-
-            dry_run_report_file = get_full_log_path(
-                self.config,
-                "dry_run_report_file",
-                "csv/dry_run_combined.csv",
-            )
-            # Call the correct function for reporting, which overwrites the file
-            save_unified_dry_run(
-                changes_log_cleaning,
-                changes_g,
-                dry_run_report_file,
-                self.console_logger,
-                self.error_logger,
-            )
-            total_simulated_changes = len(changes_log_cleaning) + len(changes_g)
-            self.console_logger.info(
-                "Dry run simulation complete. Found %d potential changes. See report: '%s'",
-                total_simulated_changes, dry_run_report_file
-            )
-            # End execution, not proceeding to year updates and verification
-            return
-
-        # --- Full flow for normal mode (or --dry-run without test_artists) ---
-        self.console_logger.info("Starting album year update process...")
-        albums_to_process = {
-            (t.get("artist", ""), t.get("album", "")): "Default processing"
-            for t in all_tracks if t.get("artist") and t.get("album")
-        }
+        # --- Step 3: Updating album years ---
+        self.console_logger.info("Step 3: Updating album years...")
+        albums_to_process = {(t.get("artist", ""), t.get("album", "")): "Default" for t in all_tracks if t.get("artist") and t.get("album")}
         _, changes_y = await self.process_album_years(all_tracks, albums_to_process, force=args.force)
 
+        # --- Step 4: Generating reports ---
         all_changes = changes_log_cleaning + changes_g + changes_y
+
+        if args.dry_run:
+            dry_run_report_file = get_full_log_path(self.config, "dry_run_report_file", "csv/dry_run_combined.csv")
+            save_unified_dry_run(
+                cleaning_changes=changes_log_cleaning,
+                genre_changes=changes_g + changes_y,
+                file_path=dry_run_report_file,
+                console_logger=self.console_logger,
+                error_logger=self.error_logger,
+            )
+            self.console_logger.info(
+                "Dry run simulation complete. Found %d potential changes. "
+                "See report: '%s'",
+                len(all_changes),
+                dry_run_report_file,
+            )
+            return
+
         if all_changes:
             self.console_logger.info("Consolidating and saving all detected changes...")
+            # Synchronize the full track list, since some of them might have been changed
             await sync_track_list_with_current(
                 all_tracks,
-                get_full_log_path(
-                    self.config,
-                    "csv_output_file",
-                    DEFAULT_TRACK_LIST_CSV_PATH,
-                ),
+                get_full_log_path(self.config, "csv_output_file", DEFAULT_TRACK_LIST_CSV_PATH),
                 self.cache_service,
                 self.console_logger,
                 self.error_logger,
                 partial_sync=not args.force,
             )
-            # Для звичайного режиму використовуємо звіт з часовою міткою
+            # Save the changes report, overwriting the existing file
             save_changes_csv(
                 all_changes,
-                get_full_log_path(
-                    self.config,
-                    "changes_report_file",
-                    DEFAULT_CHANGES_REPORT_CSV_PATH,
-                ),
+                get_full_log_path(self.config, "changes_report_file", DEFAULT_CHANGES_REPORT_CSV_PATH),
                 self.console_logger,
                 self.error_logger,
                 force_mode=args.force,
+                add_timestamp=False, # Explicitly indicate that a timestamp is not required
             )
             self.console_logger.info("Processing complete. Logged %d changes.", len(all_changes))
         else:
             self.console_logger.info("No changes were needed in this run.")
 
+        # Update the start time only for incremental or test mode
         if not args.force:
-            await self.update_last_incremental_run()
-
-        self.console_logger.info("Executing pending verification check...")
-        await self.run_verify_pending(force=False)  # Run pending verification based on interval
+            await self.update_last_incremental_run()  # Run pending verification based on interval
 
 
 # --- Argument Parsing ---
@@ -2653,421 +2571,88 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         help="Simulate changes without applying them.",
     )
-    subparsers = parser.add_subparsers(dest="command")
+    parser.add_argument(
+        "--test-mode",
+        action="store_true",
+        help="Run only on artists defined in development.test_artists.",
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     clean_artist_parser = subparsers.add_parser(
-        "clean_artist",
-        help="Clean track/album names for a given artist.",
+        "clean_artist", help="Clean track/album names for a given artist."
     )
     clean_artist_parser.add_argument("--artist", required=True, help="Artist name.")
-    # Removed --force from subcommand, use global --force
 
     update_years_parser = subparsers.add_parser(
-        "update_years",
-        help="Update album years from external APIs.",
+        "update_years", help="Update album years from external APIs."
     )
     update_years_parser.add_argument("--artist", help="Artist name (optional).")
-    # Removed --force from subcommand, use global --force
 
-    args = parser.parse_args()
+    subparsers.add_parser(
+        "verify_database", help="Verify track database against Music.app."
+    )
+    subparsers.add_parser(
+        "verify_pending", help="Verify albums pending year verification."
+    )
 
-    # If a subcommand was used, ensure the global --force flag is transferred
-    # to the subcommand's namespace for consistency if needed, although
-    # the logic now primarily checks args.force directly.
-    # if args.command and hasattr(args, 'force') and args.force:
-    #     # This is handled by argparse automatically if global --force is before subcommand
-    #     # but explicit transfer might be needed depending on exact argparse usage/version
-    #     pass # No change needed here with standard argparse
-
-    return args
+    return parser.parse_args()
 
 
 def main() -> None:
-    """Parse arguments and run the async main logic.
-
-    Handle top-level setup, teardown, exception handling, and listener shutdown.
-    Initialize loggers and DependencyContainer, orchestrate command execution.
-    """
-    # Import DependencyContainer here to break the circular import and make it available to main's scope
-    # Ensure DependencyContainer is imported at the function level if needed only here,
-    # or at the top level if used elsewhere in this file outside of methods.
-    # It's used in the main function only, so importing here is acceptable for breaking the cycle.
+    """Parse arguments and run the async main logic."""
     from services.dependencies_service import DependencyContainer
 
     start_all = time.time()
     args = parse_arguments()
 
-    # Initialize loggers and the QueueListener *before* creating DependencyContainer
-    # These are needed by the DependencyContainer constructor and for early logging
-    # Load the raw configuration first to set up logging
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            raw_config = yaml.safe_load(f) or {}
-    except Exception as e:  # pragma: no cover - fatal setup
-        print(
-            f"FATAL ERROR: Failed to read configuration for logging: {e}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Initialize loggers and the QueueListener using the raw config
-    # This is the ONLY place ``get_loggers`` should be called
-    local_console_logger = None  # Initialize to None for error handling in finally
-    local_error_logger = None
-    local_analytics_logger = None
-    local_listener = None  # Initialize listener to None
-    deps = None  # Initialize deps to None for finally block
+    local_console_logger, local_error_logger, local_analytics_logger, local_listener = (None, None, None, None)
+    deps = None
 
     try:
-        (
-            local_console_logger,
-            local_error_logger,
-            local_analytics_logger,
-            local_listener,
-        ) = get_loggers(raw_config)
-
-        # Log that loggers are initialized (should see this only ONCE)
-        local_console_logger.info(
-            "Main function: Loggers and QueueListener initialized.",
-        )
-        # Check if listener is None (get_loggers might fail)
-        if local_listener is None:
-            local_console_logger.error(
-                "Main function: QueueListener failed to initialize. File logs might be missing.",
-            )
-
-        # --- Load and Validate Configuration ---
-        global CONFIG  # noqa: PLW0603 - configuration is initialized here
+        # Initialize loggers based on raw configuration
         try:
-            CONFIG = load_config(CONFIG_PATH)
-        except (FileNotFoundError, ValueError, yaml.YAMLError) as e:
-            local_error_logger.critical(
-                "Failed to load or validate configuration: %s",
-                e,
-            )
-            sys.exit(1)
-
-        # Log important configuration values
-        local_console_logger.info("\n[CONFIG] Important configuration values:")
-        local_console_logger.info("- Music library path: %s", CONFIG.get("music_library_path"))
-
-        if "year_retrieval" in CONFIG and CONFIG["year_retrieval"].get("enabled", False):
-            api_auth = CONFIG["year_retrieval"].get("api_auth", {})
-            local_console_logger.info("\n[CONFIG] API Configuration:")
-            local_console_logger.info(
-                "- Discogs token: %s",
-                "***set***" if api_auth.get("discogs_token") else "MISSING",
-            )
-            local_console_logger.info("- Contact email: %s", api_auth.get("contact_email") or "MISSING")
-            local_console_logger.info(
-                "- Last.fm API key: %s",
-                "***set***" if api_auth.get("lastfm_api_key") else "MISSING",
-            )
-            local_console_logger.info("- Use Last.fm: %s", api_auth.get("use_lastfm", False))
-
-        # --- Add safety check for listener (redundant if checked above, but harmless) ---
-        # if local_listener is None:
-        #     local_console_logger.error("Failed to initialize QueueListener for logging. File logs might be missing.")
-
-        # --- Perform initial path checks ---
-        # Call check_paths here, after loggers are initialized
-        # Pass CONFIG and the local error logger
-        check_paths(
-            [CONFIG["music_library_path"], CONFIG["apple_scripts_dir"]],
-            local_error_logger,
-        )
-
-        # --- Handle Dry Run mode ---
-        test_artists_cfg = set(CONFIG.get("development", {}).get("test_artists", []))
-        if args.dry_run and not test_artists_cfg:
-            selected_mode = "GLOBAL_DRY_RUN"
-            CONFIG["dry_run"] = True
-        elif args.dry_run and test_artists_cfg:
-            selected_mode = "PARTIAL_DRY_RUN"
-            CONFIG["dry_run"] = False
-        else:
-            selected_mode = "NORMAL"
-            CONFIG["dry_run"] = False
-
-        local_console_logger.info("Selected mode: %s", selected_mode)
-
-        # --- Dependency Injection Container Setup ---
-        deps = None  # Initialize to None to prevent 'possibly unbound' warning
-        try:
-            # Create the DependencyContainer instance, passing config path and the initialized loggers/listener
-            # Pass the local logger and listener variables
-            deps = DependencyContainer(
-                CONFIG_PATH,
-                local_console_logger,
-                local_error_logger,
-                local_analytics_logger,
-                local_listener,
-            )
-
-            # --- Asynchronously Initialize Dependencies ---
-            # IMPORTANT: Call the async initialize method before using services
-            # This must be awaited, so we run it using asyncio.run
-            local_console_logger.info(
-                "Starting DependencyContainer asynchronous initialization...",
-            )
-            try:
-                # Need a wrapper async function to await deps.initialize()
-                async def initialize_dependencies_async(deps_instance: DependencyContainer) -> None:
-                    await deps_instance.initialize()
-
-                asyncio.run(initialize_dependencies_async(deps))
-                local_console_logger.info(
-                    "DependencyContainer asynchronous initialization completed successfully.",
-                )
-            except Exception as init_err:
-                local_error_logger.critical(
-                    f"Critical error during DependencyContainer asynchronous initialization: {init_err}",
-                    exc_info=True,
-                )
-                # If async initialization fails, the application likely cannot proceed
-                sys.exit(1)
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                raw_config = yaml.safe_load(f) or {}
         except Exception as e:
-            if "local_error_logger" in locals() and local_error_logger:
-                local_error_logger.critical(
-                    f"Unexpected error during initialization: {e}",
-                    exc_info=True,
-                )
-            else:
-                print(
-                    f"CRITICAL ERROR: Unexpected error during initialization: {e}",
-                    file=sys.stderr,
-                )
-                import traceback
-
-                traceback.print_exc(file=sys.stderr)
+            print(f"FATAL ERROR: Failed to read configuration for logging: {e}", file=sys.stderr)
             sys.exit(1)
 
-        # --- Run Main Commands ---
-        # Wrap the main command execution in an async function
-        async def run_main_commands(
-            deps: DependencyContainer,
-            args: argparse.Namespace,
-        ) -> None:
-            # Get the main orchestrator instance from the container
-            music_updater = deps.get_music_updater()
-            music_updater.set_dry_run_context(selected_mode, test_artists_cfg)
+        (local_console_logger, local_error_logger, local_analytics_logger, local_listener) = get_loggers(raw_config)
 
-            # Always check if Music.app is running first (utility function)
-            # Pass the error logger from deps
-            error_logger_for_check = deps.get_error_logger()
-            # is_music_app_running requires error_logger
-            if not is_music_app_running(error_logger_for_check):
-                deps.get_console_logger().error(
-                    "Music app is not running! Please start Music.app before running this script.",
-                )
-                sys.exit(1)  # Exit if Music app is not running
+        # Create DependencyContainer, passing command-line arguments
+        deps = DependencyContainer(CONFIG_PATH, args, local_console_logger, local_error_logger, local_analytics_logger, local_listener)
 
-            # --- Command-Specific Execution Paths ---
-            # Call the corresponding methods on the music_updater instance
-            # These methods are async and need to be awaited
-            if hasattr(args, "command") and args.command == "verify_database":
-                await music_updater.run_verify_database(
-                    force=args.force,
-                    dry_run=args.dry_run,
-                )
+        # Asynchronous initialization of services inside the container
+        async def initialize_dependencies_async(deps_instance: DependencyContainer) -> None:
+            await deps_instance.initialize()
+        asyncio.run(initialize_dependencies_async(deps))
 
-            elif args.command == "clean_artist":
-                await music_updater.run_clean_artist(
-                    artist=args.artist,
-                    force=args.force,
-                )
+        # Get the MusicUpdater instance from the dependency container
+        updater_instance = deps.get_music_updater()
+        # Run the main asynchronous process
+        asyncio.run(updater_instance.run_full_process(args))
 
-            elif args.command == "update_years":
-                await music_updater.run_update_years(
-                    artist=args.artist,
-                    force=args.force,
-                )
-
-            elif args.command == "verify_pending":
-                await music_updater.run_verify_pending(
-                    force=args.force,
-                )  # Pass force argument
-
-            else:  # Default mode
-                await music_updater.run_full_process(args)
-
-        # Run the async command execution wrapper function
-        # This runs the main logic after successful async initialization
-        try:
-            # This asyncio.run starts the main event loop for the command execution
-            asyncio.run(run_main_commands(deps, args))
-            if CONFIG.get("dry_run", False):
-                actions: list[ActionType] = getattr(deps.ap_client, "get_actions", lambda: [])()
-                if actions:
-                    local_console_logger.info("\nDRY-RUN summary of AppleScript calls:")
-                    for action in actions:
-                        if is_script_action(action):
-                            local_console_logger.info(
-                                "Would run %s with args %s",
-                                action["script"],
-                                action.get("args", []),
-                            )
-                        elif is_code_action(action):
-                            local_console_logger.info("Would execute inline AppleScript code")
-
-        except KeyboardInterrupt:
-            # Log interruption using loggers from deps
-            deps.get_console_logger().info(
-                "Script interrupted by user (main commands).",
-            )
-            sys.exit(1)  # Exit with error code upon interruption
-        except Exception as command_exec_err:
-            # Log critical error using loggers from deps
-            deps.get_error_logger().critical(
-                "Critical error during main command execution: %s",
-                command_exec_err,
-                exc_info=True,
-            )
-            sys.exit(1)  # Exit with error code
-
-    except FileNotFoundError as e:
-        # Catch config loading error (re-raised by DependencyContainer __init__)
-        # Loggers are initialized *before* deps, so local loggers should be available.
-        if "local_error_logger" in locals() and local_error_logger:
-            local_error_logger.critical(f"Configuration file not found: {e}")
+    except KeyboardInterrupt:
+        if local_console_logger:
+            local_console_logger.info("\nScript interrupted by user.")
+        sys.exit(130)
+    except Exception as e:
+        if local_error_logger:
+            local_error_logger.critical("A critical error occurred in the main execution block: %s", e, exc_info=True)
         else:
-            # Fallback print if loggers weren't initialized
-            print(f"CRITICAL ERROR: Configuration file not found: {e}", file=sys.stderr)
+            print(f"A critical error occurred: {e}", file=sys.stderr)
         sys.exit(1)
-    except ValueError as e:
-        # Catch config validation error (re-raised by DependencyContainer __init__)
-        if "local_error_logger" in locals() and local_error_logger:
-            local_error_logger.critical(f"Configuration validation error: {e}")
-        else:
-            print(
-                f"CRITICAL ERROR: Configuration validation error: {e}",
-                file=sys.stderr,
-            )
-        sys.exit(1)
-    except yaml.YAMLError as e:
-        # Catch config parsing error (re-raised by DependencyContainer __init__)
-        if "local_error_logger" in locals() and local_error_logger:
-            local_error_logger.critical(f"Configuration parsing error: {e}")
-        else:
-            print(f"CRITICAL ERROR: Configuration parsing error: {e}", file=sys.stderr)
-        sys.exit(1)
-    # Other exceptions from DependencyContainer __init__ (e.g. Import Error) will also be caught here.
-    except Exception as deps_init_err:
-        if "local_error_logger" in locals() and local_error_logger:
-            local_error_logger.critical(
-                "Critical error during DependencyContainer initialization: %s",
-                deps_init_err,
-                exc_info=True,
-            )
-        else:
-            print(
-                f"CRITICAL ERROR: Critical error during DependencyContainer initialization: {deps_init_err}",
-                file=sys.stderr,
-            )
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
-        sys.exit(1)
-
     finally:
-        # --- Final Cleanup ---
-        # Shutdown DependencyContainer if it was successfully created
-        # This handles closing services and stopping the listener
+        # Shutdown
         if deps:
-            try:
-                deps.shutdown()
-            except Exception as shutdown_err:
-                # Use error logger from deps if available, otherwise local error logger
-                error_logger_for_shutdown = (
-                    deps.get_error_logger()
-                    if deps and hasattr(deps, "get_error_logger")
-                    else ("local_error_logger" in locals() and local_error_logger) or None
-                )
-                if error_logger_for_shutdown:
-                    error_logger_for_shutdown.error(
-                        f"Error during DependencyContainer shutdown: {shutdown_err}",
-                        exc_info=True,
-                    )
-                else:
-                    print(
-                        f"ERROR: Error during DependencyContainer shutdown: {shutdown_err}",
-                        file=sys.stderr,
-                    )
+            deps.shutdown()
+        elif local_listener:
+            # If container is not created, but listener is running
+            local_listener.stop()
 
-        # Explicitly close handlers for robustness.
-        # This is handled by deps.shutdown() if deps was created.
-        # If deps was NOT created due to an error before its initialization (e.g. config error),
-        # the local loggers might still need explicit handler closing if they had file handlers added by get_loggers.
-        # The get_loggers implementation in utils/logger.py adds RunTrackingHandler and QueueHandler.
-        # RunTrackingHandler's close method calls super().close() and trim_log_to_max_runs.
-        # QueueListener's stop() method calls close() on its handlers.
-        # So if deps.shutdown() is called, the listener is stopped and handlers are closed.
-        # If deps is NOT created, the listener started by get_loggers needs to be stopped,
-        # and its handlers closed.
-        # Let's make sure the listener is stopped directly if deps is not created.
-        # And rely on listener stopping to close handlers.
-
-        # Simplified cleanup in finally
-        # If deps exists, it calls deps.shutdown() which stops the listener and closes handlers.
-        # If deps does NOT exist (error before deps = ...), the local listener was created
-        # by get_loggers and needs to be stopped. Its handlers will be closed by listener.stop().
-        # This case handles errors *before* deps = DependencyContainer(...).
-        # In case of errors *within* the try block *after* deps is created, the `if deps:` block above runs.
-        # This structure seems correct for cleanup regardless of where the error occurs.
-        # The local_listener is only stopped here if deps is not created.
-        elif "local_listener" in locals() and local_listener:
-            try:
-                # Use the console logger if available, otherwise print
-                logger_for_listener_stop = ("local_console_logger" in locals() and local_console_logger) or None
-                if logger_for_listener_stop:
-                    logger_for_listener_stop.info(
-                        "Stopping QueueListener (deps not created)...",
-                    )
-                else:
-                    print(
-                        "INFO: Stopping QueueListener (deps not created)...",
-                        file=sys.stderr,
-                    )
-
-                local_listener.stop()
-            except Exception as listener_stop_err:
-                if "local_error_logger" in locals() and local_error_logger:
-                    local_error_logger.error(
-                        f"Error stopping QueueListener (deps not created): {listener_stop_err}",
-                        exc_info=True,
-                    )
-                else:
-                    print(
-                        f"ERROR: Error stopping QueueListener (deps not created): {listener_stop_err}",
-                        file=sys.stderr,
-                    )
-
-        # Final timing log
         end_all = time.time()
-        # Use console logger from deps if available, otherwise local console logger
-        console_logger_for_final = (
-            deps.get_console_logger()
-            if deps and hasattr(deps, "get_console_logger")
-            else ("local_console_logger" in locals() and local_console_logger) or None
-        )
-        if console_logger_for_final:
-            console_logger_for_final.info(
-                f"\nTotal script execution time: {end_all - start_all:.2f} seconds",
-            )
-        else:
-            # Fallback print if no loggers were successfully initialized at all
-            print(
-                f"\nTotal script execution time: {end_all - start_all:.2f} seconds",
-                file=sys.stderr,
-            )
-
-        # sys.exit(0) # Exit status is handled by explicit sys.exit calls above
-
-
-# --- Initial checks and entry point ---
-# CONFIG is loaded at module level.
-# check_paths is called in main now.
-# The main function is the entry point.
+        if local_console_logger:
+            local_console_logger.info(f"\nTotal script execution time: {end_all - start_all:.2f} seconds")
 
 if __name__ == "__main__":
     main()
