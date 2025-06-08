@@ -1,19 +1,25 @@
-Ось повний вміст вашого актуального файлу README.md (збережено форматування, стилі та структуру):
-
-```markdown
 # Python Scripts
 
 Hey! 👋 This repo is a toolbox of Python scripts (plus a dash of AppleScript) for all sorts of automation fun—mostly tuned for macOS (Sonoma and newer), but written with flexibility and maintainability in mind.
 
 ---
 
-## Structure at a Glance
+## Table of Contents
 
-### Main Attraction: `Genres Autoupdater v2.0/`
+- [Quick-start](#quick-start)
+- [Structure at a glance](#structure-at-a-glance)
+- [How it all connects (detailed architecture)](#how-it-all-connects-detailed-architecture)
+- [Contribution & best practices](#contribution-and-best-practices)
+- [License](#license)
+- [Why this structure?](#why-this-structure)
+
+## Structure at a glance
+
+### Main attraction: `Genres Autoupdater v2.0/`
 
 A self-contained engine for automatically updating music genres—think of it as your personal DJ’s assistant, with all the knobs and dials out in the open (thanks to robust config files).
 
-**What’s inside:**
+**What's inside:**
 
 - **config.yaml** – Drop all your paths, credentials, update rules, API keys, etc., in here. No more hardcoding!
 - **requirements.txt** – Python dependencies (right now, just PyYAML, but check for updates).
@@ -23,13 +29,13 @@ A self-contained engine for automatically updating music genres—think of it as
 - **services/** – All integrations with third-party APIs or external systems.
 - **utils/** – Your toolbox: logging, YAML/file helpers, and more.
 - **readme.md** – Local docs: setup, usage, troubleshooting.
-- **image.png** – Diagrams/screenshots to help you visualize what’s what.
+- **image.png** – Diagrams/screenshots to help you visualize what's what.
 
-Other scripts? You’ll find them at the repo root or in similar subfolders.
+Other scripts? You'll find them at the repo root or in similar subfolders.
 
 ---
 
-## Quickstart
+## Quick-start
 
 **Python version:**
 Check `.python-version`, `pyproject.toml`, or inside each script. If nothing’s set, just run the latest stable Python 3.x.
@@ -51,7 +57,7 @@ pyenv global <desired_version>
 
 ---
 
-## How to Use
+## How to use
 
 Every script here is self-contained.
 **Pro-tip:** Always stash your settings in `config.yaml`—it’ll save you headaches and make your setup portable.
@@ -68,9 +74,9 @@ python full_sync.py
 
 ---
 
-## How It All Connects (Detailed Architecture)
+## How it all connects (detailed architecture)
 
-Let’s get nerdy for a sec. Here’s a file-level breakdown of how `Genres Autoupdater v2.0` ticks under the hood:
+Let's get nerdy for a sec. Here's a file-level breakdown of how `Genres Autoupdater v2.0` ticks under the hood:
 
 ```mermaid
 flowchart TD
@@ -123,12 +129,12 @@ flowchart TD
 > - `music_genre_updater.py` is the shot-caller.
 > - All your settings (paths, keys, etc.) go into `config.yaml`—no more cluttering your code with secrets or magic numbers.
 > - Utilities, services, and AppleScripts are modular, so you can swap or extend without breaking a sweat.
-> - Batch processing? That’s what `full_sync.py` is for.
+> - Batch processing? That's what `full_sync.py` is for.
 > - Local docs and images keep things easy to onboard for the next person (or future you).
 
 ---
 
-## Contribution & Best Practices
+## Contribution & best practices
 
 - Stick to the coding style & docstring conventions—makes everyone’s life easier.
 - Move all settings into config files. Hardcoding is for amateurs! 😄
@@ -153,7 +159,7 @@ MIT License – see [LICENSE](LICENSE) for details.
 
 ---
 
-## Why This Structure?
+## Why this structure?
 
 - **Maximum flexibility:** All parameters outside the code.
 - **Modular:** Each piece—core, services, utils, AppleScripts—is swappable and testable.
@@ -167,6 +173,4 @@ If you need a drilldown into a specific script or want to see function-level dat
 
 ---
 
-**PS:** Don’t forget to keep your `config.yaml` out of version control if it has sensitive data—add it to `.gitignore`!
-
-```
+**PS:** Don't forget to keep your `config.yaml` out of version control if it has sensitive data—add it to `.gitignore`!
