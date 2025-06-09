@@ -66,9 +66,7 @@ from utils.metadata import (
     clean_names,
     determine_dominant_genre_for_artist,
     group_tracks_by_artist,
-    has_genre,
     is_music_app_running,
-    merge_genres,
     parse_tracks,
 )
 
@@ -738,7 +736,6 @@ class MusicUpdater:
                     changes_report_file_path,
                     self.console_logger,
                     self.error_logger,
-                    force_mode=force,
                     add_timestamp=False,
                 )
                 self.console_logger.info(
@@ -1589,23 +1586,11 @@ class MusicUpdater:
                 status = track.get(
                     "trackStatus",
                     "unknown",
-                ).lower()  # Ensure status is lowercase for comparison
+                ).lower()
 
-                # Check if update is needed and status allows modification
-                if track_id and status in ("subscription", "downloaded"):
-                    if has_genre(old_genre, dom_genre):
-                        self.console_logger.debug(
-                            "Skipping track %s ('%s' - '%s'): genre '%s' already present",
-                            track_id,
-                            track.get("artist", "Unknown"),
-                            track.get("name", "Unknown"),
-                            dom_genre,
-                        )
-                        return
-
-                    new_genre = merge_genres(old_genre, dom_genre)
-                    if new_genre == old_genre:
-                        return
+                if track_id and status in ("subscription", "downloaded", "unknown"):
+                    # Assign the dominant genre to the track
+                    new_genre = dom_genre
 
                     self.console_logger.info(
                         "Updating track %s ('%s' - '%s') (Old Genre: %s, New Genre: %s)",
@@ -1646,28 +1631,26 @@ class MusicUpdater:
                             track_id,
                             track.get("artist", "Unknown"),
                             track.get("name", "Unknown"),
-                        )  # Log track details
-                # else: # Optional: Log why a track was skipped
-                elif track_id:  # If track_id exists but update wasn't needed or possible
-                    if old_genre == dom_genre:
-                        self.console_logger.debug(
-                            f"Skipping track {track_id} "
-                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
-                            f"Genre already matches dominant ({dom_genre})",
                         )
-                    elif status not in ("subscription", "downloaded"):
-                        self.console_logger.debug(
-                            f"Skipping track {track_id} "
-                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
-                            f"Status '{status}' does not allow modification",
-                        )
-                    else:
-                        # Should not happen if logic is correct, but good for debugging
-                        self.console_logger.debug(
-                            f"Skipping track {track_id} "
-                            f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
-                            f"No update needed or condition not met.",
-                        )
+                elif track_id:
+                    self.console_logger.debug(
+                        f"Skipping track {track_id} "
+                        f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                        f"Status '{status}' does not allow modification",
+                    )
+                elif status not in ("subscription", "downloaded"):
+                    self.console_logger.debug(
+                        f"Skipping track {track_id} "
+                        f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                        f"Status '{status}' does not allow modification",
+                    )
+                else:
+                    # Should not happen if logic is correct, but good for debugging
+                    self.console_logger.debug(
+                        f"Skipping track {track_id} "
+                        f"('{track.get('artist', 'Unknown')}' - '{track.get('name', 'Unknown')}'): "
+                        f"No update needed or condition not met.",
+                    )
 
             async def process_tasks_in_batches(
                 tasks: list[asyncio.Task[None]],
@@ -1886,7 +1869,6 @@ class MusicUpdater:
                 ),
                 self.console_logger,
                 self.error_logger,
-                force_mode=force,  # Use force flag from arguments for console output
                 add_timestamp=False,
             )
             self.console_logger.info(
@@ -2145,7 +2127,6 @@ class MusicUpdater:
                 ),
                 self.console_logger,
                 self.error_logger,
-                force_mode=force_year_update,  # Use force flag for console output
                 add_timestamp=False,
             )
             self.console_logger.info(
@@ -2391,7 +2372,6 @@ class MusicUpdater:
                 changes_report_file_path,
                 self.console_logger,
                 self.error_logger,
-                force_mode=force,  # Use force flag for console output
                 add_timestamp=False,
             )
 
@@ -2452,22 +2432,29 @@ class MusicUpdater:
                     "dateAdded": track.get("dateAdded", ""),
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 })
-                if not args.dry_run and track.get("trackStatus", "").lower() in ("subscription", "downloaded"):
-                    if await self.update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an, artist=artist_name):
-                        if new_tn:
-                            track["name"] = cleaned_nm
-                        if new_an:
-                            track["album"] = cleaned_al
+
+                # 1. Update track object in memory without delay.
+                # This ensures that subsequent steps will work with cleaned data.
+                if new_tn:
+                    track["name"] = cleaned_nm
+                if new_an:
+                    track["album"] = cleaned_al
+
+                # 2. Allow updates for status 'unknown' and remove nested if.
+                if not args.dry_run and track.get("trackStatus", "").lower() in ("subscription", "downloaded", "unknown"):
+                    await self.update_track_async(track_id, new_track_name=new_tn, new_album_name=new_an, artist=artist_name)
 
         clean_tasks = [asyncio.create_task(clean_track_default(t)) for t in all_tracks]
         await asyncio.gather(*clean_tasks)
 
         # --- Step 2: Updating genres ---
         self.console_logger.info("Step 2: Updating genres...")
+        # This function now receives the already updated 'all_tracks' list
         _, changes_g = await self.update_genres_by_artist_async(all_tracks, effective_last_run)
 
         # --- Step 3: Updating album years ---
         self.console_logger.info("Step 3: Updating album years...")
+        # This function also receives the cleaned data
         albums_to_process = {(t.get("artist", ""), t.get("album", "")): "Default" for t in all_tracks if t.get("artist") and t.get("album")}
         _, changes_y = await self.process_album_years(all_tracks, albums_to_process, force=args.force)
 
@@ -2507,7 +2494,6 @@ class MusicUpdater:
                 get_full_log_path(self.config, "changes_report_file", DEFAULT_CHANGES_REPORT_CSV_PATH),
                 self.console_logger,
                 self.error_logger,
-                force_mode=args.force,
                 add_timestamp=False, # Explicitly indicate that a timestamp is not required
             )
             self.console_logger.info("Processing complete. Logged %d changes.", len(all_changes))
