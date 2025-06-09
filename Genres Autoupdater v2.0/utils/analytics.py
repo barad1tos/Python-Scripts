@@ -19,12 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import logging
 import time
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from functools import wraps
-from typing import Any
+from typing import Any, TypeVar
+
+_T = TypeVar("_T", bound="Analytics")
 
 try:
     from utils.reports import save_html_report
@@ -67,9 +70,9 @@ class Analytics:
     def __init__(
         self,
         config: dict[str, Any],
-        console_logger,
-        error_logger,
-        analytics_logger,
+        console_logger: logging.Logger,
+        error_logger: logging.Logger,
+        analytics_logger: logging.Logger,
         max_events: int | None = None,
     ) -> None:
         """Initialise the Analytics instance."""
@@ -107,7 +110,7 @@ class Analytics:
         return self._decorator(event_type)
 
     @classmethod
-    def track_instance_method(cls, event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def track_instance_method(cls: type[_T], event_type: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         """Track instance methods by adding analytics tracking.
 
         Requires the decorated class to expose `self.analytics` and optional `self.error_logger`.
@@ -117,7 +120,7 @@ class Analytics:
             is_async = asyncio.iscoroutinefunction(func)
 
             @wraps(func)
-            async def async_wrapper(self, *args, **kwargs):
+            async def async_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
                 analytics_inst: Analytics | None = getattr(self, "analytics", None)
                 if not isinstance(analytics_inst, Analytics):
                     (getattr(self, "error_logger", None) or cls._null_logger()).error(
@@ -130,7 +133,7 @@ class Analytics:
                 )
 
             @wraps(func)
-            def sync_wrapper(self, *args, **kwargs):
+            def sync_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
                 analytics_inst: Analytics | None = getattr(self, "analytics", None)
                 if not isinstance(analytics_inst, Analytics):
                     (getattr(self, "error_logger", None) or cls._null_logger()).error(
@@ -152,11 +155,11 @@ class Analytics:
             is_async = asyncio.iscoroutinefunction(func)
 
             if is_async:
-                async def async_wrapper(*args, **kwargs):
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                     return await self._wrapped_call(func, event_type, True, *args, **kwargs)
                 return wraps(func)(async_wrapper)
             else:
-                def sync_wrapper(*args, **kwargs):
+                def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                     return self._wrapped_call(func, event_type, False, *args, **kwargs)
                 return wraps(func)(sync_wrapper)
 
@@ -168,9 +171,9 @@ class Analytics:
         func: Callable[..., Any],
         event_type: str,
         is_async: bool,
-        *args,
-        **kwargs,
-    ):
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
         func_name = func.__name__
         decorator_start = time.time()
         func_start = decorator_start
@@ -390,7 +393,7 @@ class Analytics:
 
     # --- Utilities ---
     @staticmethod
-    def _null_logger():
+    def _null_logger() -> logging.Logger:
         import logging
         logger = logging.getLogger("null")
         if not logger.handlers:

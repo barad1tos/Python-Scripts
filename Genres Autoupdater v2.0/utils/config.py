@@ -437,7 +437,7 @@ def _format_cerberus_errors(errors: dict, indent: int = 2) -> str:
     return "\n".join(lines)
 
 
-def validate_required_env_vars():
+def validate_required_env_vars() -> None:
     """Validate required environment variables."""
     missing = []
     for var in REQUIRED_ENV_VARS:

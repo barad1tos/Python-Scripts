@@ -44,7 +44,7 @@ import time
 
 from collections import defaultdict
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
+from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard, cast
 
 # trunk-ignore(mypy/import-untyped)
 # trunk-ignore(mypy/note)
@@ -279,29 +279,42 @@ class MusicUpdater:
                 cached_tracks = await self.cache_service.get_async(cache_key)
 
                 # Check if we got valid cached data
-                if cached_tracks and isinstance(cached_tracks, list):
+                if not cached_tracks:
+                    self.console_logger.info(
+                        "No cache found for %s, fetching from Music.app",
+                        cache_key,
+                    )
+                elif not isinstance(cached_tracks, list):
+                    self.console_logger.warning(
+                        "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.",
+                        cache_key,
+                        type(cached_tracks).__name__
+                    )
+                elif not all(isinstance(item, dict) for item in cached_tracks):
+                    self.console_logger.warning(
+                        "Cached data for %s contains non-dictionary items. Ignoring cache.",
+                        cache_key
+                    )
+                elif not all(
+                    all(isinstance(k, str) for k in item.keys()) and
+                    all(isinstance(v, str) for v in item.values())
+                    for item in cached_tracks
+                ):
+                    self.console_logger.warning(
+                        "Cached data for %s has items with non-string keys/values. Ignoring cache.",
+                        cache_key
+                    )
+                else:
                     self.console_logger.info(
                         "Using cached data for %s, found %d tracks",
                         cache_key,
                         len(cached_tracks),
                     )
-                    # Return cached data and exit function
-                    return cached_tracks
-                elif cached_tracks:
-                    self.console_logger.warning(
-                        "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.", cache_key, type(cached_tracks).__name__
-                    )
-                else:
-                    self.console_logger.info(
-                        "No cache found for %s, fetching from Music.app",
-                        cache_key,
-                    )
-
-            # Initialize raw_data with empty string as default
-            raw_data = ""
+                    return cast(list[dict[str, str]], cached_tracks)
 
             # Define script_name outside the conditional block so it's always available
             script_name = "fetch_tracks.applescript"
+            raw_data = ""  # Initialize raw_data with empty string as default
 
             # If we shouldn't or couldn't use cached data, fetch from Music.app
             if should_fetch_from_app:
@@ -809,74 +822,53 @@ class MusicUpdater:
 
         # Define the album processing function (now an inner async function or separate method)
         # Let's keep it as an inner async function for direct access to updated_tracks/changes_log
-        async def process_album(album_data):
+        async def process_album(album_data: dict[str, Any]) -> bool:
             nonlocal updated_tracks, changes_log
             artist = album_data["artist"]
             album = album_data["album"]
             album_tracks = album_data["tracks"]
 
-            # Extract the current library year from the first track
             current_library_year = album_tracks[0].get("old_year", "").strip() if album_tracks else ""
 
-            # New logic to determine if API fetch is needed based on cache and pending status
-            needs_api_fetch = False
-            year = None  # Variable to hold the determined year (from cache or API)
-            is_definitive = False  # Variable to track if the year is definitive
+            year: str | None = None
+            is_definitive: bool = False # Default: year is not definitive unless confirmed by API
+            needs_api_fetch: bool = False
 
-            # Option 1: Force update - always fetch from API, bypass cache and pending logic
             if force:
                 self.console_logger.info(
                     "Force fetching year for '%s - %s' from external API.",
                     artist,
                     album,
                 )
+                # external_api_service.get_album_year is expected to return: (year_str|None, is_definitive_bool)
                 year, is_definitive = await self.external_api_service.get_album_year(
                     artist,
                     album,
                     current_library_year,
                 )
-                needs_api_fetch = True  # API call was made
-
+                needs_api_fetch = True
             else:
-                # Option 2: Check cache for a DEFINITIVE year
-                # get_album_year_from_cache currently only stores definitive years, so a hit implies definitive
-                cached_year = await self.cache_service.get_album_year_from_cache(
-                    artist,
-                    album,
-                )
-
-                if cached_year:
+                # Try to get from simple year cache (returns str|None)
+                cached_year_str = await self.cache_service.get_album_year_from_cache(artist, album)
+                if cached_year_str:
+                    year = cached_year_str
+                    is_definitive = False # Year from this simple cache is not considered definitive
                     self.console_logger.info(
-                        "Using cached definitive year %s for '%s - %s'",
-                        cached_year,
+                        "Using cached year '%s' (Non-Definitive) for '%s - %s'.",
+                        year,
                         artist,
                         album,
                     )
-                    year = cached_year
-                    is_definitive = True  # Cached years are always considered definitive
-                    needs_api_fetch = False  # No API call needed
-
+                    needs_api_fetch = False
                 else:
-                    # Cache miss (album not definitively processed before, or cache invalidated)
-                    # Option 3: Check if this album is pending verification and needs re-check
+                    # Cache miss for simple year cache, check if pending verification
                     should_verify = False
                     if self.pending_verification_service:
-                        # is_verification_needed is async and checks interval
-                        should_verify = await self.pending_verification_service.is_verification_needed(
-                            artist,
-                            album,
-                        )
-                        if should_verify:
-                            self.console_logger.info(
-                                "Album '%s - %s' is due for verification",
-                                artist,
-                                album,
-                            )
+                        should_verify = await self.pending_verification_service.is_verification_needed(artist, album)
 
                     if should_verify:
-                        # Album needs verification -> fetch from API
                         self.console_logger.info(
-                            "Fetching year for '%s - %s' from external API (verification needed).",
+                            "Fetching year for '%s - %s' from external API due to pending verification.",
                             artist,
                             album,
                         )
@@ -885,153 +877,126 @@ class MusicUpdater:
                             album,
                             current_library_year,
                         )
-                        needs_api_fetch = True  # API call was made
-
-                        # Logic inside get_album_year already handles re-marking as pending if result is not definitive
-
+                        needs_api_fetch = True
+                        # If API call during verification yields a definitive year, remove from pending
+                        # If not definitive, ExternalApiService.get_album_year should re-mark it or leave it pending.
+                        if year and is_definitive and self.pending_verification_service:
+                            await self.pending_verification_service.remove_from_pending(artist, album)
                     else:
-                        # Not forced, no definitive cache, and not due for pending verification -> skip API fetch
                         self.console_logger.debug(
-                            "Skipping API fetch for '%s - %s': Not forced, no definitive cache, and not due for verification.",
+                            "Skipping API fetch for '%s - %s': Not forced, no cache, and not due for verification.",
                             artist,
                             album,
                         )
-                        needs_api_fetch = False  # No API call needed
-                        # year and is_definitive remain None/False
+                        needs_api_fetch = False
+                        return needs_api_fetch # No year found, no API call made
 
             # --- Process Result (whether from cache or API) ---
-            # Now, 'year' holds the best year found (or None), and 'is_definitive' its status (if API called or cache hit)
-
-            # Mark for verification if the result is not definitive
-            if year and not is_definitive and self.pending_verification_service:
-                await self.pending_verification_service.mark_for_verification(artist, album)
-                self.console_logger.debug(
-                    "Marked '%s - %s' for verification (non-definitive result)",
+            if year and self._is_valid_year(year):
+                year_logger.info(
+                    "Determined year for '%s - %s' is '%s'. Definitive: %s. Current library year: '%s'. API fetched: %s",
                     artist,
                     album,
+                    year,
+                    is_definitive,
+                    current_library_year,
+                    needs_api_fetch,
                 )
 
-            # If a year was determined (either from cache hit or successful API fetch)
-            if year and self._is_valid_year(
-                year,
-            ):  # Use self._is_valid_year for consistency
-                # Check if this determined year is different from the current library year
-                if year != current_library_year:
-                    # Filter tracks to update based on status and current year
-                    tracks_to_update = []
-                    for track in album_tracks:
-                        current_year_on_track = track.get("new_year", "").strip()
-                        track_status = track.get("trackStatus", "").lower()
+                # If the year was confirmed as definitive by the API, and it was found,
+                # ensure it's removed from pending verification.
+                # This is a bit redundant if already handled in the 'should_verify' block, but ensures correctness.
+                if is_definitive and self.pending_verification_service:
+                        await self.pending_verification_service.remove_from_pending(artist, album)
+                # If the year was obtained from API but is NOT definitive,
+                # ExternalApiService.get_album_year should have marked it for pending verification.
 
-                        # Skip tracks with statuses that can't be modified
-                        if track_status in ("prerelease", "no longer available"):
-                            continue
+                album_tracks_to_update = []
+                for track in album_tracks:
+                    track_year_str = track.get("year", "").strip()
+                    track_id = track.get("id", "Unknown ID")
+                    update_condition_met = (is_definitive or not track_year_str or track_year_str == "0") and track_year_str != year
 
-                        # Update if forced OR if current year is empty OR if current year is different from determined year
-                        # Note: force logic is handled at the album level now, but keeping this condition ensures we update
-                        # all tracks in the album batch if the determined year is different, regardless of *their* current year
-                        # (unless status forbids). The primary force check is before API fetch.
-                        # Simplified logic: if we successfully determined a year (from API or definitive cache)
-                        # and it's different from the current library year for the album, update applicable tracks.
-                        # This handles cases where only some tracks in the album got the year update previously.
-                        if not current_year_on_track or current_year_on_track != year:
-                            tracks_to_update.append(track)
-
-                    if not tracks_to_update:
-                        year_logger.info(
-                            "No tracks need update for '%s - %s' (determined year: %s, current album year: %s)",
-                            artist,
-                            album,
-                            year,
-                            current_library_year,
+                    if update_condition_met:
+                        album_tracks_to_update.append(
+                            {
+                                "id": track_id,
+                                "artist": artist,
+                                "album": album,
+                                "name": track.get("name", "Unknown Track"),
+                                "new_year": year,
+                                "old_year": track_year_str,
+                                "original_pos": track.get("original_pos", -1),
+                            }
                         )
-                        # If no tracks need update but API call was made, return True for api_call_made
-                        return needs_api_fetch  # Indicate if API call was made
+                        year_logger.debug(
+                            "Track '%s' (ID: %s) marked for year update to '%s' (was '%s'). Definitive: %s",
+                            track.get("name"),
+                            track_id,
+                            year,
+                            track_year_str,
+                            is_definitive,
+                        )
 
+                if not album_tracks_to_update:
                     year_logger.info(
-                        "Updating %d of %d tracks for '%s - %s' to year %s (current album year: %s)",
-                        len(tracks_to_update),
-                        len(album_tracks),
+                        "No tracks need year update for '%s - %s' with year '%s'.",
                         artist,
                         album,
                         year,
-                        current_library_year,
                     )
+                    return needs_api_fetch
 
-                    track_ids_to_update = [t.get("id", "") for t in tracks_to_update]
-                    track_ids_to_update = [tid for tid in track_ids_to_update if tid]
+                year_logger.info(
+                    "Attempting to update %d tracks for album '%s - %s' to year '%s'.",
+                    len(album_tracks_to_update),
+                    artist,
+                    album,
+                    year,
+                )
+                success = await self.update_album_tracks_bulk_async(
+                    album_tracks_to_update,
+                    year,
+                )
 
-                    # Use injected ap_client
-                    success = await self.update_album_tracks_bulk_async(
-                        track_ids_to_update,
+                if success:
+                    year_logger.info(
+                        "Successfully updated %d tracks for album '%s - %s' to year '%s'.",
+                        len(album_tracks_to_update),
+                        artist,
+                        album,
                         year,
-                        artist=artist,
-                        dry_run=self._should_dry_run(artist),
                     )
-                    if success:
-                        for track in tracks_to_update:
-                            track_id = track.get("id", "")
-                            if track_id:
-                                # Update the track dictionary in memory
-                                track["old_year"] = current_library_year
-                                track["new_year"] = year
-                                # Log the change with correct old year
-                                changes_log.append(
-                                    {
-                                        "change_type": "year_update",
-                                        "artist": artist,
-                                        "album": album,
-                                        "track_name": track.get("name", "Unknown"),
-                                        "original_year": current_library_year,
-                                        "simulated_year": year,
-                                        "timestamp": datetime.now().strftime(
-                                            "%Y-%m-%d %H:%M:%S",
-                                        ),
-                                    },
-                                )
-                        year_logger.info(
-                            "Successfully updated %d tracks for '%s - %s' to year %s",
-                            len(track_ids_to_update),
-                            artist,
-                            album,
-                            year,
-                        )
-                    else:
-                        self.error_logger.error(
-                            "Failed to update year for '%s - %s'",
-                            artist,
-                            album,
-                        )
+                    for track_data in album_tracks_to_update:
+                        changes_log.append(track_data)
+                        original_track_index = track_data.get("original_pos", -1)
+                        if 0 <= original_track_index < len(tracks):
+                            tracks[original_track_index]["year"] = year
+                            updated_tracks.append(tracks[original_track_index])
+                        else:
+                            self.error_logger.warning(
+                                "Could not find original track for pos %s to update in-memory year.",
+                                original_track_index
+                            )
+                    return needs_api_fetch
                 else:
-                    # Year matches current library year, no update needed for tracks
-                    year_logger.info(
-                        "Determined year %s for '%s - %s' matches current library year, no track updates needed.",
-                        year,
+                    year_logger.error(
+                        "Failed to update tracks for album '%s - %s'.",
                         artist,
                         album,
                     )
-
-                # Ensure definitive results are in cache (redundant if get_album_year_from_cache only stores definitive,
-                # but good for clarity/safety if that logic changes)
-                # Also store non-definitive years IF API call was made, so we know we tried (but don't consider them definitive cache hits)
-                # The cache_service.store_album_year_in_cache currently only stores definitive results.
-                # We need a way to record that we *attempted* to verify a pending album, regardless of result.
-                # This seems to be handled by removing from pending *if definitive* in ExternalApiService.get_album_year.
-                # If it's not definitive, it remains in pending.
-
-                # Let's re-evaluate the caching and pending marking logic here.
-                # 1. If API was called and result is definitive: cache year, remove from pending. (Handled in get_album_year and logic above)
-                # 2. If API was called and result is NOT definitive: DO NOT cache year as definitive, MARK for pending. (Handled in get_album_year)
-                # 3. If year was found in DEFINITIVE cache: use it, no API, no pending. (Handled above)
-                # 4. If year was NOT found in DEFINITIVE cache and NOT forced and NOT due for pending: skip API, skip pending. (Handled above)
-
-                # The existing logic for caching (only definitive) and pending marking (for non-definitive API results) seems correct.
-                # We just needed to ensure we don't make redundant API calls for pending items unless their interval is met.
-
-                # If no year was successfully determined from API and no definitive cache hit, it remains None/False
-                # In this case, if API fetch was attempted, get_album_year would have marked for pending if a current_library_year existed.
-
-                # Return whether an API call was actually made for this album
+                    return needs_api_fetch
+            else:
+                # Handles: year is None, or year is invalid
+                year_logger.info(
+                    "No valid year found for '%s - %s' after checking API/cache (Year: %s). Tracks will not be updated. API fetch status: %s",
+                    artist,
+                    album,
+                    year, # year could be None or an invalid string
+                    needs_api_fetch
+                )
+                # If API was fetched and no valid year was found, and it's not definitive (which it wouldn't be if invalid/None),
+                # it should be marked for pending verification by ExternalApiService.get_album_year.
                 return needs_api_fetch  # Indicate if API call was made for this album
 
         # Fetch optimal batch parameters from config using self.config
@@ -1459,11 +1424,12 @@ class MusicUpdater:
                 for idx, result in enumerate(results):
                     track_id = batch_ids[idx]
                     # If an exception occurred or verify_track_exists returned False (doesn't exist)
-                    if isinstance(result, Exception) or result is False:  # Result is False means verify_track_exists returned False
-                        if isinstance(result, Exception):
-                            self.error_logger.warning(
-                                f"Exception during verification task for track ID {track_id}: {result}. Treating as non-existent for cleanup.",
-                            )  # Log exception and intent
+                    if isinstance(result, Exception):
+                        self.error_logger.warning(
+                            f"Exception during verification task for track ID {track_id}: {result}. Treating as non-existent for cleanup.",
+                        )  # Log exception and intent
+                        invalid_track_ids.append(track_id)
+                    elif result is False:  # Result is False means verify_track_exists returned False
                         invalid_track_ids.append(track_id)
 
                 self.console_logger.info(
@@ -1530,9 +1496,6 @@ class MusicUpdater:
                 )  # Ensure directory exists
                 with open(last_verify_file, "w", encoding="utf-8") as f:
                     f.write(datetime.now().strftime("%Y-%m-%d"))
-                self.console_logger.info(
-                    "Updated last database verification timestamp.",
-                )
             except OSError as e:
                 self.error_logger.error(
                     f"Failed to write last verification timestamp to {last_verify_file}: {e}",
@@ -2054,6 +2017,7 @@ class MusicUpdater:
                 previous_track = previous_track_data.get(track_id)
                 if previous_track:
                     previous_status = previous_track.get("trackStatus", "").strip().lower()
+
                     # Condition: current is 'subscription' AND previous was not 'subscription'
                     if current_status == "subscription" and previous_status != "subscription":
                         if album_key not in albums_for_full_processing:
@@ -2074,6 +2038,14 @@ class MusicUpdater:
                         album,
                     )  # Check if album needs verification
                     if is_pending:
+                        self.console_logger.info(
+                            "Album '%s - %s' is due for verification",
+                            artist,
+                            album,
+                        )
+
+                    if is_pending:
+                        # Album needs verification -> mark for full processing
                         if album_key not in albums_for_full_processing:
                             albums_for_full_processing[album_key] = "Pending verification"
                             self.console_logger.debug(

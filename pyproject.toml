@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "Python Scripts"
 dynamic = ["version"]
-description = "A script that describes AWS resources from the customer accounts, which are then rendered using jinja into terraform templates, merged with terraform modules, and pushed to the git repository as a separate branch."
+description = "A tool to automatically update music genre information."
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.12"
 license = { text = "MIT License" }
@@ -17,31 +17,31 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    # Core dependencies
-    "aenum>=3.1.16",
-    "aiohttp>=3.8.0",
-    "aiosignal>=1.3.2",
-    "annotated-types>=0.7.0",
-    "attrs>=25.3.0",
-    "certifi>=2025.4.26",
-    "chardet>=5.2.0",
-    "charset-normalizer>=3.4.2",
-    "defusedxml>=0.7.1",
-    "dnspython>=2.7.0",
-    "frozenlist>=1.6.2",
-    "GitPython>=3.1.44",
-    "idna>=3.10",
-    "Jinja2>=3.1.6",
-    "lxml>=5.4.0",
-    "markdown-it-py>=3.0.0",
-    "multidict>=6.4.4",
-    "PyYAML>=6.0.2",
-    "python-dotenv>=0.9.9",
-    "requests>=2.31.0",
-    "tenacity>=9.1.2",
-    "typer>=0.9.4",
-    "yarl>=1.9.4",
-    "pydantic<2.0",
+  # Core dependencies
+  "aenum>=3.1.16",
+  "aiohttp>=3.8.0",
+  "aiosignal>=1.3.2",
+  "annotated-types>=0.7.0",
+  "attrs>=25.3.0",
+  "certifi>=2025.4.26",
+  "chardet>=5.2.0",
+  "charset-normalizer>=3.4.2",
+  "defusedxml>=0.7.1",
+  "dnspython>=2.7.0",
+  "frozenlist>=1.6.2",
+  "GitPython>=3.1.44",
+  "idna>=3.10",
+  "Jinja2>=3.1.6",
+  "lxml>=5.4.0",
+  "markdown-it-py>=3.0.0",
+  "multidict>=6.4.4",
+  "PyYAML>=6.0.2",
+  "python-dotenv>=0.9.9",
+  "requests>=2.31.0",
+  "tenacity>=9.1.2",
+  "typer>=0.9.4",
+  "yarl>=1.9.4",
+  "pydantic<2.0",
 ]
 
 [project.optional-dependencies]
@@ -85,26 +85,16 @@ dev = [
   "python-lsp-black>=1.2.0",
   "python-lsp-isort>=1.2.0",
   "python-lsp-jsonrpc>=1.0.0",
-  "pylint>=2.17.0",
-  "pylint-pytest>=1.1.2",
-  "pylint-plugin-utils>=0.7.0",
 ]
 
 [tool.setuptools.packages.find]
-include = [
-  "aws*",
-  "collectors*",
-  "core*",
-  "interface*",
-  "models*",
-  "processors*",
-  "vcs*",
-]
+where = ["Genres Autoupdater v2.0"]
+include = ["genres_autoupdater*", "services", "utils*"]
 namespaces = false
 
 [project.scripts]
 # Put entrypoints in here
-utg-cli = "unified_terraform_generator.cli:app"
+genre-updater = "music_genre_updater:main"
 
 [project.urls]
 repository = "https://bitbucket.org/automatitdevops/noc-general-template/src/main/"
@@ -170,7 +160,12 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["unified_terraform_generator"]
+known-first-party = [
+  "genres_autoupdater",
+  "services",
+  "utils",
+  "music_genre_updater",
+]
 force-sort-within-sections = false
 lines-after-imports = 1
 lines-between-types = 1
@@ -184,31 +179,8 @@ section-order = [
   "local-folder",
 ]
 
-[tool.ruff.lint.flake8-bugbear]
-extend-immutable-calls = ["pydantic.BaseModel"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["D", "ANN"] # tests allow assert and absence of annotations.
-
-# ─────────────────────────────────────────────────────────────────────────────
-# isort - controls imports, Ruff only checks style
-# ─────────────────────────────────────────────────────────────────────────────
-[tool.isort]
-profile = "black"
-known_first_party = ["unified_terraform_generator"]
-# required_imports = []
-force_sort_within_sections = false
-lines_after_imports = 1 # 1 empty row after import block
-lines_between_types = 1 # 1 empty row between import and from
-combine_as_imports = true
-order_by_type = true
-section_order = [
-  "future",
-  "standard-library",
-  "third-party",
-  "first-party",
-  "local-folder",
-]
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 # ─────────────────────────────────────────────────────────────────────────────
 # pydocstyle - google docstyle
@@ -236,8 +208,8 @@ add_ignore = [
 python_version = "3.12"
 warn_return_any = true
 warn_unused_configs = true
-ignore_missing_imports = true
-disallow_untyped_defs = false
+ignore_missing_imports = false
+disallow_untyped_defs = true
 disallow_incomplete_defs = false
 check_untyped_defs = true
 no_implicit_optional = true

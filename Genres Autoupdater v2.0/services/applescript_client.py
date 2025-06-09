@@ -435,15 +435,12 @@ class AppleScriptClient(AppleScriptClientProtocol):
 
         return await self._run_osascript(cmd, script_name, timeout_float)
 
-    def _format_script_preview(self, script_code):
+    def _format_script_preview(self, script_code: str) -> str:
         """Format AppleScript code for log output, showing only essential parts."""
-        if not isinstance(script_code, str):  # Handle non-string input gracefully
-            return str(script_code)  # Return string representation
-
         # Normalize whitespace
         script_code = re.sub(
             r"\s+", " ", script_code.replace("\n", " ").replace("\r", " ")
-        ).strip()
+            ).strip()
 
         # Find "tell application" pattern
         tell_match = re.search(

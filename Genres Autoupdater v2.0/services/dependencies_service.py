@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING, Any
 # trunk-ignore(mypy/note)
 import yaml
 
-
 # Import concrete service implementations
 # Note: Services needing async init are now instantiated but not fully initialized in __init__
 from services.applescript_client import AppleScriptClient
