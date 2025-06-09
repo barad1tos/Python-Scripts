@@ -85,10 +85,13 @@ def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, 
                 "trackStatus": fields[TrackField.TRACK_STATUS].strip(),
             }
 
-            # Add optional fields if they exist
-            for field in [TrackField.OLD_YEAR, TrackField.NEW_YEAR]:
-                field_name = field.name.lower().replace('_', '')
-                track[field_name] = fields[field].strip() if len(fields) > field else ""
+            # Add optional fields with validation
+            raw_old_year = fields[TrackField.OLD_YEAR].strip() if len(fields) > TrackField.OLD_YEAR else ""
+            raw_new_year = fields[TrackField.NEW_YEAR].strip() if len(fields) > TrackField.NEW_YEAR else ""
+
+            # Validate year: "missing value" or 0 is invalid
+            track["old_year"] = raw_old_year if (raw_old_year.isdigit() and int(raw_old_year) != 0) else ""
+            track["new_year"] = raw_new_year if (raw_new_year.isdigit() and int(raw_new_year) != 0) else ""
 
             tracks.append(track)
         else:
@@ -149,14 +152,14 @@ def determine_dominant_genre_for_artist(
                 "dateAdded", "1900-01-01 00:00:00"
             )  # Provide a default date string for safety
             try:
-                track_date = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
+                track_date = datetime.strptime(date_added_str, "%Y-%m-%d")
             except ValueError:
                 # Handle cases with invalid date format by using a very old date
                 error_logger.warning(
                     f"Invalid date format in track data for determining dominant genre: '{date_added_str}'. Using default old date."
                 )
                 track_date = datetime.strptime(
-                    "1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"
+                    "1900-01-01", "%Y-%m-%d"
                 )
 
             if album not in album_earliest:
@@ -188,7 +191,8 @@ def determine_dominant_genre_for_artist(
         earliest_album_track = min(
             album_earliest.values(),
             key=lambda t: datetime.strptime(
-                t.get("dateAdded", "1900-01-01 00:00:00"), "%Y-%m-%d %H:%M:%S"
+                t.get("date_added", "9999-12-31"),
+                "%Y-%m-%d",
             ),
         )
 

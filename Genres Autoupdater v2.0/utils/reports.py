@@ -29,14 +29,12 @@ import csv
 import logging
 import os
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
 from services.cache_service import CacheService
-from utils.logger import (
-    ensure_directory,
-    get_full_log_path,
-)
+from utils.logger import ensure_directory, get_full_log_path
 
 class Color:
     """ANSI color codes for console output."""
@@ -394,19 +392,8 @@ def save_changes_report(
 ) -> None:
     """Save the list of change dictionaries to a CSV file.
 
-    This wrapper ensures backward compatibility with the older report format.
     By default, it overwrites the specified file. If `add_timestamp` is True,
     it appends a timestamp to the filename to preserve previous reports.
-
-    Args:
-        changes: List of dictionaries with change data.
-        file_path: Base path to the CSV file.
-        console_logger: Logger for console output.
-        error_logger: Logger for error output.
-        force_mode: If ``True``, prints to console instead of saving to file.
-        add_timestamp: If ``True``, a timestamp will be appended to the
-            file name. Defaults to ``False``.
-
     """
     if console_logger is None:
         console_logger = logging.getLogger("console_logger")
@@ -473,19 +460,21 @@ def save_unified_dry_run(
     """
     # Define fields for the combined report
     fieldnames = [
-        "change_type",  # "cleaning" or "genre_update"
+        "change_type",
         "track_id",
         "artist",
         "album",
         "track_name",
-        "original_name",  # Original track name before cleaning (from cleaning_changes)
-        "cleaned_name",  # Cleaned track name (from cleaning_changes)
-        "original_album",  # Original album name before cleaning (from cleaning_changes)
-        "cleaned_album",  # Cleaned album name (from cleaning_changes)
-        "original_genre",  # Original genre (from genre_changes)
-        "simulated_genre",  # Simulated genre (from genre_changes)
-        "dateAdded",  # Date added from the track data (might be in cleaning_changes or genre_changes)
-        "timestamp",  # Timestamp of when the change was logged (should be in change dicts)
+        "original_name",
+        "cleaned_name",
+        "original_album",
+        "cleaned_album",
+        "original_genre",
+        "simulated_genre",
+        "original_year",
+        "simulated_year",
+        "dateAdded",
+        "timestamp",
     ]
 
     # Prepare combined changes list
@@ -501,17 +490,31 @@ def save_unified_dry_run(
             change_copy["track_name"] = change_copy["original_name"]
         combined_changes.append(change_copy)
 
-    # Add genre changes
-    for change in genre_changes:
+    # Add genre and year changes
+    all_other_changes = genre_changes
+    for change in all_other_changes:
         change_copy = change.copy()
-        # Ensure change_type is set for genre changes
-        change_copy["change_type"] = "genre_update"
-        # Map new_genre to simulated_genre for consistency with fieldnames
-        if "new_genre" in change_copy:
-            change_copy["simulated_genre"] = change_copy.pop("new_genre")
-        # Map old_genre to original_genre for consistency with fieldnames
-        if "old_genre" in change_copy:
-            change_copy["original_genre"] = change_copy.pop("old_genre")
+
+        # Determine change type if not set
+        if "change_type" not in change_copy:
+            if "new_genre" in change_copy:
+                change_copy["change_type"] = "genre_update"
+            elif "new_year" in change_copy:
+                change_copy["change_type"] = "year_update"
+
+        # Process genre changes
+        if change_copy.get("change_type") == "genre_update":
+            if "new_genre" in change_copy:
+                change_copy["simulated_genre"] = change_copy.pop("new_genre")
+            if "old_genre" in change_copy:
+                change_copy["original_genre"] = change_copy.pop("old_genre")
+
+        # Process year changes
+        elif change_copy.get("change_type") == "year_update":
+            if "new_year" in change_copy:
+                change_copy["simulated_year"] = change_copy.pop("new_year")
+            if "old_year" in change_copy:
+                change_copy["original_year"] = change_copy.pop("old_year")
 
         combined_changes.append(change_copy)
 
@@ -1105,3 +1108,100 @@ def save_html_report(
         console_logger.info(f"Analytics HTML report saved to {report_file}.")
     except Exception as e:
         error_logger.error(f"Failed to save HTML report: {e}")
+
+
+def save_detailed_dry_run_report(
+    changes: list[dict[str, str]],
+    file_path: str,
+    console_logger: logging.Logger,
+    error_logger: logging.Logger,
+) -> None:
+    """Generate a detailed HTML report with separate tables for each change type."""
+    if not changes:
+        console_logger.info("No changes to report for dry run.")
+        return
+
+    # Group changes by type
+    changes_by_type = defaultdict(list)
+    for change in changes:
+        change_type = change.get("change_type", "unknown").replace("_", " ").title()
+        changes_by_type[change_type].append(change)
+
+    # Generate HTML
+    html = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <title>Dry Run Report</title>
+        <style>
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+                margin: 20px;
+                background-color: #f9f9f9;
+                color: #333;
+            }
+            h2 { color: #1a1a1a; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            thead { background-color: #e9ecef; }
+            th { font-weight: 600; }
+            tbody tr:nth-child(even) { background-color: #f2f2f2; }
+            tbody tr:hover { background-color: #e9e9e9; }
+            .container { max-width: 1200px; margin: auto; background: white; padding: 20px; border-radius: 8px; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Dry Run Simulation Report</h1>
+    """
+
+    # Create table for each change type
+    for change_type, change_list in changes_by_type.items():
+        if not change_list:
+            continue
+
+        html += f"<h2>{change_type} ({len(change_list)} potential changes)</h2>"
+
+        # Strictly defined columns for each report type for reliability
+        header_map = {
+            "Cleaning": ["artist", "original_name", "cleaned_name", "original_album", "cleaned_album"],
+            "Genre Update": ["artist", "album", "track_name", "original_genre", "new_genre"],
+            "Year Update": ["artist", "album", "track_name", "original_year", "simulated_year"]
+        }
+
+        # Get the correct list of keys for the current report type.
+        # If the type is unknown, fallback to the old behavior as a backup option.
+        headers = header_map.get(change_type, [h for h in change_list[0].keys() if h not in ['change_type', 'timestamp', 'track_id', 'dateAdded']])
+
+        html += "<table><thead><tr>"
+        for header in headers:
+            # Create readable column headers
+            html += f"<th>{header.replace('_', ' ').title()}</th>"
+        html += "</tr></thead><tbody>"
+
+        # Fill table with data
+        for item in change_list:
+            html += "<tr>"
+            # Go through the fixed list of headers
+            for header_key in headers:
+                value = item.get(header_key, "")
+                html += f"<td>{value}</td>"
+            html += "</tr>"
+
+        html += "</tbody></table>"
+
+    html += """
+        </div>
+    </body>
+    </html>
+    """
+
+    # Save HTML file
+    try:
+        ensure_directory(os.path.dirname(file_path))
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        console_logger.info(f"Successfully generated detailed dry run HTML report at: {file_path}")
+    except Exception as e:
+        error_logger.error(f"Failed to save detailed dry run HTML report: {e}")

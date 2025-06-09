@@ -50,6 +50,7 @@ from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard
 # trunk-ignore(mypy/note)
 import yaml
 
+from services.dependencies_service import DependencyContainer
 
 # Import necessary services and utilities
 from utils.analytics import Analytics  # Analytics is used in method decorators
@@ -76,8 +77,8 @@ from utils.reports import (
     load_track_list,
     save_changes_csv,
     save_changes_report,
+    save_detailed_dry_run_report,
     save_to_csv,
-    save_unified_dry_run,
     sync_track_list_with_current,
 )
 
@@ -134,8 +135,6 @@ def resolve_env_vars(config: dict[str, Any] | list[Any] | Any) -> Any:
         env_var = config[2:-1]  # Remove ${ and }
         return os.getenv(env_var, "")
     return config
-
-
 
 
 # Configuration constants
@@ -286,7 +285,8 @@ class MusicUpdater:
                         cache_key,
                         len(cached_tracks),
                     )
-                    should_fetch_from_app = False
+                    # Return cached data and exit function
+                    return cached_tracks
                 elif cached_tracks:
                     self.console_logger.warning(
                         "Cached data for %s has incorrect type. Expected list, got %s. Ignoring cache.", cache_key, type(cached_tracks).__name__
@@ -816,7 +816,7 @@ class MusicUpdater:
             album_tracks = album_data["tracks"]
 
             # Extract the current library year from the first track
-            current_library_year = album_tracks[0].get("new_year", "").strip() if album_tracks else ""  # Use new_year as current state
+            current_library_year = album_tracks[0].get("old_year", "").strip() if album_tracks else ""
 
             # New logic to determine if API fetch is needed based on cache and pending status
             needs_api_fetch = False
@@ -973,26 +973,17 @@ class MusicUpdater:
                             track_id = track.get("id", "")
                             if track_id:
                                 # Update the track dictionary in memory
-                                track["old_year"] = track.get(
-                                    "new_year",
-                                    "",
-                                )  # Store previous 'new_year' as 'old_year'
+                                track["old_year"] = current_library_year
                                 track["new_year"] = year
-                                # No need to append to updated_tracks here, the caller will collect all tracks
-                                # updated_tracks.append(track)
-
-                                # Log the change
+                                # Log the change with correct old year
                                 changes_log.append(
                                     {
-                                        "change_type": "year",
+                                        "change_type": "year_update",
                                         "artist": artist,
                                         "album": album,
                                         "track_name": track.get("name", "Unknown"),
-                                        "old_year": track.get(
-                                            "old_year",
-                                            "",
-                                        ),  # Log the old year
-                                        "new_year": year,
+                                        "original_year": current_library_year,
+                                        "simulated_year": year,
                                         "timestamp": datetime.now().strftime(
                                             "%Y-%m-%d %H:%M:%S",
                                         ),
@@ -2511,21 +2502,20 @@ class MusicUpdater:
         # --- Step 4: Generating reports ---
         all_changes = changes_log_cleaning + changes_g + changes_y
 
+        # If this is a dry run, generate a new HTML report and exit
         if args.dry_run:
-            dry_run_report_file = get_full_log_path(self.config, "dry_run_report_file", "csv/dry_run_combined.csv")
-            save_unified_dry_run(
-                cleaning_changes=changes_log_cleaning,
-                genre_changes=changes_g + changes_y,
-                file_path=dry_run_report_file,
-                console_logger=self.console_logger,
-                error_logger=self.error_logger,
+            # Update the path to have the .html extension
+            dry_run_report_file = get_full_log_path(
+                self.config, "dry_run_report_file", "reports/dry_run_report.html"
             )
-            self.console_logger.info(
-                "Dry run simulation complete. Found %d potential changes. "
-                "See report: '%s'",
-                len(all_changes),
+            # Call our new function
+            save_detailed_dry_run_report(
+                all_changes,
                 dry_run_report_file,
+                self.console_logger,
+                self.error_logger
             )
+            self.console_logger.info("Dry run simulation complete. See HTML report: '%s'", dry_run_report_file)
             return
 
         if all_changes:
@@ -2598,10 +2588,66 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+async def main_async(deps: "DependencyContainer", args: argparse.Namespace) -> None:
+    """Asynchronous core logic coordinator.
+
+    This function routes commands and prepares data for processing.
+    """
+    music_updater = deps.get_music_updater()
+    config = deps.config
+
+    if not is_music_app_running(deps.get_error_logger()):
+        deps.get_console_logger().error(
+            "Music app is not running! Please start Music.app before running this script."
+        )
+        return
+
+    # --- Command logic distribution ---
+    if args.command == "clean_artist":
+        await music_updater.run_clean_artist(artist=args.artist, force=args.force)
+    elif args.command == "update_years":
+        await music_updater.run_update_years(artist=args.artist, force=args.force)
+    elif args.command == "verify_database":
+        await music_updater.run_verify_database(force=args.force, dry_run=args.dry_run)
+    elif args.command == "verify_pending":
+        await music_updater.run_verify_pending(force=args.force)
+    else:
+        # --- Logic to run by default (no command) ---
+        test_artists_config = config.get("development", {}).get("test_artists", [])
+
+        if not args.test_mode and not await music_updater.can_run_incremental(force_run=args.force):
+            deps.get_console_logger().info("Incremental interval not reached. Skipping main processing.")
+            return
+
+        tracks_to_process = []
+        if args.test_mode:
+            deps.get_console_logger().info("--- Running in Test Mode ---")
+            deps.get_console_logger().info("Processing tracks only for test artists: %s", test_artists_config)
+            fetched_track_map = {}
+            for art in test_artists_config:
+                art_tracks = await music_updater.fetch_tracks_async(artist=art, force_refresh=args.force)
+                for track in art_tracks:
+                    if track.get("id"):
+                        fetched_track_map[track["id"]] = track
+
+            # Assign the found tracks to the processing list
+            tracks_to_process = list(fetched_track_map.values())
+        else:
+            deps.get_console_logger().info("--- Running in Incremental/Full Mode ---")
+            tracks_to_process = await music_updater.fetch_tracks_async(force_refresh=args.force)
+
+        if not tracks_to_process:
+            deps.get_console_logger().warning("No tracks fetched or found for processing.")
+            if not args.force and not args.test_mode:
+                await music_updater.update_last_incremental_run()
+            return
+
+        await music_updater.run_full_process(tracks_to_process, args)
+
+
 def main() -> None:
     """Parse arguments and run the async main logic."""
-    from services.dependencies_service import DependencyContainer
-
+    # Ваш код для main() залишається без змін, він вже правильний
     start_all = time.time()
     args = parse_arguments()
 
@@ -2609,7 +2655,7 @@ def main() -> None:
     deps = None
 
     try:
-        # Initialize loggers based on raw configuration
+        # Initializing loggers
         try:
             with open(CONFIG_PATH, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
@@ -2619,18 +2665,15 @@ def main() -> None:
 
         (local_console_logger, local_error_logger, local_analytics_logger, local_listener) = get_loggers(raw_config)
 
-        # Create DependencyContainer, passing command-line arguments
+        # Creating and initializing DependencyContainer
         deps = DependencyContainer(CONFIG_PATH, args, local_console_logger, local_error_logger, local_analytics_logger, local_listener)
 
-        # Asynchronous initialization of services inside the container
-        async def initialize_dependencies_async(deps_instance: DependencyContainer) -> None:
+        async def initialize_dependencies_async(deps_instance: "DependencyContainer") -> None:
             await deps_instance.initialize()
         asyncio.run(initialize_dependencies_async(deps))
 
-        # Get the MusicUpdater instance from the dependency container
-        updater_instance = deps.get_music_updater()
-        # Run the main asynchronous process
-        asyncio.run(updater_instance.run_full_process(args))
+        # Running main async logic through coordinator
+        asyncio.run(main_async(deps, args))
 
     except KeyboardInterrupt:
         if local_console_logger:
@@ -2647,7 +2690,6 @@ def main() -> None:
         if deps:
             deps.shutdown()
         elif local_listener:
-            # If container is not created, but listener is running
             local_listener.stop()
 
         end_all = time.time()
