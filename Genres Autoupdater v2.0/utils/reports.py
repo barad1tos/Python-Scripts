@@ -2,27 +2,26 @@
 
 """Reports Module.
 
-Provides functions for CSV/HTML report generation and track data management
-for music library operations. Handles both file operations and formatted console output.
+Handles CSV/HTML report generation and track data management for music library operations.
+Provides both file operations and formatted console output with support for caching.
 
 Main features:
-- Track list saving, loading, and synchronization with persistent storage
-- Consolidated change reporting for genres, years, and track/album naming
-- Console-friendly formatted reporting for interactive mode
-- CSV data persistence with field validation and filtering
-- Unified reporting interface for actual and simulated operations
-- HTML performance analytics with visualization and event tracking
-- Support for both incremental and full synchronization modes
+- Track list management with persistent storage and synchronization
+- Consolidated reporting for genres, years, and track/album naming
+- Interactive console output with color formatting
+- CSV data handling with validation
+- Unified interface for actual and simulated operations
+- HTML analytics with performance metrics
 
 Key functions:
-- save_to_csv: Saves track metadata to structured CSV files
-- save_unified_changes_report: Generates comprehensive change reports with console formatting
-- load_track_list: Loads track data from CSV with field validation
-- sync_track_list_with_current: Synchronizes track data between application runs, using CacheService for album years
-- save_unified_dry_run: Creates consolidated reports for simulated operations
-- save_html_report: Creates detailed HTML analytics with performance metrics
+- save_to_csv: Save track metadata to CSV files
+- save_unified_changes_report: Generate formatted change reports
+- load_track_list: Load and validate track data
+- sync_track_list_with_current: Sync data between runs
+- save_unified_dry_run: Create reports for simulations
+- save_html_report: Generate HTML analytics
 
-Note: Album year caching and metadata integration is now handled by CacheService
+Note: Uses CacheService for album year caching.
 """
 
 import csv
@@ -186,200 +185,130 @@ def save_unified_changes_report(
     file_path: str,
     console_logger: logging.Logger,
     error_logger: logging.Logger,
-    force_mode: bool = False,
 ) -> None:
-    """Save consolidated changes report combining genre, year, and other changes.
+    """Print a dynamically sized, formatted summary of changes to the console.
 
-    In force mode, prints changes to console instead of saving to file.
-
-    Args:
-        changes: List of dictionaries with change data
-        file_path: Path to the CSV file
-        console_logger: Logger for console output
-        error_logger: Logger for error output
-        force_mode: If True, prints to console instead of saving to file
-
+    AND save the full details to a CSV file.
     """
-    # Define fields for the report
-    fieldnames = [
-        Key.CHANGE_TYPE,  # New field to indicate type: genre, year, name, etc.
-        Key.ARTIST,
-        Key.ALBUM,
-        Key.TRACK_NAME,
-        Key.OLD_GENRE,
-        Key.NEW_GENRE,
-        Key.OLD_YEAR,
-        Key.NEW_YEAR,
-        Key.OLD_TRACK_NAME,
-        Key.NEW_TRACK_NAME,
-        Key.OLD_ALBUM_NAME,
-        Key.NEW_ALBUM_NAME,
-        Key.TIMESTAMP,
-    ]
+    if not changes:
+        console_logger.info("No changes to report.")
+        return
 
-    # Sort changes by artist and album for readability
     changes_sorted = sorted(
-        changes, key=lambda x: (x.get(Key.ARTIST, Misc.UNKNOWN), x.get(Key.ALBUM, Misc.UNKNOWN))
+        changes, key=lambda x: (x.get(Key.ARTIST, "Unknown"), x.get(Key.ALBUM, "Unknown"))
     )
 
-    # For force mode, print a formatted report to console
-    if force_mode:
-        console_logger.info(f"{Misc.EMOJI_REPORT} Changes Report:")
-        console_logger.info("-" * Format.SEPARATOR_80)
+    console_logger.info(f"\n{Misc.EMOJI_REPORT} Changes Summary:")
 
-        # Group changes by type for better presentation
-        changes_by_type: dict[str, list[dict[str, str]]] = {}
-        for change in changes_sorted:
-            change_type = change.get(Key.CHANGE_TYPE, ChangeType.OTHER)
-            if change_type not in changes_by_type:
-                changes_by_type[change_type] = []
-            changes_by_type[change_type].append(change)
+    changes_by_type: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for change in changes_sorted:
+        change_type_val = change.get(Key.CHANGE_TYPE, "other")
+        changes_by_type[change_type_val].append(change)
 
-        # For year changes, filter to only show where old_year != new_year
-        # This filtering logic might be better placed where changes are generated,
-        # but keeping it here for console report consistency with previous code.
-        if ChangeType.YEAR in changes_by_type:
-            changes_by_type[ChangeType.YEAR] = [
-                change
-                for change in changes_by_type[ChangeType.YEAR]
-                if change.get(Key.OLD_YEAR, "") != change.get(Key.NEW_YEAR, "")
-            ]
+    for change_type, type_changes in changes_by_type.items():
+        if not type_changes:
+            continue
 
-        # Print each change type with its own header
-        for change_type, type_changes in changes_by_type.items():
-            # Only print section if there are changes of this type
-            if not type_changes:
-                continue
-
-            console_logger.info(
-                f"\n{Misc.EMOJI_CHANGE} {change_type.upper()} Changes ({len(type_changes)}):"
-            )
-
-            # Print table header for this type
-            if change_type == ChangeType.GENRE:
-                console_logger.info(
-                    f"{'Artist':<{Format.COL_WIDTH_30}} {'Album':<{Format.COL_WIDTH_30}} {'Track':<{Format.COL_WIDTH_30}} {Format.HEADER_OLD_NEW}"
-                )
-                console_logger.info("-" * Format.SEPARATOR_100)
-                for change in type_changes:
-                    artist = (
-                        change.get(Key.ARTIST, "")[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.ARTIST, "")) > Format.COL_WIDTH_30
-                        else change.get(Key.ARTIST, "")
-                    )
-                    album = (
-                        change.get(Key.ALBUM, "")[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.ALBUM, "")) > Format.COL_WIDTH_30
-                        else change.get(Key.ALBUM, "")
-                    )
-                    track = (
-                        change.get(Key.TRACK_NAME, "")[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.TRACK_NAME, "")) > Format.COL_WIDTH_30
-                        else change.get(Key.TRACK_NAME, "")
-                    )
-                    old_genre = change.get(Key.OLD_GENRE, "")
-                    new_genre = change.get(Key.NEW_GENRE, "")
-                    console_logger.info(
-                        f"{artist:<{Format.COL_WIDTH_30}} {album:<{Format.COL_WIDTH_30}} {track:<{Format.COL_WIDTH_30}} {old_genre} {Format.ARROW} {new_genre}"  # noqa: E501
-                    )
-
-            elif change_type == ChangeType.YEAR:
-                # Already filtered for actual year changes above
-                console_logger.info(f"{'Artist':<{Format.COL_WIDTH_30}} {'Album':<{Format.COL_WIDTH_40}} {Format.HEADER_OLD_NEW}")
-                console_logger.info("-" * Format.SEPARATOR_80)
-                for change in type_changes:
-                    artist = (
-                        change.get(Key.ARTIST, "")[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.ARTIST, "")) > Format.COL_WIDTH_30
-                        else change.get(Key.ARTIST, "")
-                    )
-                    album = (
-                        change.get(Key.ALBUM, "")[:Format.COL_WIDTH_38] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.ALBUM, "")) > Format.COL_WIDTH_40
-                        else change.get(Key.ALBUM, "")
-                    )
-                    old_year = change.get(Key.OLD_YEAR, "")
-                    new_year = change.get(Key.NEW_YEAR, "")
-                    year_display = f"{Color.YELLOW}{old_year} {Format.ARROW} {new_year}{Color.RESET}"
-                    console_logger.info(f"{artist:<{Format.COL_WIDTH_30}} {album:<{Format.COL_WIDTH_40}} {year_display}")
-
-            elif change_type == ChangeType.NAME:
-                console_logger.info(
-                    f"{'Artist':<{Format.COL_WIDTH_30}} {Format.HEADER_ITEM_TYPE:<{Format.COL_WIDTH_10}} {Format.HEADER_ITEM_NAME:<{Format.COL_WIDTH_30}} {Format.HEADER_OLD_NEW}"  # noqa: E501
-                )  # Added Item Type column
-                console_logger.info("-" * Format.SEPARATOR_100)  # Adjusted separator length
-                for change in type_changes:
-                    artist = (
-                        change.get(Key.ARTIST, "")[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(change.get(Key.ARTIST, "")) > Format.COL_WIDTH_30
-                        else change.get(Key.ARTIST, "")
-                    )
-                    if (
-                        change.get(Key.OLD_TRACK_NAME) is not None
-                        or change.get(Key.NEW_TRACK_NAME) is not None
-                    ):  # Check if it's a track name change
-                        item_type = Format.ITEM_TYPE_TRACK
-                        old_name = change.get(Key.OLD_TRACK_NAME, "")
-                        new_name = change.get(Key.NEW_TRACK_NAME, "")
-                        item_name_display = change.get(
-                            Key.TRACK_NAME, ""
-                        )  # Display the track name being changed
-                    elif (
-                        change.get(Key.OLD_ALBUM_NAME) is not None
-                        or change.get(Key.NEW_ALBUM_NAME) is not None
-                    ):  # Check if it's an album name change
-                        item_type = Format.ITEM_TYPE_ALBUM
-                        old_name = change.get(Key.OLD_ALBUM_NAME, "")
-                        new_name = change.get(Key.NEW_ALBUM_NAME, "")
-                        item_name_display = change.get(
-                            Key.ALBUM, ""
-                        )  # Display the album name being changed
-                    else:
-                        item_type = Format.ITEM_TYPE_OTHER
-                        old_name = ""
-                        new_name = ""
-                        item_name_display = ""  # No specific item name for 'other' type
-
-                    item_name_display = (
-                        item_name_display[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX
-                        if len(item_name_display) > Format.COL_WIDTH_30
-                        else item_name_display
-                    )  # Truncate item name display
-                    old_name_display = (
-                        old_name[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX if len(old_name) > Format.COL_WIDTH_30 else old_name
-                    )  # Truncate old name display
-                    new_name_display = (
-                        new_name[:Format.COL_WIDTH_30 - 2] + Format.TRUNCATE_SUFFIX if len(new_name) > Format.COL_WIDTH_30 else new_name
-                    )  # Truncate new name display
-
-                    console_logger.info(
-                        f"{artist:<{Format.COL_WIDTH_30}} {item_type:<{Format.COL_WIDTH_10}} {item_name_display:<{Format.COL_WIDTH_30}} {old_name_display} {Format.ARROW} {new_name_display}"  # noqa: E501
-                    )
-
-            # If we have an unknown change type, show generic info
-            else:  # change_type == ChangeType.OTHER
-                for change in type_changes:
-                    # Attempt to print some identifying info for 'other' changes
-                    artist = change.get(Key.ARTIST, Misc.UNKNOWN_ARTIST)
-                    album = change.get(Key.ALBUM, Misc.UNKNOWN_ALBUM)
-                    track_name = change.get(Key.TRACK_NAME, Misc.UNKNOWN_TRACK)
-                    console_logger.info(
-                        f"Other change for: Artist='{artist}', Album='{album}', Track='{track_name}' - Details: {change}"
-                    )
-
-        console_logger.info(f"\nTotal: {len(changes)} changes")
-    else:
-        # For normal mode, save to CSV file
-        # Ensure directory exists before saving
-        ensure_directory(os.path.dirname(file_path), error_logger)
-        _save_csv(
-            changes_sorted,
-            fieldnames,
-            file_path,
-            console_logger,
-            error_logger,
-            Misc.CHANGES_REPORT_TYPE,
+        console_logger.info(
+            f"\n{Misc.EMOJI_CHANGE} {change_type.upper().replace('_', ' ')} Changes ({len(type_changes)}):"
         )
+
+        # 1. Define headers and data keys for the table
+        headers_map = {}
+        if "genre" in change_type:
+            headers_map = {
+                "Artist": "artist",
+                "Album": "album",
+                "Track": "track_name",
+                "Old Genre": "original_genre",
+                "New Genre": "new_genre"
+            }
+        elif "year" in change_type:
+            headers_map = {
+                "Artist": "artist",
+                "Album": "album",
+                "Old Year": "old_year",
+                "New Year": "new_year"
+            }
+
+        elif "cleaning" in change_type:
+            headers_map = {
+                "Artist": "artist",
+                "Original Album": "original_album",
+                "Cleaned Album": "cleaned_album",
+                "Original Track": "original_name",
+                "Cleaned Track": "cleaned_name",
+            }
+
+        elif "name" in change_type:
+            headers_map = {
+                "Artist": "artist",
+                "Item Type": "item_type",
+                "Old Name": "old_name",
+                "New Name": "new_name"
+            }
+
+        if not headers_map:
+            for change in type_changes:
+                console_logger.info(f"  Other Change: {change}")
+            continue
+
+        # 2. Calculate maximum width for each column
+        col_widths = {header: len(header) for header in headers_map.keys()}
+        for change in type_changes:
+            for header, data_key in headers_map.items():
+                # Handle special cases for composite fields
+                if data_key == "item_type":
+                    cell_value = "Track" if "old_track_name" in change or "new_track_name" in change else "Album"
+                elif data_key == "old_name":
+                    cell_value = change.get("old_track_name") or change.get("old_album_name", "")
+                elif data_key == "new_name":
+                    cell_value = change.get("new_track_name") or change.get("new_album_name", "")
+                else:
+                    cell_value = str(change.get(data_key, ""))
+
+                col_widths[header] = max(col_widths[header], len(cell_value))
+
+        # 3. Print header with calculated width
+        padding = 2
+        header_line = " | ".join([f"{name.upper():<{col_widths[name] + padding}}" for name in headers_map.keys()])
+        console_logger.info(header_line)
+        console_logger.info("-" * len(header_line))
+
+        # 4. Print rows of the table
+        for change in type_changes:
+            row_values = []
+            for header, data_key in headers_map.items():
+                if data_key == "item_type":
+                    cell_value = "Track" if "old_track_name" in change or "new_track_name" in change else "Album"
+                elif data_key == "old_name":
+                    cell_value = change.get("old_track_name") or change.get("old_album_name", "")
+                elif data_key == "new_name":
+                    cell_value = change.get("new_track_name") or change.get("new_album_name", "")
+                else:
+                    cell_value = str(change.get(data_key, ""))
+                row_values.append(f"{cell_value:<{col_widths[header] + padding}}")
+            console_logger.info(" | ".join(row_values))
+
+    console_logger.info("-" * Format.SEPARATOR_100)
+
+    # --- Part 2: Always save report to CSV ---
+    fieldnames = [
+        Key.CHANGE_TYPE, Key.ARTIST, Key.ALBUM, Key.TRACK_NAME,
+        Key.OLD_GENRE, Key.NEW_GENRE, Key.OLD_YEAR, Key.NEW_YEAR,
+        Key.OLD_TRACK_NAME, Key.NEW_TRACK_NAME, Key.OLD_ALBUM_NAME,
+        Key.NEW_ALBUM_NAME, Key.TIMESTAMP,
+    ]
+
+    ensure_directory(os.path.dirname(file_path), error_logger)
+    _save_csv(
+        changes_sorted,
+        fieldnames,
+        file_path,
+        console_logger,
+        error_logger,
+        "changes report",
+    )
 
 
 def save_changes_report(
@@ -387,7 +316,6 @@ def save_changes_report(
     file_path: str,
     console_logger: logging.Logger | None = None,
     error_logger: logging.Logger | None = None,
-    force_mode: bool = False,
     add_timestamp: bool = False,
 ) -> None:
     """Save the list of change dictionaries to a CSV file.
@@ -418,7 +346,7 @@ def save_changes_report(
         final_path = f"{base}_{timestamp_suffix}{ext}"
 
     save_unified_changes_report(
-        changes, final_path, console_logger, error_logger, force_mode
+        changes, final_path, console_logger, error_logger
     )
 
 
@@ -427,7 +355,6 @@ def save_changes_csv(
     file_path: str,
     console_logger: logging.Logger | None = None,
     error_logger: logging.Logger | None = None,
-    force_mode: bool = False,
     add_timestamp: bool = False,
 ) -> None:
     """Compatibility wrapper for saving change reports in CSV format."""
@@ -436,7 +363,6 @@ def save_changes_csv(
         file_path,
         console_logger,
         error_logger,
-        force_mode,
         add_timestamp,
     )
 
@@ -1137,13 +1063,13 @@ def save_detailed_dry_run_report(
         <style>
             body {
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                margin: 20px;
+                margin: 10px;
                 background-color: #f9f9f9;
                 color: #333;
             }
-            h2 { color: #1a1a1a; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
-            table { border-collapse: collapse; width: 100%; margin-bottom: 30px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+            h2 { color: #1a1a1a; border-bottom: 2px solid #ddd; padding-bottom: 5px; }
+            table { border-collapse: collapse; width: 100%; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); table-layout: auto; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; white-space: nowrap; }
             thead { background-color: #e9ecef; }
             th { font-weight: 600; }
             tbody tr:nth-child(even) { background-color: #f2f2f2; }
