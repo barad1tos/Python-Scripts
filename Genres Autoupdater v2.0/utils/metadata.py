@@ -44,13 +44,15 @@ MIN_REQUIRED_FIELDS = TrackField.TRACK_STATUS + 1
 def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, str]]:
     """Parse the raw data from AppleScript into a list of track dictionaries.
 
-    Uses the Record Separator (U+001E) as the field delimiter.
+    Uses the Record Separator (U+001E) as the field delimiter and
+    Group Separator (U+001D) as the line delimiter.
 
     :param raw_data: Raw string data from AppleScript.
     :param error_logger: Logger for error output.
     :return: List of track dictionaries.
     """
-    field_separator = "\x1e"
+    field_separator = "\x1e"  # ASCII 30 (Record Separator)
+    line_separator = "\x1d"   # ASCII 29 (Group Separator)
 
     if not raw_data:
         error_logger.error("No data fetched from AppleScript.")
@@ -61,18 +63,16 @@ def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, 
     )
 
     tracks = []
-    # Split raw data into rows using newline character
-    rows = raw_data.strip().split("\n")
+    # Split rows using the correct line separator
+    rows = raw_data.strip().split(line_separator)
     for row in rows:
         # Skip empty rows that might result from trailing newline
         if not row:
             continue
 
-        # Split each row into fields using the new field separator
+        # Split each row into fields using the field separator
         fields = row.split(field_separator)
 
-        # The AppleScript is assumed to output at least MIN_REQUIRED_FIELDS fields for standard properties
-        # and potentially more for old_year and new_year.
         if len(fields) >= MIN_REQUIRED_FIELDS:
             # Create track with required fields
             track = {
@@ -97,9 +97,6 @@ def parse_tracks(raw_data: str, error_logger: logging.Logger) -> list[dict[str, 
         else:
             # Log malformed row for debugging
             error_logger.warning("Malformed track data row skipped: %s", row)
-            error_logger.debug(
-                f"parse_tracks: Finished parsing. Found {len(tracks)} tracks."
-            )
 
     return tracks
 
@@ -152,14 +149,14 @@ def determine_dominant_genre_for_artist(
                 "dateAdded", "1900-01-01 00:00:00"
             )  # Provide a default date string for safety
             try:
-                track_date = datetime.strptime(date_added_str, "%Y-%m-%d")
+                track_date = datetime.strptime(date_added_str, "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 # Handle cases with invalid date format by using a very old date
                 error_logger.warning(
                     f"Invalid date format in track data for determining dominant genre: '{date_added_str}'. Using default old date."
                 )
                 track_date = datetime.strptime(
-                    "1900-01-01", "%Y-%m-%d"
+                    "1900-01-01 00:00:00", "%Y-%m-%d %H:%M:%S"
                 )
 
             if album not in album_earliest:
@@ -191,8 +188,8 @@ def determine_dominant_genre_for_artist(
         earliest_album_track = min(
             album_earliest.values(),
             key=lambda t: datetime.strptime(
-                t.get("date_added", "9999-12-31"),
-                "%Y-%m-%d",
+                t.get("dateAdded", "9999-12-31 00:00:00"),
+                "%Y-%m-%d %H:%M:%S",
             ),
         )
 
@@ -415,35 +412,6 @@ def clean_names(
     )
 
     return cleaned_track, cleaned_album
-
-
-def _split_genres(genres: str) -> list[str]:
-    """Split a genre string using common separators."""
-    if not genres:
-        return []
-    return [p.strip() for p in re.split(r"[;,/]", genres) if p.strip()]
-
-
-def has_genre(current_genres: str, genre: str) -> bool:
-    """Return ``True`` if ``genre`` already exists in ``current_genres``."""
-    if not current_genres or not genre:
-        return False
-    normalized = {g.lower() for g in _split_genres(current_genres)}
-    return genre.strip().lower() in normalized
-
-
-def merge_genres(current_genres: str, genre: str) -> str:
-    """Append ``genre`` to ``current_genres`` if it's not already present."""
-    if not genre:
-        return current_genres or ""
-
-    parts = _split_genres(current_genres)
-    normalized = [p.lower() for p in parts]
-    new_part = genre.strip()
-    if new_part.lower() not in normalized:
-        parts.append(new_part)
-    return "; ".join(parts)
-
 
 def is_music_app_running(error_logger: logging.Logger) -> bool:
     """Check if the Music.app is currently running using subprocess. Logs errors.
