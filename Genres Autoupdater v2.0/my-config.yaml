@@ -74,7 +74,7 @@ database_verification:
 
 # Development and testing settings
 development:
-  test_artists: [Klavdia Petrivna, Zwyntar, Neurotech] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+  test_artists: [Katatonia] # List of artists to test with (e.g., ["Artist1", "Artist2"])
 
 # API Cache file
 api_cache_file: cache.json
@@ -132,7 +132,7 @@ year_retrieval: # NOTE: Keep this top-level key as the code expects config.get('
     discogs_requests_per_minute: 55
     musicbrainz_requests_per_second: 1
     lastfm_requests_per_second: 5
-    concurrent_api_calls: 5
+    concurrent_api_calls: 2
 
   # --- Processing Control ---
   processing:

@@ -32,6 +32,8 @@ from collections import defaultdict
 from datetime import datetime
 from typing import Any
 
+from rich.console import Console
+
 from services.cache_service import CacheService
 from utils.logger import ensure_directory, get_full_log_path
 
@@ -198,8 +200,8 @@ def save_unified_changes_report(
         changes, key=lambda x: (x.get(Key.ARTIST, "Unknown"), x.get(Key.ALBUM, "Unknown"))
     )
 
-    console_logger.info(f"\n{Misc.EMOJI_REPORT} Changes Summary:")
-
+    console = Console()
+    console.print(f"\n{Misc.EMOJI_REPORT} [bold]Changes Summary:[/]")
     changes_by_type: dict[str, list[dict[str, str]]] = defaultdict(list)
     for change in changes_sorted:
         change_type_val = change.get(Key.CHANGE_TYPE, "other")
@@ -209,8 +211,8 @@ def save_unified_changes_report(
         if not type_changes:
             continue
 
-        console_logger.info(
-            f"\n{Misc.EMOJI_CHANGE} {change_type.upper().replace('_', ' ')} Changes ({len(type_changes)}):"
+        console.print(
+            f"\n{Misc.EMOJI_CHANGE} [bold]{change_type.upper().replace('_', ' ')} Changes ({len(type_changes)}):[/]"
         )
 
         # 1. Define headers and data keys for the table
@@ -272,12 +274,12 @@ def save_unified_changes_report(
         # 3. Print header with calculated width
         padding = 2
         header_line = " | ".join([f"{name.upper():<{col_widths[name] + padding}}" for name in headers_map.keys()])
-        console_logger.info(header_line)
-        console_logger.info("-" * len(header_line))
+        console.print(header_line)
+        console.print("-" * len(header_line))
 
         # 4. Print rows of the table
         for change in type_changes:
-            row_values = []
+            row_parts = []
             for header, data_key in headers_map.items():
                 if data_key == "item_type":
                     cell_value = "Track" if "old_track_name" in change or "new_track_name" in change else "Album"
@@ -285,12 +287,37 @@ def save_unified_changes_report(
                     cell_value = change.get("old_track_name") or change.get("old_album_name", "")
                 elif data_key == "new_name":
                     cell_value = change.get("new_track_name") or change.get("new_album_name", "")
+                elif data_key == "old_year":
+                    old_year = str(change.get("old_year", "")).strip()
+                    new_year = str(change.get("new_year", "")).strip()
+                    if old_year and new_year and old_year != new_year:
+                        cell_value = f"[yellow]{old_year}"
+                    else:
+                        cell_value = old_year
+                elif data_key == "new_year":
+                    old_year = str(change.get("old_year", "")).strip()
+                    new_year = str(change.get("new_year", "")).strip()
+                    if old_year and new_year and old_year != new_year:
+                        cell_value = f"[yellow]{new_year}"
+                    else:
+                        cell_value = new_year
                 else:
                     cell_value = str(change.get(data_key, ""))
-                row_values.append(f"{cell_value:<{col_widths[header] + padding}}")
-            console_logger.info(" | ".join(row_values))
+                # Format cell with padding
+                padding = 2
+                width = col_widths[header] + padding
+                if cell_value.startswith('[yellow]'):
+                    # For colored cells, we need to add padding manually
+                    colored_part = cell_value.replace('[yellow]', '')
+                    cell_str = f"{colored_part:<{width}}"
+                    row_parts.append(f"[yellow]{cell_str}")
+                else:
+                    row_parts.append(f"{cell_value:<{width}}")
 
-    console_logger.info("-" * Format.SEPARATOR_100)
+            # Join row parts with separators and print using rich
+            console.print(" | ".join(row_parts))
+
+    console.print("-" * Format.SEPARATOR_100)
 
     # --- Part 2: Always save report to CSV ---
     fieldnames = [

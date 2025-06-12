@@ -2,35 +2,27 @@
 
 """External API Service for Music Metadata.
 
-This module provides the `ExternalApiService` class, designed to interact with external music metadata APIs
-(MusicBrainz, Discogs, and optionally Last.fm) to retrieve and determine the original release year of albums.
+This module provides the `ExternalApiService` class for interacting with music metadata APIs
+(MusicBrainz, Discogs, and Last.fm) to retrieve original album release years.
 
 Key Features:
-- **Multi-API Integration:** Fetches data from MusicBrainz, Discogs, and Last.fm.
-- **Advanced Rate Limiting:** Uses `EnhancedRateLimiter` with a moving window approach to maximize throughput
-    while adhering to API limits.
-- **Concurrency Control:** Manages concurrent API calls effectively.
-- **Sophisticated Scoring:** Employs a detailed scoring algorithm (`_score_original_release`) to evaluate
-    potential releases and determine the most likely original release year, considering factors like release type,
-    status, region, artist activity period, and MusicBrainz Release Group data.
-- **Artist Context:** Utilizes artist activity period and region (fetched from MusicBrainz and cached via CacheService)
-    to improve scoring accuracy.
-- **Data Aggregation:** Combines results from multiple APIs for a more robust determination.
-- **Normalization & Validation:** Normalizes artist/album names for better matching and validates years.
-- **Error Handling & Retries:** Implements robust error handling and retry logic for API requests.
-- **Dependency Injection:** Uses injected services for caching and verification tracking rather than
-    managing these concerns internally.
-- **Statistics & Logging:** Tracks API usage statistics and provides detailed logging for diagnostics.
-- **Prerelease Handling:** Includes logic (`should_update_album_year`) to avoid updating years for albums
-    marked as prerelease in the user's library, marking them for future verification.
+- Multi-API integration with MusicBrainz, Discogs, and Last.fm
+- Advanced rate limiting via `EnhancedRateLimiter` using moving window approach
+- Sophisticated scoring algorithm for identifying original releases
+- Artist context (activity period, region) for improved accuracy
+- Data aggregation across multiple APIs
+- Name normalization and year validation
+- Error handling with retry logic
+- Dependency injection for caching and verification tracking
+- Comprehensive logging and statistics
 
 Classes:
-- `EnhancedRateLimiter`: A standalone rate limiter class.
-- `ExternalApiService`: The main service class orchestrating API interactions and year determination.
+- `EnhancedRateLimiter`: Manages API rate limits with moving window approach
+- `ExternalApiService`: Orchestrates API interactions and year determination
 
 Dependencies:
-- `CacheService`: Provides caching functionality for artist metadata.
-- `PendingVerificationService`: Tracks albums that need future verification.
+- `CacheService`: Provides caching for API responses and artist metadata
+- `PendingVerificationService`: Tracks albums requiring future verification
 """
 
 import asyncio
@@ -61,10 +53,7 @@ REGION_CODE_LENGTH = 2
 SECURE_RANDOM = random.SystemRandom()
 
 class EnhancedRateLimiter:
-    """Advanced rate limiter using a moving window approach.
-
-    This ensures maximum throughput while strictly adhering to API rate limits.
-    """
+    """Advanced rate limiter using a moving window approach with an asyncio Lock."""
 
     def __init__(
         self,
@@ -83,80 +72,73 @@ class EnhancedRateLimiter:
 
         self.requests_per_window = requests_per_window
         self.window_size = float(window_size)
-        # Using list as deque for simplicity, but collections.deque might be more performant for large windows
         self.request_timestamps: list[float] = []
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.logger = logger or logging.getLogger(__name__)
         self.total_requests: int = 0
         self.total_wait_time: float = 0.0
+        self._rate_lock = asyncio.Lock()
 
     async def acquire(self) -> float:
-        """Acquire permission to make a request, waiting if necessary due to rate limits or concurrency limits."""
-        # Wait for rate limit first
+        """Acquire permission to make a request, waiting if necessary."""
+        # First wait for the concurrency semaphore
+        await self.semaphore.acquire()
+
+        # Then wait for the rate limit
         rate_limit_wait_time = await self._wait_if_needed()
         self.total_requests += 1
         self.total_wait_time += rate_limit_wait_time
 
-        # Then wait for concurrency semaphore
-        await self.semaphore.acquire()
-
         return rate_limit_wait_time
 
     def release(self) -> None:
-        """Release the concurrency semaphore after the request is completed or failed."""
+        """Release the concurrency semaphore."""
         self.semaphore.release()
 
     async def _wait_if_needed(self) -> float:
-        """Check rate limits and wait if necessary."""
-        now = time.monotonic()  # Use monotonic clock for interval timing
+        """Check rate limits within a lock and wait if necessary."""
+        async with self._rate_lock:  # <<< GUARANTEE that only one task is running here at a time
+            total_wait_for_this_acquire = 0.0
 
-        # Clean up old timestamps outside the window
-        # This check ensures we don't keep growing the list indefinitely
-        # It iterates from the left (oldest) and stops when a timestamp is within the window
-        while (
-            self.request_timestamps
-            and now - self.request_timestamps[0] > self.window_size
-        ):
-            self.request_timestamps.pop(0)
+            while True:
+                now = time.monotonic()
 
-        # If we've reached the limit, calculate wait time until the oldest request expires
-        if len(self.request_timestamps) >= self.requests_per_window:
-            oldest_timestamp = self.request_timestamps[0]
-            wait_duration = (oldest_timestamp + self.window_size) - now
+                # Clear old time stamps
+                while (
+                    self.request_timestamps
+                    and now - self.request_timestamps[0] > self.window_size
+                ):
+                    self.request_timestamps.pop(0)
 
-            # Only wait if the calculated duration is positive
-            if wait_duration > 0:
-                # Use 3 decimal places for milliseconds precision in logs
-                self.logger.debug(
-                    f"Rate limit reached ({len(self.request_timestamps)}/{self.requests_per_window} "
-                    f"in {self.window_size}s). Waiting {wait_duration:.3f}s"
-                )
-                await asyncio.sleep(wait_duration)
-                # After waiting, check again recursively in case multiple requests waited simultaneously
-                # The recursive call handles scenarios where the wait wasn't quite enough
-                # and adds the new wait time to the original
-                return wait_duration + await self._wait_if_needed()
-            # If wait_duration is <= 0, it means the slot freed up while we were checking.
-            # No need to wait, but we should remove the expired timestamp before proceeding.
-            # This case is implicitly handled by the while loop above if run again, or the check below.
+                # If the limit is reached, we are waiting
+                if len(self.request_timestamps) >= self.requests_per_window:
+                    oldest_timestamp = self.request_timestamps[0]
+                    wait_duration = (oldest_timestamp + self.window_size) - now
 
-        # Record this request's timestamp *after* potential waiting and cleanup
-        self.request_timestamps.append(time.monotonic())
-        return 0.0  # No waiting was required in this pass
+                    if wait_duration > 0:
+                        self.logger.debug(
+                            f"Rate limit reached ({len(self.request_timestamps)}/{self.requests_per_window} "
+                            f"in {self.window_size}s). Waiting {wait_duration:.3f}s"
+                        )
+                        await asyncio.sleep(wait_duration)
+                        total_wait_for_this_acquire += wait_duration
+                        continue  # Repeat the test after waiting
+
+                # If we are here, there is room
+                self.request_timestamps.append(time.monotonic())
+                return total_wait_for_this_acquire
 
     def get_stats(self) -> dict[str, Any]:
         """Get statistics about rate limiter usage."""
-        # Ensure current window usage is up-to-date by cleaning expired timestamps
         now = time.monotonic()
         self.request_timestamps = [
             ts for ts in self.request_timestamps if now - ts <= self.window_size
         ]
-
         return {
             "total_requests": self.total_requests,
             "total_wait_time": self.total_wait_time,
             "avg_wait_time": self.total_wait_time
-            / max(1, self.total_requests),  # Avoid division by zero
+            / max(1, self.total_requests),
             "current_window_usage": len(self.request_timestamps),
             "max_requests_per_window": self.requests_per_window,
         }
@@ -337,33 +319,44 @@ class ExternalApiService:
             self.session = None  # Ensure it's recreated below
 
         if not self.session or self.session.closed:
-            # Sensible timeouts
-            timeout = aiohttp.ClientTimeout(
-                total=45, connect=15, sock_connect=15, sock_read=30
-            )
-            # Connector with reasonable limits
-            connector = aiohttp.TCPConnector(
-                limit_per_host=10,  # Limit connections per host endpoint
-                limit=50,  # Limit total connections in the pool
-                ssl=True,  # Default to verifying SSL certs
-                force_close=True,  # Close connections after request - potentially less efficient but more robust against stale connections
-                use_dns_cache=True,
-                ttl_dns_cache=300,  # Cache DNS for 5 minutes
-            )
-            # Default headers for all requests made by this session
-            headers = {
-                "User-Agent": self.user_agent,
-                "Accept": "application/json",
-                "Accept-Encoding": "gzip, deflate",
-            }  # Request compression
-
-            self.session = aiohttp.ClientSession(
-                timeout=timeout, connector=connector, headers=headers
-            )
+            # Create a fresh ClientSession using the dedicated helper.
+            self.session = self._create_client_session()
             self.console_logger.info(
                 f"External API session initialized with User-Agent: {self.user_agent}"
                 + (" (forced)" if force else "")
             )
+
+    def _create_client_session(self) -> aiohttp.ClientSession:
+        """Create a new aiohttp ClientSession bound to the active event loop."""
+        timeout = aiohttp.ClientTimeout(total=45, connect=15, sock_connect=15, sock_read=30)
+        connector = aiohttp.TCPConnector(
+            limit_per_host=10,
+            limit=50,
+            ssl=True,
+            force_close=True,
+            use_dns_cache=True,
+            ttl_dns_cache=300,
+        )
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "application/json",
+            "Accept-Encoding": "gzip, deflate",
+        }
+        self.console_logger.info(
+            f"External API session (re)initialized with User-Agent: {self.user_agent}"
+        )
+        return aiohttp.ClientSession(timeout=timeout, connector=connector, headers=headers)
+
+    async def _ensure_session(self) -> None:
+        """Ensure that self.session is an open aiohttp.ClientSession."""
+        if self.session is None or self.session.closed:
+            # Close existing session if needed (defensive)
+            try:
+                if self.session and not self.session.closed:
+                    await self.session.close()
+            except Exception as e:
+                self.error_logger.error(f"Error closing existing session: {e}")
+            self.session = self._create_client_session()
 
     async def close(self) -> None:
         """Close the aiohttp ClientSession and log API usage statistics."""
@@ -478,6 +471,8 @@ class ExternalApiService:
             response_text_snippet = "[No Response Body]"
 
             try:
+                # Guarantee that the client session is alive for each attempt
+                await self._ensure_session()
                 wait_time = await limiter.acquire()
                 if wait_time > WAIT_TIME_LOG_THRESHOLD:
                     self.console_logger.debug(
@@ -486,6 +481,10 @@ class ExternalApiService:
 
                 self.request_counts[api_name] = self.request_counts.get(api_name, 0) + 1
                 start_time = time.monotonic()
+
+                await self._ensure_session()
+                if self.session is None:
+                    raise RuntimeError("HTTP session is not initialized. Call initialize() method first.")
 
                 async with self.session.get(
                     url, params=params, headers=request_headers, timeout=request_timeout
@@ -570,6 +569,23 @@ class ExternalApiService:
                             f"Content-Type: {response.headers.get('Content-Type')}"
                         )
                     break
+
+            except RuntimeError as rt:
+                # Handle closed event loop / session issues and attempt to recover.
+                if "Event loop is closed" in str(rt) and attempt < max_retries:
+                    self.error_logger.error(
+                        f"[{api_name}] {rt}. Recreating ClientSession and retrying {attempt + 1}/{max_retries}"
+                    )
+                    try:
+                        if self.session and not self.session.closed:
+                            await self.session.close()
+                    except Exception as e:
+                        self.error_logger.error(f"Error closing existing session: {e}")
+                    self.session = None
+                    await self._ensure_session()
+                    continue
+                last_exception = rt
+                break
 
             except (TimeoutError, aiohttp.ClientError) as e:
                 elapsed = time.monotonic() - start_time if start_time > 0 else 0.0
@@ -678,6 +694,44 @@ class ExternalApiService:
         except Exception as exc:
             self.error_logger.error(
                 f"Failed to mark '{artist} - {album}' for verification: {exc}"
+            )
+
+    async def _safe_remove_from_pending(
+        self,
+        artist: str,
+        album: str,
+        *,
+        fire_and_forget: bool = False,
+    ) -> None:
+        """Safely remove an album from pending verification list.
+
+        Mirrors the behaviour of :py:meth:`_safe_mark_for_verification` but calls
+        ``PendingVerificationService.remove_from_pending`` instead. The extra
+        indirection guarantees that failures while removing do not break the
+        main flow and are properly logged.
+        """
+        if not self.pending_verification_service:
+            return  # No verification service injected, nothing to do
+        try:
+            if fire_and_forget:
+                task = asyncio.create_task(
+                    self.pending_verification_service.remove_from_pending(
+                        artist,
+                        album,
+                    )
+                )
+                if not hasattr(self, "_pending_tasks"):
+                    self._pending_tasks = set()
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
+            else:
+                await self.pending_verification_service.remove_from_pending(
+                    artist,
+                    album,
+                )
+        except Exception as exc:
+            self.error_logger.error(
+                f"Failed to remove '{artist} - {album}' from pending verification: {exc}"
             )
 
     def should_update_album_year(
@@ -793,11 +847,15 @@ class ExternalApiService:
                     artist_norm,
                     album_norm,
                     artist_region,
+                    artist_orig=artist,
+                    album_orig=album,
                 ),
                 self._get_scored_releases_from_discogs(
                     artist_norm,
                     album_norm,
                     artist_region,
+                    artist_orig=artist,
+                    album_orig=album,
                 ),
             ]
             if self.use_lastfm:
@@ -915,6 +973,8 @@ class ExternalApiService:
 
             if not is_definitive:
                 await self._safe_mark_for_verification(artist, album)
+            else:
+                await self._safe_remove_from_pending(artist, album)
 
             result_year = best_year
 
@@ -1091,7 +1151,7 @@ class ExternalApiService:
         region_result: str | None = None
         try:
             # Query MusicBrainz API for artist data, limiting to the top result
-            params = {"query": f'artist:"{artist_norm}"', "fmt": "json", "limit": 1}
+            params = {"query": f'artist:"{artist_norm}"', "fmt": "json", "limit": "1"}
             search_url = "https://musicbrainz.org/ws/2/artist/"
             data = await self._make_api_request(
                 "musicbrainz", search_url, params={k: str(v) for k, v in params.items()}
@@ -1308,6 +1368,7 @@ class ExternalApiService:
         if year_str and year_str.isdigit() and len(year_str) == YEAR_LENGTH:
             is_valid_year_format = True
             try:
+                # Extract only the year part (YYYY)
                 year = int(year_str)
             except ValueError:
                 is_valid_year_format = False
@@ -1415,37 +1476,98 @@ class ExternalApiService:
 
         return final_score
 
+    def _filter_release_groups_by_artist(
+        self, release_groups: list[dict[str, Any]], artist_norm: str
+    ) -> list[dict[str, Any]]:
+        """Filter MusicBrainz release groups allowing partial, case-insensitive matches."""
+        search_simple = self._simple_norm(artist_norm)
+        filtered_groups: list[dict[str, Any]] = []
+        for rg in release_groups:
+            artist_credit = rg.get("artist-credit", [])
+            match_found = False
+            if isinstance(artist_credit, list):
+                for credit in artist_credit:
+                    credit_name = (
+                        credit.get("artist", {}).get("name", "")
+                        if isinstance(credit, dict)
+                        else ""
+                    )
+                    credit_simple = self._simple_norm(credit_name)
+                    if credit_simple and (
+                        search_simple in credit_simple or credit_simple in search_simple
+                    ):
+                        match_found = True
+                        break
+                    aliases = credit.get("artist", {}).get("aliases", [])
+                    if isinstance(aliases, list):
+                        for alias in aliases:
+                            alias_name = alias.get("name", "") if isinstance(alias, dict) else ""
+                            alias_simple = self._simple_norm(alias_name)
+                            if alias_simple and (
+                                search_simple in alias_simple or alias_simple in search_simple
+                            ):
+                                match_found = True
+                                break
+                    if match_found:
+                        break
+            if match_found:
+                filtered_groups.append(rg)
+            else:
+                ac_names = ", ".join(
+                    [
+                        c.get("artist", {}).get("name", "")
+                        for c in artist_credit
+                        if isinstance(c, dict)
+                    ]
+                )
+                self.console_logger.debug(
+                    f"[musicbrainz] Skipping RG '{rg.get('title')}' due to artist mismatch ('{ac_names}' vs search '{artist_norm}')"
+                )
+        return filtered_groups
+
     async def _get_scored_releases_from_musicbrainz(
-        self, artist_norm: str, album_norm: str, artist_region: str | None
+        self,
+        artist_norm: str,
+        album_norm: str,
+        artist_region: str | None,
+        *,
+        artist_orig: str | None = None,
+        album_orig: str | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve and score releases from MusicBrainz, prioritizing Release Group search.
 
         Includes fallback search strategies if the initial precise query fails.
         Includes improved artist matching after fallback searches.
         """
-        scored_releases: list[dict[str, Any]] = []
-        release_groups = []  # Initialize list to store found release groups
+        all_release_groups: list[dict[str, Any]] = []
+
+        self.console_logger.debug(
+            f"[musicbrainz] Start search | artist_orig='{artist_orig or artist_norm}' "
+            f"artist_norm='{artist_norm}', album_orig='{album_orig or album_norm}', album_norm='{album_norm}'"
+        )
 
         try:
-            # Helper for Lucene escaping
+
             def escape_lucene(term: str) -> str:
+                """Escape special characters for Lucene query syntax."""
                 term = term.replace("\\", "\\\\")
+                # List of special characters to escape
                 for char in r'+-&|!(){}[]^"~*?:\/':
                     term = term.replace(char, f"\\{char}")
                 return term
 
             base_search_url = "https://musicbrainz.org/ws/2/release-group/"
-            # --- Attempt 1: Precise Fielded Search (Primary Strategy) ---
-            primary_query = f'artist:"{escape_lucene(artist_norm)}" AND releasegroup:"{escape_lucene(album_norm)}"'
-            params_rg1 = {
-                "fmt": "json",
-                "limit": "10",
-                "query": primary_query,
-            }  # Converted 10 to string
-            log_rg_url1 = (
-                base_search_url + "?" + urllib.parse.urlencode(params_rg1, safe=":/")
+
+            # --- Attempt 1: Precise Fielded Search ---
+            primary_query = (
+                f'artist:"{escape_lucene(artist_norm)}" '
+                f'AND releasegroup:"{escape_lucene(album_norm)}"'
             )
-            self.console_logger.debug(f"[musicbrainz] Attempt 1 URL: {log_rg_url1}")
+            params_rg1 = {"fmt": "json", "limit": "10", "query": primary_query}
+
+            # Log the fully encoded URL for diagnostics
+            url_rg1 = base_search_url + "?" + urllib.parse.urlencode(params_rg1)
+            self.console_logger.debug(f"[musicbrainz] Attempt 1 URL: {url_rg1}")
 
             rg_data1 = await self._make_api_request(
                 "musicbrainz", base_search_url, params=params_rg1
@@ -1456,332 +1578,158 @@ class ExternalApiService:
                 and rg_data1.get("count", 0) > 0
                 and rg_data1.get("release-groups")
             ):
-                self.console_logger.debug("Attempt 1 (Precise Search) successful.")
-                release_groups = rg_data1.get("release-groups", [])
+                self.console_logger.debug(
+                    f"[musicbrainz] Attempt 1 successful. Found {len(rg_data1['release-groups'])} release groups."
+                )
+                all_release_groups.extend(rg_data1["release-groups"])
             else:
-                self.console_logger.warning(
-                    f"[musicbrainz] Attempt 1 (Precise Search) failed or yielded no results for query: {primary_query}. Trying fallback."
+                self.console_logger.debug(
+                    "[musicbrainz] Attempt 1 failed. Trying fallbacks."
                 )
-
-                # --- Attempt 2: Broader Search (Keywords without fields) ---
-                fallback_query1 = (
-                    f'"{escape_lucene(artist_norm)}" AND "{escape_lucene(album_norm)}"'
-                )
-                params_rg2 = {
-                    "fmt": "json",
-                    "limit": "10",
-                    "query": fallback_query1,
-                }  # Converted 10 to string
-                log_rg_url2 = (
-                    base_search_url
-                    + "?"
-                    + urllib.parse.urlencode(params_rg2, safe=":/")
-                )
-                self.console_logger.debug(f"[musicbrainz] Attempt 2 URL: {log_rg_url2}")
-
+                # --- Attempt 2: Broader Search ---
+                artist_fb = artist_orig or artist_norm  # Use original (unescaped) names if provided
+                album_fb = album_orig or album_norm
+                secondary_query = f"{artist_fb} {album_fb}"
+                params_rg2 = {"fmt": "json", "limit": "10", "query": secondary_query}
+                url_rg2 = base_search_url + "?" + urllib.parse.urlencode(params_rg2)
+                self.console_logger.debug(f"[musicbrainz] Attempt 2 URL: {url_rg2}")
                 rg_data2 = await self._make_api_request(
                     "musicbrainz", base_search_url, params=params_rg2
                 )
-
                 if (
                     rg_data2
                     and rg_data2.get("count", 0) > 0
                     and rg_data2.get("release-groups")
                 ):
-                    self.console_logger.debug("Attempt 2 (Broad Search) successful.")
-                    release_groups = rg_data2.get("release-groups", [])
-                else:
-                    self.console_logger.warning(
-                        f"[musicbrainz] Attempt 2 (Broad Search) failed or yielded no results for query: {fallback_query1}. Trying last fallback."
-                    )
-
-                    # --- Attempt 3: Search by Album Title Only ---
-                    fallback_query2 = f'"{escape_lucene(album_norm)}"'  # Search only by album title keyword
-                    params_rg3 = {
-                        "fmt": "json",
-                        "limit": "10",
-                        "query": fallback_query2,
-                    }  # Converted 10 to string
-                    log_rg_url3 = (
-                        base_search_url
-                        + "?"
-                        + urllib.parse.urlencode(params_rg3, safe=":/")
+                    filtered_rgs = self._filter_release_groups_by_artist(
+                        rg_data2["release-groups"], artist_norm
                     )
                     self.console_logger.debug(
-                        f"[musicbrainz] Attempt 3 URL: {log_rg_url3}"
+                        f"[musicbrainz] Attempt 2 successful. Found {len(filtered_rgs)} matching groups after filtering."
                     )
+                    all_release_groups.extend(filtered_rgs)
 
+                if not all_release_groups:
+                    # --- Attempt 3: Album title only ---
+                    tertiary_query = f"{album_fb}"
+                    params_rg3 = {"fmt": "json", "limit": "10", "query": tertiary_query}
+                    url_rg3 = base_search_url + "?" + urllib.parse.urlencode(params_rg3)
+                    self.console_logger.debug(f"[musicbrainz] Attempt 3 URL: {url_rg3}")
                     rg_data3 = await self._make_api_request(
                         "musicbrainz", base_search_url, params=params_rg3
                     )
-
                     if (
                         rg_data3
                         and rg_data3.get("count", 0) > 0
                         and rg_data3.get("release-groups")
                     ):
-                        self.console_logger.debug(
-                            "Attempt 3 (Album Title Only Search) successful. Will filter by artist."
-                        )
-                        release_groups = rg_data3.get("release-groups", [])
-                    else:
-                        self.console_logger.warning(
-                            f"[musicbrainz] All search attempts failed for '{artist_norm} - {album_norm}'."
-                        )
-                        return []  # Return empty list if all searches fail
-
-            # --- Filter Results if Broader Search Was Used ---
-            # We need to ensure the artist credit matches the search artist if we used fallback searches
-            filtered_release_groups = []
-            # Check if primary search failed (meaning we used fallbacks)
-            if not (rg_data1 and rg_data1.get("count", 0) > 0):
-                self.console_logger.debug(
-                    f"Filtering {len(release_groups)} fallback results for artist '{artist_norm}'..."
-                )
-                for rg in release_groups:
-                    artist_credit = rg.get("artist-credit", [])
-                    # Check if *any* artist in the artist-credit list matches the search artist (normalized)
-                    artist_match_found = False
-                    if artist_credit and isinstance(artist_credit, list):
-                        for credit in artist_credit:
-                            if isinstance(credit, dict) and credit.get("name"):
-                                # Use _normalize_name for comparison
-                                if self._normalize_name(credit["name"]) == artist_norm:
-                                    artist_match_found = True
-                                    break  # Found a match, no need to check further credits
-
-                    if artist_match_found:
-                        filtered_release_groups.append(rg)
-                    else:
-                        # Log skipped results with artist credit for debugging
-                        ac_names = ", ".join(
-                            [
-                                c.get("name", "Unknown")
-                                for c in artist_credit
-                                if isinstance(c, dict)
-                            ]
+                        filtered_rgs = self._filter_release_groups_by_artist(
+                            rg_data3["release-groups"], artist_norm
                         )
                         self.console_logger.debug(
-                            f"[musicbrainz] Skipping RG '{rg.get('title')}' due to artist mismatch ('{ac_names}' vs search '{artist_norm}')"
+                            f"[musicbrainz] Attempt 3 successful. Found {len(filtered_rgs)} matching groups after filtering."
                         )
+                        all_release_groups.extend(filtered_rgs)
 
-                self.console_logger.info(
-                    f"Found {len(filtered_release_groups)} release groups matching artist after filtering fallback results."
+            if not all_release_groups:
+                self.console_logger.warning(
+                    f"[musicbrainz] All search attempts failed for '{artist_norm} - {album_norm}'."
                 )
-                if not filtered_release_groups:
-                    return []  # No relevant groups found after filtering
-                release_groups = filtered_release_groups  # Use the filtered list
-            else:
-                # If primary search worked, we assume the artist match is already good
-                self.console_logger.info(
-                    f"Using {len(release_groups)} results from primary MusicBrainz search."
-                )
+                return []
 
-            # --- Process Filtered/Found Release Groups ---
-            processed_release_ids: set[str] = set()
-            max_groups_to_process = 3  # Limit processing if multiple groups found
-            groups_to_process = release_groups[:max_groups_to_process]
+            # --- Fetch all releases for the found release groups ---
             release_fetch_tasks = []
-            # Map index to RG data to retrieve full info after fetching releases
-            rg_info_map = {
-                idx: groups_to_process[idx] for idx in range(len(groups_to_process))
-            }
-
-            for rg in groups_to_process:
-                rg_id = rg.get("id")
+            # Limit processing to avoid excessive API calls for broad matches
+            max_groups_to_process = 3
+            for rg_info in all_release_groups[:max_groups_to_process]:
+                rg_id = rg_info.get("id")
                 if not rg_id:
                     continue
-                # Use release search endpoint to get individual releases within the release group
+
+                # To get all releases in a release group, we search the 'release' endpoint
+                release_search_url = "https://musicbrainz.org/ws/2/release/"
                 release_params = {
                     "release-group": rg_id,
-                    "inc": "media",
+                    "inc": "media",  # include media information (track counts)
                     "fmt": "json",
-                    "limit": "50",
+                    "limit": "100",  # Get up to 100 releases per group
                 }
-                release_search_url = "https://musicbrainz.org/ws/2/release/"
-                release_fetch_tasks.append(
-                    self._make_api_request(
-                        "musicbrainz", release_search_url, params=release_params
-                    )
+                # We also pass the full rg_info to the task to have it available for scoring later
+                task = self._make_api_request(
+                    "musicbrainz", release_search_url, params=release_params
                 )
-
-            release_results = await asyncio.gather(
-                *release_fetch_tasks, return_exceptions=True
-            )
+                release_fetch_tasks.append((task, rg_info))
 
             # --- Score Fetched Releases ---
-            for idx, result in enumerate(release_results):
-                # Get full RG data using the index map to access RG-level info for scoring
-                rg_info_full = rg_info_map.get(idx)
-                if not rg_info_full:
-                    continue
-                rg_id = rg_info_full.get("id")  # Get RG ID
+            scored_releases: list[dict[str, Any]] = []
+            processed_release_ids: set[str] = set()
 
-                # Extract details needed for scoring/processing from rg_info_full
-                rg_first_date = rg_info_full.get("first-release-date")
-                rg_primary_type = rg_info_full.get("primary-type")
-                rg_artist_credit = rg_info_full.get("artist-credit", [])
-                rg_artist_name = ""
-                if rg_artist_credit and isinstance(rg_artist_credit, list):
-                    # Use _normalize_name when extracting RG artist name for consistency
-                    rg_artist_name_parts = []
-                    for credit in rg_artist_credit:
-                        if isinstance(credit, dict) and credit.get("name"):
-                            rg_artist_name_parts.append(
-                                self._normalize_name(credit["name"])
-                            )
-                            if credit.get("joinphrase"):
-                                rg_artist_name_parts.append(credit["joinphrase"])
-                    rg_artist_name = "".join(
-                        rg_artist_name_parts
-                    ).strip()  # Build normalized name
+            results = await asyncio.gather(
+                *[t[0] for t in release_fetch_tasks], return_exceptions=True
+            )
+
+            for i, result in enumerate(results):
+                rg_info = release_fetch_tasks[i][
+                    1
+                ]  # Retrieve the associated release group info
 
                 if isinstance(result, Exception):
+                    # Log API call failures clearly
                     self.error_logger.warning(
-                        f"Failed to fetch releases for MB RG ID {rg_id}: {result}"
+                        f"Failed to fetch releases for MB RG ID {rg_info.get('id')}: {result}"
                     )
                     continue
-                if (
-                    not result
-                    or not isinstance(result, dict)
-                    or "releases" not in result
-                ):
-                    if (
-                        result is not None
-                    ):  # Log only if the API call itself didn't return None
-                        self.console_logger.warning(
-                            f"No release data found for MB RG ID {rg_id}"
-                        )
+
+                if not result or not isinstance(result, dict) or "releases" not in result:
                     continue
 
-                releases = result.get("releases", [])
-                for release in releases:
+                for release in result.get("releases", []):
                     release_id = release.get("id")
                     if not release_id or release_id in processed_release_ids:
                         continue
                     processed_release_ids.add(release_id)
 
-                    year: str | None = None
-                    release_date_str = release.get("date", "")
-                    if release_date_str:
-                        year_match = re.match(r"^(\d{4})", release_date_str)
-                        if year_match:
-                            year = year_match.group(1)
+                    # Combine release and release group info into a single dictionary
+                    # for the scoring function, respecting its signature.
+                    release_to_score = release.copy()
+                    release_to_score['release_group'] = rg_info
 
-                    status_val = release.get("status")
-                    status = status_val.lower() if isinstance(status_val, str) else ""
-
-                    country_val = release.get("country")
-                    country = (
-                        country_val.lower() if isinstance(country_val, str) else ""
+                    score = self._score_original_release(
+                        release_to_score,  # Pass the combined dictionary
+                        artist_norm,
+                        album_norm,
+                        artist_region,
                     )
 
-                    release_title = release.get("title", "")
-                    media = release.get("media", [])
-                    format_details = (
-                        media[0].get("format", "")
-                        if media and isinstance(media, list)
-                        else ""
-                    )
-
-                    # Use reissue keywords from scoring config
-                    scoring_cfg = (
-                        self.scoring_config
-                        if isinstance(self.scoring_config, dict)
-                        else {}
-                    )  # Ensure scoring_cfg is a dict
-                    reissue_keywords = (
-                        scoring_cfg.get("reissue_keywords", [])
-                        if isinstance(scoring_cfg.get("reissue_detection"), dict)
-                        else []
-                    )  # Get from reissue_detection subsection if it exists
-                    reissue_keywords.extend(
-                        self.config.get("cleaning", {}).get("remaster_keywords", [])
-                    )  # Include cleaning remaster keywords
-
-                    is_reissue = False
-                    title_lower = release_title.lower()
-                    if any(kw.lower() in title_lower for kw in reissue_keywords):
-                        is_reissue = True
-
-                    # Also check format descriptions for reissue keywords
-                    format_desc_lower = " ".join(
-                        [
-                            d.lower()
-                            for fmt in media
-                            if isinstance(fmt, dict)
-                            and isinstance(fmt.get("descriptions"), list)
-                            for d in fmt["descriptions"]
-                        ]
-                    ).lower()  # Convert descriptions to lower case and join
-
-                    if not is_reissue and any(
-                        kw.lower() in format_desc_lower for kw in reissue_keywords
-                    ):
-                        is_reissue = True
-
-                    release_info = {
-                        "source": "musicbrainz",
-                        "id": release_id,
-                        "title": release_title,
-                        "artist": rg_artist_name
-                        or artist_norm,  # Use normalized RG artist name or search artist
-                        "year": year,
-                        "type": rg_primary_type
-                        or (
-                            release.get("release-group", {}).get("primary-type")
-                            if isinstance(release.get("release-group"), dict)
-                            else None
-                        ),  # Use RG type
-                        "status": status,
-                        "country": country,
-                        "format_details": format_details,
-                        "is_reissue": is_reissue,
-                        "releasegroup_id": rg_id,
-                        "releasegroup_first_date": rg_first_date,  # Pass RG first date
-                        "score": 0,
-                    }
-
-                    # Only score if year is potentially valid
-                    if year is not None and self._is_valid_year(year):
-                        release_info["score"] = self._score_original_release(
-                            release_info, artist_norm, album_norm, artist_region
+                    if score > 0:
+                        scored_releases.append(
+                            {
+                                "score": score,
+                                "year": str(release.get("date", "Unknown")).split("-")[0],
+                                "source": "musicbrainz",
+                                "release_title": release.get("title"),
+                                "release_id": release_id,
+                                "release_group_id": rg_info.get("id"),
+                            }
                         )
-                        scored_releases.append(release_info)
-                    else:
-                        self.console_logger.debug(
-                            f"Skipping scoring for MB release '{release_info.get('title')}' "
-                            f"due to invalid or missing year: {release_info.get('year')}"
-                        )
-
-            # --- Final Sorting and Logging ---
-            # Sort by score descending, then year ascending for ties
-            scored_releases.sort(
-                key=lambda x: (-x["score"], int(x.get("year") or 0))
-            )  # Ensure year is int for sorting
-
-            self.console_logger.info(
-                f"Found {len(scored_releases)} scored releases from MusicBrainz for '{artist_norm} - {album_norm}'"
-            )
-            for i, r in enumerate(scored_releases[:3]):
-                # Break long log line
-                self.console_logger.info(
-                    f"  MB #{i + 1}: {r.get('title', '')} ({r.get('year', '')}) - "
-                    f"Type: {r.get('type', '')}, Status: {r.get('status', '')}, "
-                    f"Country: {r.get('country', '').upper()}, "
-                    f"Score: {r.get('score')} (RG First Date: {r.get('releasegroup_first_date')})"
-                )
-
-            return scored_releases
 
         except Exception as e:
-            self.error_logger.exception(
-                f"Error retrieving/scoring from MusicBrainz for '{artist_norm} - {album_norm}': {e}"
+            self.error_logger.error(
+                f"An unexpected error occurred in _get_scored_releases_from_musicbrainz: {e}",
+                exc_info=True,
             )
             return []
 
+        return scored_releases
+
     async def _get_scored_releases_from_discogs(
-        self, artist_norm: str, album_norm: str, artist_region: str | None
+        self,
+        artist_norm: str,
+        album_norm: str,
+        artist_region: str | None,
+        *,
+        artist_orig: str | None = None,
+        album_orig: str | None = None,
     ) -> list[dict[str, Any]]:
         """Retrieve and score releases from Discogs.
 
@@ -1801,6 +1749,15 @@ class ExternalApiService:
                 f"Cached Discogs data for '{artist_norm} - {album_norm}' has unexpected type. Ignoring cache."
             )
 
+        self.console_logger.debug(
+            f"[discogs] Start search | artist_orig='{artist_orig or artist_norm}' "
+            f"artist_norm='{artist_norm}', album_orig='{album_orig or album_norm}', album_norm='{album_norm}'"
+        )
+
+        # --- Detail fetch control ---
+        detail_fetch_limit = 10  # Avoid excessive additional API calls per search
+        detail_fetch_count = 0
+
         scored_releases: list[dict[str, Any]] = []
         try:
             # Use combined query parameter 'q'
@@ -1814,6 +1771,15 @@ class ExternalApiService:
             self.console_logger.debug(f"[discogs] Search URL: {log_discogs_url}")
 
             data = await self._make_api_request("discogs", search_url, params=params)
+
+            # --- Early exit on Discogs error message ---
+            # Discogs sends a JSON object containing a 'message' key when an error occurs
+            if isinstance(data, dict) and "message" in data:
+                self.error_logger.warning(
+                    f"[discogs] API message: {data.get('message')}"
+                )
+                await self.cache_service.set_async(cache_key, [], ttl=cache_ttl_seconds)
+                return []
 
             # --- DEBUG LOGGING ---
             self.console_logger.debug(
@@ -1868,56 +1834,27 @@ class ExternalApiService:
 
             for item in results:
                 year_str = str(item.get("year", ""))
-                release_title_full = item.get("title", "")
-                # Discogs title is often "Artist - Album", need to parse correctly
-                title_parts = release_title_full.split(" - ", 1)
-                item_artist_raw = (
-                    title_parts[0].strip() if len(title_parts) > 1 else ""
-                )  # Artist part
-                item_album_raw = (
-                    title_parts[1].strip()
-                    if len(title_parts) > 1
-                    else release_title_full.strip()
-                )  # Album part or full title
 
-                # --- IMPROVED ARTIST MATCHING LOGIC ---
-                # Normalize both the search artist and the artist part from the item title
-                artist_norm_item = self._normalize_name(item_artist_raw)
-
-                # Check if the normalized artist part from the item title matches the normalized search artist
-                # Use simple equality on normalized names for stricter match after broad search
-                artist_matches = (
-                    artist_norm_item != "" and artist_norm_item == artist_norm
-                )
-
-                # Secondary check: if primary match failed, see if normalized search artist is
-                # a significant part of the normalized item artist (e.g. "The Beatles" vs "Beatles, The")
-                if not artist_matches and artist_norm_item != "" and artist_norm != "":
-                    if (
-                        artist_norm in artist_norm_item
-                        or artist_norm_item in artist_norm
-                    ):
-                        # This is a weaker match, potentially give a small bonus or just accept as a match
-                        # For now, let's treat as a match but maybe log it for review if needed
-                        artist_matches = True
-                        self.console_logger.debug(
-                            f"[discogs] Found potential artist variation match for '{item_artist_raw}' vs search '{artist_norm}'"
-                        )
-
-                if not artist_matches:
-                    self.console_logger.debug(
-                        f"[discogs] Skipping result '{release_title_full}' due to artist mismatch "
-                        f"('{item_artist_raw}' normalized to '{artist_norm_item}' vs search '{artist_norm}')"
-                    )
-                    continue
-
-                # If artist matched well, but album title seems completely unrelated, we might still skip
-                # Add a check to skip if the normalized album title from the item is very short or completely unrelated
-                # (beyond simple substring check). This is harder without fuzzy matching.
-                # For now, rely on the scoring function to penalize unrelated titles.
-                # The scoring function uses simple_norm and checks for exact/substring match.
-                # We rely on the scoring function's album title penalties to handle unrelated titles.
-                # The filter here is primarily to ensure the artist part of the title is correct.
+                # --- Attempt detail fetch if year missing/invalid ---
+                if (
+                    not self._is_valid_year(year_str)
+                    and detail_fetch_count < detail_fetch_limit
+                ):
+                    detail_data = await self._fetch_discogs_release_details(item.get("id"))
+                    detail_fetch_count += 1
+                    if detail_data:
+                        year_from_detail = detail_data.get("year")
+                        if not year_from_detail and isinstance(detail_data.get("released"), str):
+                            released_str = detail_data["released"]
+                            match = re.match(r"^(\d{4})", released_str)
+                            if match:
+                                year_from_detail = match.group(1)
+                        if year_from_detail and self._is_valid_year(str(year_from_detail)):
+                            self.console_logger.debug(
+                                f"[discogs] Filled missing year for release {item.get('id')} via detail fetch: {year_from_detail}"
+                            )
+                            year_str = str(year_from_detail)
+                # ----------------------------------------------------
 
                 formats = item.get("formats", [])
                 format_names: list[str] = []
@@ -1937,7 +1874,7 @@ class ExternalApiService:
                 is_reissue = False
                 # Check reissue keywords in original title and format descriptions
                 title_lower = (
-                    release_title_full.lower()
+                    item.get("title", "").lower()
                 )  # Use full title for reissue check
                 desc_lower = " ".join(format_descriptions).lower()
                 if any(kw.lower() in title_lower for kw in reissue_keywords):
@@ -1980,8 +1917,8 @@ class ExternalApiService:
                 release_info = {
                     "source": "discogs",
                     "id": item.get("id"),
-                    "title": item_album_raw,  # Use the extracted album part
-                    "artist": item_artist_raw,  # Use the extracted artist part
+                    "title": item.get("title"),
+                    "artist": item.get("artist", ""),
                     "year": year_str,
                     "type": release_type,
                     "status": "Official",  # Discogs results are typically official releases
@@ -2113,7 +2050,7 @@ class ExternalApiService:
                     "year": year,
                     "type": release_type,
                     "status": status,
-                    "country": "",  # Not provided by Last.fm getInfo
+                    "country": "",  # Not provided by Last.fm
                     "format_details": "",  # Not provided
                     "is_reissue": False,  # Difficult to determine reliably
                     "source_detail": source_detail,  # Where the year came from (wiki, date, tags)
@@ -2136,6 +2073,7 @@ class ExternalApiService:
             self.error_logger.exception(
                 f"Error retrieving/scoring from Last.fm for '{artist_norm} - {album_norm}': {e}"
             )
+            return []
 
         # Return the list (usually empty or with one scored item)
         return scored_releases
@@ -2282,6 +2220,17 @@ class ExternalApiService:
         # Avoid returning empty string if original name wasn't empty
         return result if result else name
 
+    def _simple_norm(self, name: str) -> str:
+        """Return a lower-cased, whitespace-normalized string with punctuation removed.
+
+        This simplified normalizer is purposely lenient and intended for partial,
+        case-insensitive substring matching (e.g. ``beatles`` matches ``The Beatles``).
+        """
+        if not name or not isinstance(name, str):
+            return ""
+        cleaned = re.sub(r"[^\w\s-]", "", name.lower()).strip()
+        return re.sub(r"\s+", " ", cleaned).strip()
+
     def _clean_expired_cache(
         self, cache: dict[str, tuple[Any, float]] | Any, ttl_seconds: float, cache_name: str = "Generic"
     ) -> None:
@@ -2323,6 +2272,8 @@ class ExternalApiService:
             artist_norm,
             album_norm,
             None,
+            artist_orig=artist,
+            album_orig=album,
         )
         valid_years = []
         for r in results:
@@ -2413,3 +2364,60 @@ class ExternalApiService:
                 exc_info=True
             )
             return False
+
+    # ---------------------------------------------------------------------
+    # Discogs: Fetch detailed release information
+    # ---------------------------------------------------------------------
+
+    async def _fetch_discogs_release_details(self, release_id: int) -> dict[str, Any] | None:
+        """Fetch detailed Discogs release data and cache the response.
+
+        Args:
+            release_id: Discogs release identifier.
+
+        Returns:
+            Parsed JSON response from Discogs or ``None`` on failure.
+
+        """
+        cache_key = f"discogs_detail_{release_id}"
+        cache_ttl_seconds = (
+            self.cache_ttl_days * 86400
+        )  # Re-use global TTL
+
+        # Attempt to read from cache first
+        cached = await self.cache_service.get_async(cache_key)
+        if cached is not None:
+            if isinstance(cached, dict):
+                self.console_logger.debug(
+                    f"[discogs] Using cached details for release {release_id}."
+                )
+                return cached
+            # Unexpected type - ignore but warn for visibility
+            self.error_logger.debug(
+                f"[discogs] Cached details for release {release_id} have invalid type; ignoring cache."
+            )
+
+        # Build request URL
+        url = f"https://api.discogs.com/releases/{release_id}"
+        self.console_logger.debug(f"[discogs] Detail URL: {url}")
+
+        try:
+            data = await self._make_api_request("discogs", url)
+            if not data or not isinstance(data, dict):
+                self.console_logger.warning(
+                    f"[discogs] Empty or invalid detail response for release {release_id}."
+                )
+                # Cache negative result to avoid hammering the endpoint
+                await self.cache_service.set_async(cache_key, {}, ttl=cache_ttl_seconds)
+                return None
+
+            # Cache valid response
+            await self.cache_service.set_async(cache_key, data, ttl=cache_ttl_seconds)
+            return data
+        except Exception as err:
+            self.error_logger.exception(
+                f"[discogs] Failed to fetch release details for {release_id}: {err}"
+            )
+            # Cache negative result to avoid hammering the endpoint
+            await self.cache_service.set_async(cache_key, {}, ttl=cache_ttl_seconds)
+            return None

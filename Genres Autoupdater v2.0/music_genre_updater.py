@@ -8,9 +8,9 @@ and verifying track database integrity. It uses dependency injection and asynchr
 Key Features:
 - Genre harmonization: Assigns consistent genres to an artist's tracks based on their earliest releases
 - Track/album name cleaning: Removes remaster tags, promotional text, and other clutter from titles
-- Album year retrieval: Fetches and updates year information from external music databases with caching and rate limiting
-- Database verification: Checks the internal track database against Music.app and removes entries for non-existent tracks
-- Incremental processing: Updates only tracks added since the last run, respecting a configurable interval
+- Album year retrieval: Fetches and updates year information from external music databases with caching
+- Database verification: Checks track database against Music.app and removes entries for non-existent tracks
+- Incremental processing: Updates only tracks added since the last run with configurable intervals
 - Analytics tracking: Monitors performance and operations with detailed logging
 - Pending verification: Re-checks album years after a set period to improve accuracy
 
@@ -18,7 +18,7 @@ Architecture:
 - MusicUpdater: Core orchestrator class that manages all library updates through injected dependencies
 - DependencyContainer: Manages service instances and their lifecycle
 - Services: AppleScriptClient, CacheService, ExternalApiService, PendingVerificationService
-- Utility functions: For parsing tracks, cleaning names, determining genres, and handling reports
+- Utility modules: For parsing tracks, cleaning names, determining genres, and handling reports
 
 Commands:
 - Default: Runs the main pipeline (clean, genres, years)
@@ -30,7 +30,7 @@ Commands:
 Options:
 - --force: Overrides incremental checks and forces cache refresh
 - --dry-run: Simulates changes without modifying the library
-- --artist: Specifies target artist (for certain commands)
+- --test-mode: Processes only artists defined in development.test_artists
 
 Configuration in my-config.yaml controls paths, API limits, cleaning rules, intervals, and logging preferences.
 """
@@ -45,6 +45,8 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, TypedDict, TypeGuard, cast
+
+import dotenv
 
 # trunk-ignore(mypy/import-untyped)
 # trunk-ignore(mypy/note)
@@ -79,6 +81,9 @@ from utils.reports import (
     save_to_csv,
     sync_track_list_with_current,
 )
+
+# Load environment variables from .env
+dotenv.load_dotenv()
 
 # Type definitions for AppleScript actions in dry-run
 class ScriptAction(TypedDict):
@@ -764,10 +769,10 @@ class MusicUpdater:
         tracks: list[dict[str, str]],
         force: bool = False,
     ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-        """Core logic for updating album years by querying external APIs.
+        """Core logic for updating album years via external APIs with caching and verification.
 
-        Separated from process_album_years for clarity.
-        Uses injected services: external_api_service, cache_service, pending_verification_service, ap_client.
+        Groups tracks by album, processes in batches with controlled concurrency and adaptive delays.
+        Uses cached years when available and handles pending verification scheduling.
         """
         # Setup logging for year updates (logic remains the same, but uses self.loggers)
         year_changes_log_file = get_full_log_path(
@@ -922,7 +927,7 @@ class MusicUpdater:
                                 "album": album,
                                 "name": track.get("name", "Unknown Track"),
                                 "new_year": year,
-                                "old_year": track_year_str,
+                                "old_year": track.get("old_year", "").strip() or track.get("year", "").strip(),
                                 "original_pos": track.get("original_pos", -1),
                             }
                         )
@@ -951,17 +956,27 @@ class MusicUpdater:
                     album,
                     year,
                 )
+                # Extract only track IDs for bulk update API
+                track_ids = [t.get("id") for t in album_tracks_to_update if t.get("id")]
+                self.console_logger.debug(
+                    "Passing %d track IDs to update_album_tracks_bulk_async for '%s - %s' (year=%s)",
+                    len(track_ids),
+                    artist,
+                    album,
+                    year,
+                )
                 success = await self.update_album_tracks_bulk_async(
-                    album_tracks_to_update,
+                    track_ids,
                     year,
                 )
 
                 if success:
                     year_logger.info(
-                        "Successfully updated %d tracks for album '%s - %s' to year '%s'.",
+                        "Successfully updated %d tracks for album '%s - %s' from year '%s' to '%s'.",
                         len(album_tracks_to_update),
                         artist,
                         album,
+                        current_library_year or "unknown",
                         year,
                     )
                     for track_data in album_tracks_to_update:
@@ -1886,9 +1901,9 @@ class MusicUpdater:
     # Correctly using the classmethod decorator from Analytics
     @Analytics.track_instance_method("Run Update Years")
     async def run_update_years(self, artist: str | None, force: bool) -> None:
-        """Execute the album year update process.
+        """Update album years from external APIs, either for all tracks or for a specific artist.
 
-        Uses injected services and config from self.config.
+        Processes tracks incrementally unless forced, with proper caching and pending verification.
         """
         force_year_update = force  # Use force flag specific to this command
         artist_msg = f" for artist={artist}" if artist else " for all artists"
@@ -2015,10 +2030,8 @@ class MusicUpdater:
                 # Use injected pending_verification_service if available
                 if self.pending_verification_service:
                     # Check if the *album* (artist, album) is in the pending list
-                    is_pending = await self.pending_verification_service.is_verification_needed(
-                        artist,
-                        album,
-                    )  # Check if album needs verification
+                    is_pending = await self.pending_verification_service.is_verification_needed(artist, album)
+
                     if is_pending:
                         self.console_logger.info(
                             "Album '%s - %s' is due for verification",

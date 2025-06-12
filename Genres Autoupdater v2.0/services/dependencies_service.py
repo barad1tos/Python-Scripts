@@ -58,6 +58,8 @@ class DependencyContainer:
     __init__ now receives loggers and listener as arguments.
     """
 
+    ap_client: AppleScriptClient | DryRunAppleScriptClient
+
     def __init__(
         self,
         config_path: str,
