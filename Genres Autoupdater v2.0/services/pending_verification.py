@@ -43,6 +43,7 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from utils.logger import get_full_log_path
+from utils.metadata import clean_names
 
 class Logger(Protocol):
     """Protocol defining the interface for loggers used in the application.
@@ -133,6 +134,10 @@ class PendingVerificationService:
             "Initializing PendingVerificationService asynchronously..."
         )
         await self._load_pending_albums()
+
+        # Normalize keys to ensure compatibility with cleaned album names
+        await self._normalize_pending_album_keys()
+
         self.console_logger.info(
             "PendingVerificationService asynchronous initialization complete."
         )
@@ -140,15 +145,19 @@ class PendingVerificationService:
     def _generate_album_key(self, artist: str, album: str) -> str:
         """Generate a unique hash key for an album based on artist and album names.
 
-        Uses SHA256 to avoid issues with separator characters in names.
-        (Duplicated from CacheService for independence, could be moved to a shared utility).
-
-        :param artist: The artist name.
-        :param album: The album name.
-        :return: A SHA256 hash string.
+        Uses SHA256 and *cleaned* album name (suffixes removed) to guarantee
+        consistent keys between pending list and main logic.
         """
-        # Combine artist and album names (normalized) and hash them
-        normalized_names = f"{artist.strip().lower()}|{album.strip().lower()}"
+        # Clean the album name using the same utility as main processing flow
+        _, cleaned_album = clean_names(
+            artist,
+            "",
+            album,
+            self.config,
+            self.console_logger,
+            self.error_logger,
+        )
+        normalized_names = f"{artist.strip().lower()}|{cleaned_album.strip().lower()}"
         return hashlib.sha256(normalized_names.encode("utf-8")).hexdigest()
 
     async def _load_pending_albums(self) -> None:
@@ -540,3 +549,36 @@ class PendingVerificationService:
                 # )
 
         return verified_keys
+
+    async def _normalize_pending_album_keys(self) -> None:
+        """Ensure all in-memory pending keys use cleaned album names.
+
+        Converts legacy keys that still contain raw album names with suffixes.
+        After migration, saves the updated pending list to disk.
+        """
+        async with self._lock:
+            updates: list[tuple[str, str]] = []  # (old_key, new_key)
+            for old_key, (timestamp, artist, album) in list(self.pending_albums.items()):
+                new_key = self._generate_album_key(artist, album)
+                if new_key != old_key:
+                    # Clean album name for storage as well
+                    _, cleaned_album = clean_names(
+                        artist,
+                        "",
+                        album,
+                        self.config,
+                        self.console_logger,
+                        self.error_logger,
+                    )
+                    # Move to new key
+                    self.pending_albums[new_key] = (timestamp, artist, cleaned_album)
+                    del self.pending_albums[old_key]
+                    updates.append((old_key, new_key))
+            if updates:
+                self.console_logger.info(
+                    "Normalized %d pending album keys by removing suffixes.",
+                    len(updates),
+                )
+        if updates:
+            # Save outside the lock to avoid prolonged blocking
+            await self._save_pending_albums()

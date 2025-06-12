@@ -832,6 +832,20 @@ class MusicUpdater:
 
             current_library_year = album_tracks[0].get("old_year", "").strip() if album_tracks else ""
 
+            # Call safety check for track statuses; skip update if album has prerelease tracks
+            if not self.external_api_service.should_update_album_year(
+                album_tracks,
+                artist=artist,
+                album=album,
+                current_library_year=current_library_year,
+            ):
+                year_logger.info(
+                    "Skipping album '%s - %s' due to prerelease track status.",
+                    artist,
+                    album,
+                )
+                return False
+
             year: str | None = None
             is_definitive: bool = False # Default: year is not definitive unless confirmed by API
             needs_api_fetch: bool = False
@@ -908,11 +922,17 @@ class MusicUpdater:
                 # If the year was confirmed as definitive by the API, and it was found,
                 # ensure it's removed from pending verification.
                 # This is a bit redundant if already handled in the 'should_verify' block, but ensures correctness.
-                if is_definitive and self.pending_verification_service:
-                        await self.pending_verification_service.remove_from_pending(artist, album)
-                # If the year was obtained from API but is NOT definitive,
-                # ExternalApiService.get_album_year should have marked it for pending verification.
-
+                if self.pending_verification_service and is_definitive:
+                    await self.pending_verification_service.remove_from_pending(artist, album)
+                elif self.pending_verification_service and year == current_library_year:
+                    # API re-confirmed same year (non-definitive) - remove from pending to prevent endless cycle
+                    await self.pending_verification_service.remove_from_pending(artist, album)
+                    year_logger.info(
+                        "Removing '%s - %s' from pending verification as year '%s' was confirmed by API.",
+                        artist,
+                        album,
+                        year,
+                    )
                 album_tracks_to_update = []
                 for track in album_tracks:
                     track_year_str = track.get("year", "").strip()

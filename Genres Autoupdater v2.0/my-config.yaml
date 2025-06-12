@@ -74,7 +74,7 @@ database_verification:
 
 # Development and testing settings
 development:
-  test_artists: [Katatonia] # List of artists to test with (e.g., ["Artist1", "Artist2"])
+  test_artists: [Neurotech] # List of artists to test with (e.g., ["Artist1", "Artist2"])
 
 # API Cache file
 api_cache_file: cache.json
@@ -145,7 +145,7 @@ year_retrieval: # NOTE: Keep this top-level key as the code expects config.get('
   # --- Year Validation & Logic ---
   logic:
     min_valid_year: 1900
-    definitive_score_threshold: 85
+    definitive_score_threshold: 75 # lowered from 85 to 75 to improve definitive detection
     definitive_score_diff: 15
     preferred_countries: [
         "us", # trunk-ignore(yamllint/quoted-strings)
